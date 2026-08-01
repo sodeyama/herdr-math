@@ -147,7 +147,7 @@
   - Acceptance tests: AT-400, AT-405, AT-409, AT-410
   - Commit: `experiment(renderer): compare local rendering backends`
 
-- [ ] **T-403: Record the renderer decision**
+- [x] **T-403: Record the renderer decision**
   - Scope: Add an architecture decision record with measurements, selected backend, rejected alternative, install cost, security analysis, and supported architectures.
   - Dependencies: T-402
   - Acceptance tests: AT-410, AT-708
