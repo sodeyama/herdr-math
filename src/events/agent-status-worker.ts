@@ -55,6 +55,7 @@ export interface AgentStatusWorkerDependencies {
   secret: Uint8Array;
   render(formulas: readonly RendererFormula[]): Promise<OperationResult<RenderedImage>>;
   publish(request: ImagePublishRequest): Promise<OperationResult<ImagePublishResult>>;
+  workingSnapshot?: HerdrPaneReadSnapshot;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
   timing?: AgentStatusWorkerTiming;
@@ -207,7 +208,10 @@ async function processWorking(
   try {
     const now = currentTime(dependencies);
     const current = await loadPaneState(paths, now);
-    const read = await dependencies.client.paneRead(resolved.decoded.sourcePaneId);
+    const read =
+      dependencies.workingSnapshot === undefined
+        ? await dependencies.client.paneRead(resolved.decoded.sourcePaneId)
+        : success(dependencies.workingSnapshot);
     if (!read.ok) return failure(read.error);
     if (!readMatchesEvent(read.value, resolved)) return safeFailure("event_invalid");
     const confirmed = await resolveEvent(resolved.decoded, dependencies);

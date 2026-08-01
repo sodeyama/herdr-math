@@ -20,6 +20,7 @@ import { publishImage } from "../../src/graphics/publisher.js";
 import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
 import { createPaneStatePaths } from "../../src/state/paths.js";
 import { loadPaneState } from "../../src/state/store.js";
+import { runAgentStatusHook } from "../../src/on-agent-status.js";
 import { FakeHerdrServer } from "../support/fake-herdr-server.js";
 import { createFakePane, type FakePaneState, type FakeStatusEvent } from "../support/fake-herdr-types.js";
 
@@ -142,6 +143,27 @@ describe("agent status worker", () => {
     expect(rig.renders).toEqual([[{ latex: "x", display: false }], [{ latex: "y", display: false }]]);
     expect(rig.publications).toHaveLength(2);
     expect(await loadState(rig)).toMatchObject({ generation: 2, pane_revision: 4, event_sequence: 14 });
+  });
+
+  it("captures the working snapshot before setup and authoritative lookups", async () => {
+    const rig = await createRig();
+    rig.server.setPaneOutput("w1:p1", "Immediate working baseline before a fast response.");
+    const event = rig.server.transitionPane("w1:p1", "working");
+
+    expect(
+      await runAgentStatusHook({
+        HERDR_PLUGIN_EVENT_JSON: JSON.stringify(event),
+        HERDR_PLUGIN_STATE_DIR: rig.directory,
+        HERDR_SOCKET_PATH: rig.server.socketPath
+      })
+    ).toMatchObject({ ok: true, value: { kind: "baseline_stored", generation: 1 } });
+    expect(rig.server.requests.map(({ method }) => method)).toEqual([
+      "pane.read",
+      "pane.get",
+      "agent.get",
+      "pane.get",
+      "agent.get"
+    ]);
   });
 
   it("preserves blocked and unknown baselines, records no-formula content, and suppresses idle duplicates", async () => {

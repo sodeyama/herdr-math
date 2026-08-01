@@ -33,13 +33,17 @@ export async function runAgentStatusHook(
   }
 
   try {
-    const secret = await loadOrCreateFingerprintSecret(stateDirectory);
     const client = new HerdrSocketClient(socketPath);
+    const workingRead =
+      decoded.value.status === "working" ? await client.paneRead(decoded.value.sourcePaneId) : undefined;
+    if (workingRead !== undefined && !workingRead.ok) return failure(workingRead.error);
+    const secret = await loadOrCreateFingerprintSecret(stateDirectory);
     return processDecodedAgentStatusEvent(decoded.value, {
       client,
       stateDirectory,
       sessionIdentity: socketPath,
       secret,
+      ...(workingRead?.ok === true ? { workingSnapshot: workingRead.value } : {}),
       render: renderFormulas,
       publish: (request) => publishImage(request, { client, sessionIdentity: socketPath })
     });
