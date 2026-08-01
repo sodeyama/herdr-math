@@ -249,7 +249,7 @@
   - Acceptance tests: AT-207, AT-405, AT-406, AT-608, AT-609, AT-709
   - Commit: `test(security): enforce local-only privacy invariants`
 
-- [ ] **T-704: Measure resource and latency behavior**
+- [x] **T-704: Measure resource and latency behavior**
   - Scope: Record idle state, worker startup, boundary resolution, cold/warm render, memory, image size, and cleanup across repeated success/error runs; set regression budgets.
   - Dependencies: T-701
   - Acceptance tests: AT-208, AT-404, AT-409, AT-410
