@@ -13,7 +13,7 @@
       "agent": "codex",
       "coverage": ["valid_math", "display", "multiline"],
       "answer": "Integrate term by term:\n$$\n\\int_0^1 x^2\\,dx\n= \\frac{1}{3}\n$$\nThis is the result.",
-      "expected": [{ "latex": "\n\\int_0^1 x^2\\,dx\n= \\frac{1}{3}\n", "display": true }]
+      "expected": [{ "latex": "\\int_0^1 x^2\\,dx\n= \\frac{1}{3}", "display": true }]
     },
     {
       "id": "pi-code-and-prose",
