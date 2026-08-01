@@ -1,0 +1,13 @@
+{
+  "name": "herdr-math-renderer-browser-experiment",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "katex": "0.18.1",
+    "playwright": "1.62.1",
+    "sharp": "0.35.3"
+  }
+}

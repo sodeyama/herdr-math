@@ -1,0 +1,13 @@
+{
+  "name": "herdr-math-renderer-svg-experiment",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@mathjax/mathjax-newcm-font": "4.1.3",
+    "@mathjax/src": "4.1.3",
+    "@resvg/resvg-js": "2.6.2"
+  }
+}
