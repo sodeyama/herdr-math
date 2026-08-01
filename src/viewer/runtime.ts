@@ -4,6 +4,8 @@ import { failure, success, type OperationResult } from "../core/contracts.js";
 import { HerdrMathError, serializeError } from "../core/errors.js";
 import { HERDR_CLIENT_LIMITS, HerdrSocketClient, type HerdrPaneSnapshot } from "../herdr/socket-client.js";
 import { createViewerMetadata, isViewerSourceToken, VIEWER_IDENTITY } from "./ownership.js";
+import { ViewerPresenter, type ViewerPresenterClient } from "./presenter.js";
+import { startViewerTransport, type ViewerTransportServer } from "./transport.js";
 
 const HERDR_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
@@ -13,6 +15,7 @@ export interface ViewerEnvironment {
   HERDR_PLUGIN_ENTRYPOINT_ID?: string | undefined;
   HERDR_PANE_ID?: string | undefined;
   HERDR_WORKSPACE_ID?: string | undefined;
+  HERDR_PLUGIN_STATE_DIR?: string | undefined;
   HERDR_MATH_SOURCE_TOKEN?: string | undefined;
 }
 
@@ -29,6 +32,12 @@ export interface ViewerReady {
   workspaceId: string;
 }
 
+export interface ManagedViewerReady extends ViewerReady {
+  transport: ViewerTransportServer;
+}
+
+export interface ManagedViewerClient extends ViewerMetadataClient, ViewerPresenterClient {}
+
 export async function registerViewer(
   environment: ViewerEnvironment,
   client?: ViewerMetadataClient
@@ -44,6 +53,32 @@ export async function registerViewer(
       throw new HerdrMathError("viewer_ownership_failed");
     }
     return success({ kind: "viewer_ready", paneId: decoded.paneId, workspaceId: decoded.workspaceId });
+  } catch (error) {
+    return failure(serializeError(error));
+  }
+}
+
+export async function startManagedViewer(
+  environment: ViewerEnvironment,
+  client?: ManagedViewerClient
+): Promise<OperationResult<ManagedViewerReady>> {
+  try {
+    const decoded = decodeViewerEnvironment(environment);
+    const stateDirectory = environment.HERDR_PLUGIN_STATE_DIR;
+    if (typeof stateDirectory !== "string" || stateDirectory.length === 0) {
+      throw new HerdrMathError("viewer_ownership_failed");
+    }
+    const runtimeClient = client ?? new HerdrSocketClient(decoded.socketPath);
+    const registered = await registerViewer(environment, runtimeClient);
+    if (!registered.ok) return failure(registered.error);
+    const transport = await startViewerTransport({
+      stateDirectory,
+      sourceToken: decoded.sourceToken,
+      viewerPaneId: decoded.paneId,
+      workspaceId: decoded.workspaceId,
+      presenter: new ViewerPresenter(runtimeClient)
+    });
+    return success({ ...registered.value, transport });
   } catch (error) {
     return failure(serializeError(error));
   }

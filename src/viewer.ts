@@ -1,14 +1,15 @@
 import { pathToFileURL } from "node:url";
 
-import { registerViewer } from "./viewer/runtime.js";
+import { startManagedViewer } from "./viewer/runtime.js";
 
 async function main(): Promise<void> {
-  const result = await registerViewer({
+  const result = await startManagedViewer({
     HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
     HERDR_PLUGIN_ID: process.env.HERDR_PLUGIN_ID,
     HERDR_PLUGIN_ENTRYPOINT_ID: process.env.HERDR_PLUGIN_ENTRYPOINT_ID,
     HERDR_PANE_ID: process.env.HERDR_PANE_ID,
     HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID,
+    HERDR_PLUGIN_STATE_DIR: process.env.HERDR_PLUGIN_STATE_DIR,
     HERDR_MATH_SOURCE_TOKEN: process.env.HERDR_MATH_SOURCE_TOKEN
   });
   if (!result.ok) {
@@ -18,7 +19,11 @@ async function main(): Promise<void> {
   }
 
   process.stdout.write("Herdr Math viewer ready.\n");
-  await waitForTermination();
+  try {
+    await waitForTermination();
+  } finally {
+    await result.value.transport.close();
+  }
 }
 
 async function waitForTermination(): Promise<void> {

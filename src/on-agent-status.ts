@@ -45,7 +45,7 @@ export async function runAgentStatusHook(
       secret,
       ...(workingRead?.ok === true ? { workingSnapshot: workingRead.value } : {}),
       render: ({ text, formulas }) => renderResponse(text, formulas),
-      publish: (request) => publishImage(request, { client, sessionIdentity: socketPath })
+      publish: (request) => publishImage(request, { client, sessionIdentity: socketPath, stateDirectory })
     });
   } catch (error) {
     return failure(serializeError(error));

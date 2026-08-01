@@ -8,9 +8,11 @@ import sharp from "sharp";
 
 import type { RenderedImage } from "../../src/core/contracts.js";
 import { POLICY_LIMITS } from "../../src/core/limits.js";
+import { publishImage } from "../../src/graphics/publisher.js";
 import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
-import { deriveViewerSourceToken } from "../../src/viewer/ownership.js";
+import { deriveViewerSourceToken, VIEWER_IDENTITY } from "../../src/viewer/ownership.js";
 import { ViewerPresenter } from "../../src/viewer/presenter.js";
+import { startManagedViewer } from "../../src/viewer/runtime.js";
 import {
   sendViewerPresentation,
   startViewerTransport,
@@ -32,6 +34,49 @@ afterEach(async () => {
 });
 
 describe("private viewer transport", () => {
+  it("connects the completion publisher to the managed viewer runtime", async () => {
+    const directory = await mkdtemp("/tmp/hm-mv-");
+    directories.push(directory);
+    const server = await FakeHerdrServer.start({
+      panes: [
+        createFakePane(),
+        createFakePane({ pane_id: "w1:p2", terminal_id: "term-2", agent: null, focused: false })
+      ]
+    });
+    servers.add(server);
+    const client = new HerdrSocketClient(server.socketPath);
+    const sourceToken = deriveViewerSourceToken(server.socketPath, "w1:p1");
+    const managed = await startManagedViewer(
+      {
+        HERDR_SOCKET_PATH: server.socketPath,
+        HERDR_PLUGIN_ID: VIEWER_IDENTITY.pluginId,
+        HERDR_PLUGIN_ENTRYPOINT_ID: VIEWER_IDENTITY.entrypointId,
+        HERDR_PANE_ID: "w1:p2",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_PLUGIN_STATE_DIR: directory,
+        HERDR_MATH_SOURCE_TOKEN: sourceToken
+      },
+      client
+    );
+    expect(managed.ok).toBe(true);
+    if (!managed.ok) return;
+    transports.add(managed.value.transport);
+
+    const result = await publishImage(
+      {
+        sourcePaneId: "w1:p1",
+        workspaceId: "w1",
+        generation: 1,
+        existingViewerPaneId: "w1:p2",
+        image: await png(480, 200)
+      },
+      { client, sessionIdentity: server.socketPath, stateDirectory: directory }
+    );
+    expect(result).toEqual({ ok: true, value: { viewerPaneId: "w1:p2" } });
+    expect(server.graphicsUpdates).toHaveLength(1);
+    expect(server.getPane("w1:p1")?.focused).toBe(true);
+  });
+
   it("transfers bounded pixels over a user-only authenticated socket without durable image files", async () => {
     const directory = await mkdtemp("/tmp/hm-vt-");
     directories.push(directory);
