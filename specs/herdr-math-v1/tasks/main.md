@@ -27,7 +27,7 @@
 
 ## Phase 1 - Public Package and Manifest
 
-- [ ] **T-101: Select and add the public license**
+- [x] **T-101: Select and add the public license**
   - Scope: Evaluate the intended distribution, prototype ownership, runtime dependency licenses, font licenses, and Herdr naming boundary; add `LICENSE` and the initial notice policy.
   - Dependencies: T-000
   - Acceptance tests: AT-708
