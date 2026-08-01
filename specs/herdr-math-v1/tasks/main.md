@@ -185,7 +185,7 @@
   - Acceptance tests: Supports AT-100 through AT-113 and AT-500 through AT-511
   - Commit: `test(herdr): add fake socket integration server`
 
-- [ ] **T-504: Implement the agent-status event worker**
+- [x] **T-504: Implement the agent-status event worker**
   - Scope: Connect event decoding, authoritative `pane.get` agent/status/revision resolution, supported-agent allowlisting, lifecycle state, baseline capture, stable completion reads, boundary resolution, scanning, rendering, generation checks, and processed digests in a bounded process.
   - Dependencies: T-305, T-404, T-501, T-503
   - Acceptance tests: AT-103 through AT-113, AT-200 through AT-208, AT-511, AT-601

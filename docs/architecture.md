@@ -344,6 +344,8 @@ decode event
 
 If `done` and `idle` arrive for the same final content, the second worker sees the processed digest and exits without rendering.
 
+V0.1 waits 500 ms before completion reads, then performs at most three `recent-unwrapped` reads 100 ms apart. Two consecutive reads must have the same keyed content digest and truncation flag. `pane.get` and `pane.read` each have a two-second client timeout. Test-only overrides may lower these values but cannot raise them.
+
 ### Unknown event
 
 `unknown` does not render. It may expire an old generation only after the configured age limit.
@@ -451,6 +453,9 @@ Prototype values provide the initial defaults, subject to release validation:
 | Boundary candidates examined | 2,048 | Boundary resolver |
 | State file | 64 KiB | State store |
 | Socket response | 2 MiB | Herdr client |
+| Herdr method timeout | 2 seconds | `pane.get` and `pane.read` |
+| Completion debounce | 500 ms | Completion worker |
+| Stable completion reads | 3 attempts, 100 ms apart | Completion worker |
 | Stale lock age | 120 seconds | State store |
 | Fingerprint expiry | 24 hours | State store |
 
