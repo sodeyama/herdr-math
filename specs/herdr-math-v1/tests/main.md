@@ -38,6 +38,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 4. Terminal compatibility is tested in the actual terminal, not inferred from the terminal's generic Kitty graphics documentation.
 5. The release tag, manifest version, package version, and changelog version must agree.
 6. No acceptance fixture may contain credentials, private transcripts, real home-directory paths, or an environment dump.
+7. Agent compatibility is verified separately for Claude Code, Codex, Pi, and OpenCode. A passing result from one agent must not be used as evidence for another.
 
 ## A. Repository, Manifest, and Installation
 
@@ -133,7 +134,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 
 - Priority: P0
 - Evidence: Unit, Contract
-- Given a schema-compatible `pane.agent_status_changed` event for Claude Code or Codex
+- Given a schema-compatible `pane.agent_status_changed` event for Claude Code, Codex, Pi, or OpenCode
 - When the event decoder runs
 - Then it returns the authoritative pane id, agent, status, available sequence/context, and no unvalidated extra fields.
 
@@ -224,6 +225,15 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given a pane id is reused for a different agent occupant or lifecycle authority
 - When completion arrives
 - Then state from the previous occupant cannot authorize rendering for the replacement.
+
+### AT-112 - Supported coding-agent compatibility matrix
+
+- Priority: P0
+- Evidence: Contract, Integration, Runtime
+- Given a Herdr pane detected as Claude Code (`claude`), Codex (`codex`), Pi (`pi`), or OpenCode (`opencode`), using the lifecycle authority supported by the minimum Herdr version
+- When that coding agent completes a response containing valid `$...$` or `$$...$$` LaTeX
+- Then Herdr Math accepts the authoritative lifecycle event, proves the current-answer boundary, renders the detected formulas locally, and creates or updates exactly one owned viewer without changing source focus.
+- And release evidence records the detected agent id, lifecycle authority, integration version when installed, observed status sequence, and render result separately for all four agents.
 
 ## C. Answer Boundary
 

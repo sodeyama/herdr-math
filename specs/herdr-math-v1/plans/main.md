@@ -10,7 +10,7 @@
 
 ## Objective
 
-Build a self-contained, publicly installable Herdr plugin that renders LaTeX equations from the current completed Claude Code or Codex answer in a reusable side pane.
+Build a self-contained, publicly installable Herdr plugin that renders LaTeX equations from the current completed response of Claude Code, Codex, Pi, or OpenCode in a reusable side pane.
 
 The release must preserve the successful behavior of the August 1 prototype while replacing its local-only packaging, hard-coded paths, external dependency imports, long-running startup controller, and in-memory-only cross-event state assumptions.
 
@@ -44,7 +44,7 @@ The prototype did not establish clean installation, self-contained dependencies,
 1. Product name: `Herdr Math`.
 2. Plugin id: `io.github.sodeyama.herdr-math`.
 3. V1 placement: right split.
-4. V1 agents: Claude Code and Codex as identified by Herdr.
+4. V1 agents: Claude Code, Codex, Pi, and OpenCode as identified by Herdr.
 5. V1 syntax: `$...$` and `$$...$$` only.
 6. Event model: manifest event hooks with bounded one-shot workers.
 7. Startup model: cleanup/restore work that exits; no daemon launcher.
@@ -55,6 +55,19 @@ The prototype did not establish clean installation, self-contained dependencies,
 12. Compatibility model: declare only tested platforms and terminals.
 13. Public language: English.
 
+## Supported Coding Agents
+
+V1 supports equations emitted by these coding agents. The implementation uses Herdr's canonical agent id and authoritative lifecycle event; it does not parse process names itself.
+
+| Coding agent | Canonical Herdr id | Lifecycle authority to verify |
+|---|---|---|
+| Claude Code | `claude` | Herdr screen manifest; integration supplies session identity |
+| Codex | `codex` | Herdr screen manifest; integration supplies session identity |
+| Pi (pi.dev) | `pi` | Herdr lifecycle hooks when installed; otherwise screen manifest |
+| OpenCode | `opencode` | Herdr lifecycle plugin when installed; otherwise screen manifest |
+
+The table reflects the current official Herdr [Agents](https://herdr.dev/docs/agents/) and [Integrations](https://herdr.dev/docs/integrations/) documentation. Phase 1 must confirm the ids, event shape, status values, and minimum integration versions against the selected minimum Herdr release. Pi and OpenCode must not be enabled in the plugin allowlist until their recorded lifecycle evidence and derived tests exist. Phase 8 must record real lifecycle and render evidence for every row before `0.1.0`; support must not be inferred from another agent.
+
 ## Scope
 
 ### Included in `0.1.0`
@@ -63,6 +76,7 @@ The prototype did not establish clean installation, self-contained dependencies,
 - Production manifest with install build commands
 - One-shot startup cleanup and event workers
 - Strict Herdr event and socket protocol handling
+- Claude Code, Codex, Pi, and OpenCode lifecycle compatibility
 - Fingerprint-based answer boundary detection
 - Conservative LaTeX scanner
 - Locally rendered PNG output
@@ -146,12 +160,14 @@ The work is ordered so that pure deterministic logic and privacy invariants are 
 5. Add a minimal `herdr-plugin.toml` with the public identity, build commands, startup cleanup, lifecycle events, diagnostics action, and viewer pane.
 6. Confirm current manifest fields and event names against `herdr api schema --json` for the proposed minimum version.
 7. Add a manifest validation script that checks identity, paths, version agreement, platform declarations, command targets, and forbidden diagnostic fixture entrypoints.
+8. In an isolated real Herdr session, record redacted Pi and OpenCode detection, lifecycle authority, status transitions, integration versions, and pane-read behavior before adding them to the plugin allowlist.
 
 ### Tests
 
 - AT-001 through AT-003
 - AT-006 through AT-009
 - AT-011
+- AT-100 and the evidence prerequisite for AT-112
 - AT-706
 
 ### Exit gate
@@ -160,6 +176,7 @@ The work is ordered so that pure deterministic logic and privacy invariants are 
 - `herdr plugin link` validates the built skeleton without warnings.
 - No runtime command points outside the repository.
 - The chosen license and dependency policy are documented.
+- Pi and OpenCode have recorded lifecycle evidence suitable for synthetic contract and integration fixtures.
 
 ## Phase 2 - Pure Scanner and Prototype Boundary Parity
 
@@ -174,7 +191,7 @@ The work is ordered so that pure deterministic logic and privacy invariants are 
 2. Port the prototype boundary algorithm into a reference implementation used only for parity tests.
 3. Convert prototype tests to English names and public fixtures.
 4. Add missing Unicode, delimiter-run, offset, byte-limit, and complexity tests.
-5. Build a fixed answer corpus covering Claude Code and Codex terminal patterns without real transcripts.
+5. Build a fixed answer corpus covering Claude Code, Codex, Pi, and OpenCode terminal patterns without real transcripts.
 6. Add stable error and result types.
 
 ### Tests
@@ -299,20 +316,23 @@ Risks:
 ### Work
 
 1. Capture `herdr api schema --json` for contract-test generation without committing machine-specific paths.
-2. Implement strict event decoding for `HERDR_PLUGIN_EVENT_JSON`.
-3. Implement a bounded newline-delimited JSON socket client.
-4. Map Herdr timeouts and errors into stable plugin errors.
-5. Implement the `working`, `blocked`, `done`, `idle`, and `unknown` state machine.
-6. Implement stable completion reads and a bounded debounce.
-7. Add generation checks immediately before renderer and graphics commit points.
-8. Implement one-shot startup cleanup.
-9. Implement pane-closed cleanup.
-10. Build a fake Herdr socket server for deterministic integration tests.
+2. Confirm the canonical `claude`, `codex`, `pi`, and `opencode` ids and their lifecycle authorities against the selected minimum Herdr version.
+3. Implement strict event decoding for `HERDR_PLUGIN_EVENT_JSON`.
+4. Implement a bounded newline-delimited JSON socket client.
+5. Map Herdr timeouts and errors into stable plugin errors.
+6. Implement the `working`, `blocked`, `done`, `idle`, and `unknown` state machine.
+7. Implement stable completion reads and a bounded debounce.
+8. Add generation checks immediately before renderer and graphics commit points.
+9. Implement one-shot startup cleanup.
+10. Implement pane-closed cleanup.
+11. Build a fake Herdr socket server for deterministic integration tests.
+
+The v1 allowlist starts from the already evidenced Claude Code and Codex paths. Add Pi and OpenCode only after the Phase 1 lifecycle evidence has been converted into passing public fixtures; do not infer their behavior from another agent.
 
 ### Tests
 
 - AT-002
-- AT-100 through AT-111
+- AT-100 through AT-112
 - AT-601 through AT-604
 - AT-606
 - AT-608 and AT-609
@@ -365,7 +385,7 @@ Risks:
 ### Work
 
 1. Join event, fingerprint, scanner, renderer, viewer, and state modules in a full integration harness.
-2. Add synthetic Claude Code and Codex lifecycle fixtures.
+2. Add synthetic Claude Code, Codex, Pi, and OpenCode lifecycle fixtures.
 3. Test invalid LaTeX, formula count, length, timeout, image size, dimensions, no formula, price, shell variable, code, repeated prompt, truncation, and viewer closure in sequence.
 4. Add malformed socket responses, slow socket, disconnect, viewer ownership spoof, state corruption, lock contention, and out-of-order events.
 5. Run network-deny, filesystem-boundary, secret, environment-dump, dependency, license, and static executable-path checks.
@@ -398,19 +418,22 @@ Risks:
 4. Test at least one additional terminal when practical, but do not block a truthful macOS/Ghostty-only `0.1.0` on P1 expansion.
 5. Test graphics disabled, unavailable cell size, fresh client attach, resize, and server restart.
 6. Test default and named sessions.
-7. Run remote attach only as an explicit experiment; document unsupported status if it is not proven.
-8. Set manifest platforms and minimum Herdr version from the results.
+7. Run the full formula lifecycle for Claude Code, Codex, Pi, and OpenCode, recording the canonical agent id, lifecycle authority, integration version when installed, status sequence, and render result for each.
+8. Run remote attach only as an explicit experiment; document unsupported status if it is not proven.
+9. Set manifest platforms and minimum Herdr version from the results.
 
 ### Tests
 
 - AT-002 through AT-006
 - AT-507 through AT-509
 - AT-600, AT-602, AT-607
+- AT-112
 - AT-700 through AT-705
 
 ### Exit gate
 
 - Every declared platform has complete install and runtime evidence.
+- Every v1 coding agent has separate lifecycle and formula-render evidence.
 - Ghostty wording is `verified`, not `required`.
 - Unverified platforms and terminals are clearly labeled.
 
@@ -502,6 +525,7 @@ Do not combine these into one large implementation commit.
 | Graphics flag/client state is unavailable | No visible result | Diagnose action and no useless viewer | Supported error path |
 | User closes or reuses a pane id | Wrong-pane update | Metadata ownership validation | P0 blocker |
 | Pane read behavior changes across Herdr versions | Boundary regression | Contract fixtures plus minimum-version runtime tests | Pin minimum or adapt |
+| Coding agents use different lifecycle authorities or alternate-screen behavior | Missed completion or incomplete answer boundary | Per-agent contract fixtures and real runtime matrix for Claude Code, Codex, Pi, and OpenCode | P0 blocker for the affected agent |
 | Logs expose terminal content | Privacy failure | Allowlisted structured logs and sentinel tests | P0 blocker |
 | Outer terminal supports Kitty generally but not this Herdr path | False compatibility claim | Real matrix through Herdr | Do not claim support |
 | No repository license | Cannot safely reuse or distribute | Explicit license selection in Phase 1 | P0 blocker |
@@ -527,6 +551,7 @@ V1 is done only when:
 - One viewer is reused without focus loss or duplicate panes.
 - Invalid input, timeouts, and payload failures preserve the last valid image.
 - Every declared platform and terminal has real evidence.
+- Claude Code, Codex, Pi, and OpenCode each have real lifecycle and formula-render evidence.
 - English installation, security, compatibility, contribution, troubleshooting, and uninstall documentation is complete.
 - The release version is consistent across tag, manifest, package, changelog, and release notes.
 - The repository is ready for the `herdr-plugin` marketplace topic.

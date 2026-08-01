@@ -46,9 +46,9 @@
   - Commit: `chore(repo): add quality and build tooling`
 
 - [ ] **T-104: Capture and validate the Herdr manifest contract**
-  - Scope: Export the schema from the proposed minimum Herdr version, confirm event names and manifest fields, and add schema-compatible public fixtures without machine paths.
+  - Scope: Export the schema from the proposed minimum Herdr version; confirm event names, manifest fields, canonical `claude`/`codex`/`pi`/`opencode` ids, lifecycle authorities, and minimum integration versions; add schema-compatible public fixtures without machine paths.
   - Dependencies: T-103
-  - Acceptance tests: AT-002, AT-003, AT-100
+  - Acceptance tests: AT-002, AT-003, AT-100, AT-112
   - Commit: `test(herdr): add manifest and event contract fixtures`
 
 - [ ] **T-105: Add the public plugin manifest skeleton**
@@ -63,12 +63,18 @@
   - Acceptance tests: AT-002, AT-008, AT-011, AT-706
   - Commit: `test(plugin): validate manifest and release metadata`
 
+- [ ] **T-107: Record Pi and OpenCode lifecycle evidence**
+  - Scope: In an isolated real Herdr session, run Pi and OpenCode with the integrations required by the selected minimum Herdr version; record redacted canonical agent ids, lifecycle authorities, integration versions, observed status transitions, completion behavior, and alternate-screen pane-read behavior. Do not enable either agent in the plugin allowlist yet.
+  - Dependencies: T-104
+  - Acceptance tests: Evidence prerequisite for AT-100 and AT-112
+  - Commit: `docs(test): record Pi and OpenCode lifecycle evidence`
+
 ## Phase 2 - Scanner and Reference Boundary Logic
 
 - [ ] **T-201: Create a synthetic public answer corpus**
-  - Scope: Add English and explicit Unicode fixtures for valid math, code, prices, shell variables, escapes, repeated prompts, repaint changes, and truncated windows. Do not copy private transcripts.
-  - Dependencies: T-103
-  - Acceptance tests: AT-203, AT-204, AT-202, AT-300 through AT-307, AT-709
+  - Scope: Add synthetic Claude Code, Codex, Pi, and OpenCode answer fixtures covering valid math, code, prices, shell variables, escapes, repeated prompts, repaint changes, alternate-screen patterns, and truncated windows. Do not copy private transcripts.
+  - Dependencies: T-103, T-107
+  - Acceptance tests: AT-112, AT-203, AT-204, AT-202, AT-300 through AT-307, AT-709
   - Commit: `test(fixtures): add synthetic agent answer corpus`
 
 - [ ] **T-202: Implement the conservative LaTeX scanner**
@@ -162,9 +168,9 @@
 ## Phase 5 - Herdr Protocol and One-Shot Workers
 
 - [ ] **T-501: Implement strict Herdr event decoding**
-  - Scope: Parse bounded `HERDR_PLUGIN_EVENT_JSON`, allow supported event/status shapes, reject malformed ids and oversized payloads, and avoid logging full events.
-  - Dependencies: T-104, T-204
-  - Acceptance tests: AT-100 through AT-102, AT-609
+  - Scope: Parse bounded `HERDR_PLUGIN_EVENT_JSON`, allow canonical Claude Code, Codex, Pi, and OpenCode event/status shapes, reject malformed or unsupported agent ids and oversized payloads, and avoid logging full events.
+  - Dependencies: T-104, T-107, T-204
+  - Acceptance tests: AT-100 through AT-102, AT-112, AT-609
   - Commit: `feat(herdr): decode bounded plugin events`
 
 - [ ] **T-502: Implement the bounded Herdr socket client**
@@ -176,13 +182,13 @@
 - [ ] **T-503: Build the fake Herdr server harness**
   - Scope: Simulate pane reads, pane lifecycle, layout, metadata, plugin pane opening, graphics capability, graphics updates, errors, delays, disconnects, and request recording.
   - Dependencies: T-502
-  - Acceptance tests: Supports AT-100 through AT-111 and AT-500 through AT-511
+  - Acceptance tests: Supports AT-100 through AT-112 and AT-500 through AT-511
   - Commit: `test(herdr): add fake socket integration server`
 
 - [ ] **T-504: Implement the agent-status event worker**
   - Scope: Connect event decoding, lifecycle state, baseline capture, stable completion reads, boundary resolution, scanning, rendering, generation checks, and processed digests in a bounded process.
   - Dependencies: T-305, T-404, T-501, T-503
-  - Acceptance tests: AT-103 through AT-111, AT-200 through AT-208, AT-511, AT-601
+  - Acceptance tests: AT-103 through AT-112, AT-200 through AT-208, AT-511, AT-601
   - Commit: `feat(events): process agent completion hooks`
 
 - [ ] **T-505: Implement one-shot startup cleanup**
@@ -226,7 +232,7 @@
 ## Phase 7 - Integrated Hardening
 
 - [ ] **T-701: Add the full lifecycle integration matrix**
-  - Scope: Run valid, no-formula, code, price, variable, multiple, invalid, limits, timeout, recovery, repeated prompt, truncation, duplicate status, viewer close, and resize sequences through the fake server.
+  - Scope: Run Claude Code, Codex, Pi, and OpenCode through valid-math and completion cases, then run no-formula, code, price, variable, multiple, invalid, limits, timeout, recovery, repeated prompt, truncation, duplicate status, viewer close, and resize sequences through the fake server.
   - Dependencies: T-504, T-506, T-603
   - Acceptance tests: All applicable P0 Integration cases
   - Commit: `test(integration): cover the full formula lifecycle`
@@ -264,9 +270,9 @@
   - Commit: `docs(test): record clean local-link verification`
 
 - [ ] **T-802: Run the Ghostty runtime matrix**
-  - Scope: In real Herdr and Ghostty, test first render, same-viewer update, no formula, focus, resize, invalid preservation, limit rejection, timeout recovery, viewer closure, and recreation.
+  - Scope: In real Herdr and Ghostty, run Claude Code, Codex, Pi, and OpenCode separately; record each canonical agent id, lifecycle authority, installed integration version, status sequence, and valid-math render; then test first render, same-viewer update, no formula, focus, resize, invalid preservation, limit rejection, timeout recovery, viewer closure, and recreation.
   - Dependencies: T-801
-  - Acceptance tests: AT-107, AT-108, AT-500 through AT-509, AT-511, AT-703
+  - Acceptance tests: AT-100, AT-107, AT-108, AT-112, AT-500 through AT-509, AT-511, AT-703
   - Commit: `docs(test): record Ghostty runtime evidence`
 
 - [ ] **T-803: Verify default and named session isolation**
@@ -297,7 +303,7 @@
 ## Phase 9 - Public Documentation and Release
 
 - [ ] **T-901: Write tested installation and usage documentation**
-  - Scope: Replace planning status with clean install, local link, configuration, first use, diagnose, update/reinstall, uninstall, and limitations based on actual commands.
+  - Scope: Replace planning status with clean install, local link, configuration, first use, supported coding-agent matrix, required Herdr integrations, diagnose, update/reinstall, uninstall, and limitations based on actual commands.
   - Dependencies: T-806
   - Acceptance tests: AT-004 through AT-006, AT-010, AT-705 through AT-707
   - Commit: `docs(readme): add tested install and usage guide`
