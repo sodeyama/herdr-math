@@ -140,7 +140,7 @@ Responsibilities:
 
 - Interpret `working`, `blocked`, `done`, `idle`, and `unknown`
 - Create a new generation for each accepted `working` event
-- Ignore unsupported agents
+- Treat panes with no agent or an unsupported agent as successful no-ops after authoritative `pane.get` verification
 - Ensure `done` and `idle` for the same final pane content are idempotent
 - Prevent a stale completion worker from rendering after a newer `working` generation
 - Apply expiry and stale-lock rules

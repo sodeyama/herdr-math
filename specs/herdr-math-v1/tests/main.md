@@ -146,13 +146,13 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - When the worker runs
 - Then it returns `event_invalid`, performs no pane read or state mutation outside a bounded diagnostic, and exits safely.
 
-### AT-102 - Unsupported agent
+### AT-102 - Non-agent or unsupported pane
 
 - Priority: P0
 - Evidence: Unit, Integration
-- Given a valid status event whose authoritative `pane.get` result identifies an agent outside the v1 allowlist
+- Given a valid status event whose authoritative `pane.get` result identifies no agent or an agent outside the v1 allowlist
 - When the worker runs
-- Then it records `agent_unsupported` at debug level and performs no baseline, rendering, or viewer action.
+- Then it returns a successful ignored outcome, performs no baseline, rendering, or viewer action, and does not report an event failure.
 
 ### AT-103 - Working creates one generation
 
