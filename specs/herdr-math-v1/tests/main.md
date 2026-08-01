@@ -329,6 +329,26 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Then the resolver returns the inserted region with strategy `middle_insertion`.
 - And it fails closed when either side is absent, ambiguous, reordered, the preserved gap differs, or the comparison does not prove a positive insertion.
 
+### AT-210 - Eligible anchors beyond blank tail rows
+
+- Priority: P0
+- Evidence: Unit, Runtime
+- Given a bounded alternate-screen baseline ending in more physical blank or short rows than the tail-anchor limit
+- When fingerprint creation scans the baseline
+- Then it searches up to the pane-read line limit and stores the nearest eligible anchors until the anchor-count limit is reached.
+- And persisted line offsets remain bounded metadata without storing line content.
+
+### AT-211 - Alternate-screen middle replacement
+
+- Priority: P0
+- Evidence: Unit, Integration, Runtime
+- Given an alternate-screen agent replaces a working progress region with its completed answer instead of preserving the baseline gap
+- When a unique context-qualified anchor before the region and a unique forward-context-qualified anchor after it retain their order
+- Then the resolver returns only the bounded replacement region with strategy `middle_replacement`.
+- And each formula already present in the baseline gap is excluded by a keyed formula digest before rendering.
+- And absent, ambiguous, reordered, oversized, or unscannable evidence fails closed without rendering.
+- And no formula source, delimiter contents, or reversible transcript data is persisted.
+
 ## D. LaTeX Scanner
 
 ### AT-300 - Inline formula

@@ -133,6 +133,18 @@
   - Acceptance tests: AT-207, AT-208, AT-608, AT-609
   - Commit: `test(boundary): enforce privacy and complexity limits`
 
+- [ ] **T-307: Collect eligible anchors across alternate-screen tails**
+  - Scope: Scan the bounded baseline until the nearest eligible anchor-count limit is filled, without allowing blank or short tail rows to consume that limit.
+  - Dependencies: T-306
+  - Acceptance tests: AT-208, AT-210
+  - Commit: `fix(boundary): collect eligible tail anchors`
+
+- [ ] **T-308: Resolve alternate-screen replacement regions**
+  - Scope: Add following-context anchor fingerprints, adjacent-gap formula HMACs, conservative middle-replacement resolution, and baseline-formula exclusion before rendering.
+  - Dependencies: T-307, T-202
+  - Acceptance tests: AT-207 through AT-211, AT-608, AT-609
+  - Commit: `feat(boundary): resolve alternate-screen replacements`
+
 ## Phase 4 - Renderer Decision and Implementation
 
 - [x] **T-401: Freeze the release formula corpus**
@@ -188,7 +200,7 @@
 - [x] **T-504: Implement the agent-status event worker**
   - Scope: Connect event decoding, immediate bounded working capture, authoritative `pane.get` and `agent.get` agent/status/revision/sequence resolution, supported-agent allowlisting, lifecycle state, stable completion reads, boundary resolution, scanning, rendering, generation checks, and processed digests in a bounded process.
   - Dependencies: T-305, T-404, T-501, T-503
-  - Acceptance tests: AT-103 through AT-113, AT-200 through AT-209, AT-511, AT-601
+  - Acceptance tests: AT-103 through AT-113, AT-200 through AT-211, AT-511, AT-601
   - Commit: `feat(events): process agent completion hooks`
 
 - [x] **T-505: Implement one-shot startup cleanup**
