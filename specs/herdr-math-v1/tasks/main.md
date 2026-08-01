@@ -243,7 +243,7 @@
   - Acceptance tests: AT-101, AT-105, AT-111, AT-506, AT-601 through AT-604
   - Commit: `test(security): harden state and Herdr protocol boundaries`
 
-- [ ] **T-703: Add privacy, network, and executable-path gates**
+- [x] **T-703: Add privacy, network, and executable-path gates**
   - Scope: Run sentinel scans across state/log/output, deny network, scan source for environment dumps and executable input paths, and audit release fixtures and artifacts.
   - Dependencies: T-404, T-701
   - Acceptance tests: AT-207, AT-405, AT-406, AT-608, AT-609, AT-709
