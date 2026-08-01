@@ -18,6 +18,7 @@ This directory separates product intent, target design, and historical evidence 
 - [Named-session restart evidence](evidence/2026-08-01-session-restart.md) records state isolation, stale-lock cleanup, and restart recovery.
 - [macOS arm64 evidence](evidence/2026-08-01-platform-macos-arm64.md) records fresh installation and native artifact verification.
 - [Licensing and notices](licensing.md) defines the project license, prototype boundary, dependency policy, and release notice gate.
+- [Privacy](../PRIVACY.md), [security](../SECURITY.md), [support](../SUPPORT.md), [contributing](../CONTRIBUTING.md), and the [changelog](../CHANGELOG.md) define the public maintenance policies.
 
 ## Specification
 

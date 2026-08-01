@@ -320,7 +320,7 @@
   - Acceptance tests: AT-004 through AT-006, AT-010, AT-705 through AT-707
   - Commit: `docs(readme): add tested install and usage guide`
 
-- [ ] **T-902: Add contribution, security, changelog, and support files**
+- [x] **T-902: Add contribution, security, changelog, and support files**
   - Scope: Add `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, support policy, issue templates if needed, privacy statement, and disclosure instructions.
   - Dependencies: T-101, T-705
   - Acceptance tests: AT-706 through AT-709
@@ -380,6 +380,7 @@
 
 ## Current Next Task
 
-Continue with **T-902**. T-901 documentation is implemented, but its checkbox remains open until tagged install,
-same-tag reinstall, and managed uninstall evidence close AT-004, AT-005, and AT-010. T-804 remains an optional P1
-compatibility expansion and does not block the initial Ghostty-only release scope.
+Continue with **T-904**. T-903 remains open because the current Computer Use safety policy blocks direct Ghostty
+capture; do not substitute an unverified or unredacted screenshot. T-901 documentation is implemented, but its
+checkbox remains open until tagged install, same-tag reinstall, and managed uninstall evidence close AT-004,
+AT-005, and AT-010. T-804 remains an optional P1 compatibility expansion.

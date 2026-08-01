@@ -77,6 +77,11 @@ herdr plugin action invoke diagnose --plugin io.github.sodeyama.herdr-math
 - [Architecture](docs/architecture.md)
 - [Documentation index](docs/README.md)
 - [Acceptance tests](specs/herdr-math-v1/tests/main.md)
+- [Privacy](PRIVACY.md)
+- [Security](SECURITY.md)
+- [Support](SUPPORT.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## Development
 
