@@ -16,6 +16,7 @@ export const HERDR_CLIENT_LIMITS = Object.freeze({
   socketPathBytes: 4096,
   pingTimeoutMs: 2000,
   paneGetTimeoutMs: 2000,
+  agentGetTimeoutMs: 2000,
   paneReadTimeoutMs: 2000,
   paneListTimeoutMs: 2000,
   paneMetadataTimeoutMs: 2000,
@@ -45,6 +46,10 @@ export interface HerdrPaneSnapshot {
   tokens?: Readonly<Record<string, string>>;
 }
 
+export interface HerdrAgentSnapshot extends HerdrPaneSnapshot {
+  stateChangeSequence: number;
+}
+
 export interface HerdrServerInfo {
   version: string;
   protocol: number;
@@ -61,6 +66,7 @@ export interface HerdrPaneReadSnapshot {
 export interface HerdrSocketClientOptions {
   pingTimeoutMs?: number;
   paneGetTimeoutMs?: number;
+  agentGetTimeoutMs?: number;
   paneReadTimeoutMs?: number;
   paneListTimeoutMs?: number;
   paneMetadataTimeoutMs?: number;
@@ -132,6 +138,7 @@ export interface HerdrGraphicsSetRequest {
 
 type HerdrRequest =
   | { id: string; method: "ping"; params: Record<string, never> }
+  | { id: string; method: "agent.get"; params: { target: string } }
   | { id: string; method: "pane.get"; params: { pane_id: string } }
   | { id: string; method: "pane.list"; params: { workspace_id: string } }
   | { id: string; method: "pane.layout"; params: { pane_id: string } }
@@ -171,6 +178,7 @@ type HerdrRequest =
 export class HerdrSocketClient {
   readonly #pingTimeoutMs: number;
   readonly #paneGetTimeoutMs: number;
+  readonly #agentGetTimeoutMs: number;
   readonly #paneReadTimeoutMs: number;
   readonly #paneListTimeoutMs: number;
   readonly #paneMetadataTimeoutMs: number;
@@ -188,6 +196,11 @@ export class HerdrSocketClient {
       options.paneGetTimeoutMs,
       HERDR_CLIENT_LIMITS.paneGetTimeoutMs,
       "paneGetTimeoutMs"
+    );
+    this.#agentGetTimeoutMs = boundedOverride(
+      options.agentGetTimeoutMs,
+      HERDR_CLIENT_LIMITS.agentGetTimeoutMs,
+      "agentGetTimeoutMs"
     );
     this.#paneReadTimeoutMs = boundedOverride(
       options.paneReadTimeoutMs,
@@ -239,6 +252,19 @@ export class HerdrSocketClient {
       params: { pane_id: paneId }
     };
     return this.#request(outbound, this.#paneGetTimeoutMs, parsePaneGetResult);
+  }
+
+  agentGet(paneId: string): Promise<OperationResult<HerdrAgentSnapshot>> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(paneId)) {
+      return Promise.resolve(protocolFailure());
+    }
+
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "agent.get",
+      params: { target: paneId }
+    };
+    return this.#request(outbound, this.#agentGetTimeoutMs, parseAgentGetResult);
   }
 
   paneGetIfPresent(paneId: string): Promise<OperationResult<HerdrPaneSnapshot | null>> {
@@ -513,6 +539,19 @@ function parsePaneGetResult(value: unknown): HerdrPaneSnapshot {
     throw new HerdrMathError("herdr_protocol_error");
   }
   return parsePaneInfo(value.pane);
+}
+
+function parseAgentGetResult(value: unknown): HerdrAgentSnapshot {
+  if (!isRecord(value) || value.type !== "agent_info" || !isRecord(value.agent)) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  if (!Number.isSafeInteger(value.agent.state_change_seq) || (value.agent.state_change_seq as number) < 0) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  return Object.freeze({
+    ...parsePaneInfo(value.agent),
+    stateChangeSequence: value.agent.state_change_seq as number
+  });
 }
 
 function parsePaneInfo(pane: Record<string, unknown>): HerdrPaneSnapshot {

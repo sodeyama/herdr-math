@@ -10,6 +10,7 @@ export interface FakePaneState {
   focused: boolean;
   agent_status: FakeAgentStatus;
   revision: number;
+  state_change_seq?: number;
   agent?: string | null;
   agent_session?: {
     source: string;

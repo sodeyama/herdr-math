@@ -251,6 +251,15 @@ export class FakeHerdrServer {
     switch (request.method) {
       case "ping":
         return this.#sendResult(socket, request.id, { type: "pong", version: "0.7.5", protocol: 17 });
+      case "agent.get": {
+        const target = stringParam(request.params, "target");
+        const pane = target === null ? undefined : this.#panes.get(target);
+        if (pane === undefined) return this.#sendError(socket, request.id, "not_found", "agent not found");
+        return this.#sendResult(socket, request.id, {
+          type: "agent_info",
+          agent: { ...clonePane(pane), state_change_seq: pane.state_change_seq ?? pane.revision }
+        });
+      }
       case "pane.get": {
         const pane = paneId === null ? undefined : this.#panes.get(paneId);
         if (pane === undefined) return this.#sendError(socket, request.id, "not_found", "pane not found");

@@ -7,7 +7,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { POLICY_LIMITS } from "../../src/core/limits.js";
-import { HERDR_CLIENT_LIMITS, HerdrSocketClient, type HerdrPaneSnapshot } from "../../src/herdr/socket-client.js";
+import {
+  HERDR_CLIENT_LIMITS,
+  HerdrSocketClient,
+  type HerdrAgentSnapshot,
+  type HerdrPaneSnapshot
+} from "../../src/herdr/socket-client.js";
 
 interface WireRequest {
   id: string;
@@ -105,6 +110,48 @@ describe("HerdrSocketClient", () => {
       expect(request.id).toMatch(/^[0-9a-f-]{36}$/);
     }
     expect(new Set(requests.map(({ id }) => id))).toHaveLength(requests.length);
+  });
+
+  it("requests and validates the authoritative agent state sequence", async () => {
+    let captured: WireRequest | undefined;
+    const server = await startServer((socket, request) => {
+      captured = request;
+      socket.end(
+        `${JSON.stringify({
+          id: request.id,
+          result: {
+            type: "agent_info",
+            agent: {
+              pane_id: "w1:p1",
+              terminal_id: "term-1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              focused: true,
+              agent_status: "done",
+              agent: "codex",
+              revision: 42,
+              state_change_seq: 5098
+            }
+          }
+        })}\n`
+      );
+    });
+
+    expect(await new HerdrSocketClient(server.path).agentGet("w1:p1")).toEqual({
+      ok: true,
+      value: {
+        paneId: "w1:p1",
+        workspaceId: "w1",
+        tabId: "w1:t1",
+        focused: true,
+        agent: "codex",
+        agentSession: null,
+        status: "done",
+        revision: 42,
+        stateChangeSequence: 5098
+      } satisfies HerdrAgentSnapshot
+    });
+    expect(captured).toMatchObject({ method: "agent.get", params: { target: "w1:p1" } });
   });
 
   it("supports fragmented CRLF responses and reconnects after each request", async () => {
@@ -271,6 +318,9 @@ describe("HerdrSocketClient", () => {
     );
     expect(
       () => new HerdrSocketClient("socket", { paneGetTimeoutMs: HERDR_CLIENT_LIMITS.paneGetTimeoutMs + 1 })
+    ).toThrow(TypeError);
+    expect(
+      () => new HerdrSocketClient("socket", { agentGetTimeoutMs: HERDR_CLIENT_LIMITS.agentGetTimeoutMs + 1 })
     ).toThrow(TypeError);
     expect(
       () => new HerdrSocketClient("socket", { paneReadTimeoutMs: HERDR_CLIENT_LIMITS.paneReadTimeoutMs + 1 })
