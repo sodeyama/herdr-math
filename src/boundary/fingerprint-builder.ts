@@ -115,8 +115,9 @@ function buildSuffixWindows(input: string, secret: Uint8Array) {
 function buildTailAnchors(input: string, secret: Uint8Array) {
   const anchors: FingerprintStateV1["baseline"]["tail_anchors"] = [];
   let lineEnd = input.length;
+  let lineIndex = 0;
 
-  for (let lineIndex = 0; lineIndex < FINGERPRINT_SCHEMA_LIMITS.maxTailAnchors; lineIndex += 1) {
+  while (lineIndex < POLICY_LIMITS.paneReadLines && anchors.length < FINGERPRINT_SCHEMA_LIMITS.maxTailAnchors) {
     const newline = input.lastIndexOf("\n", Math.max(0, lineEnd - 1));
     const lineStart = newline === -1 ? 0 : newline + 1;
     const line = input.slice(lineStart, lineEnd);
@@ -137,6 +138,7 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
       break;
     }
     lineEnd = newline;
+    lineIndex += 1;
   }
 
   const orderedAnchors = [...anchors].sort((left, right) => {

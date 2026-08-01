@@ -146,6 +146,18 @@ describe("baseline fingerprint builder", () => {
     expect(JSON.stringify(state)).not.toContain(gap);
   });
 
+  it("collects eligible anchors beyond blank alternate-screen tail rows", () => {
+    const secret = Buffer.alloc(32, 8);
+    const first = "Synthetic older eligible anchor with unique value 1234567890";
+    const second = "Synthetic nearer eligible anchor with unique value abcdefghij";
+    const blankTail = Array.from({ length: 40 }, () => "").join("\n");
+    const state = buildBaselineFingerprint(`${first}\n${second}\n${blankTail}`, metadata(), secret);
+
+    expect(state.baseline.tail_anchors).toHaveLength(2);
+    expect(state.baseline.tail_anchors.map(({ line_index_from_end }) => line_index_from_end)).toEqual([40, 41]);
+    expect(state.baseline.tail_anchors.every(({ end_offset }) => end_offset !== undefined)).toBe(true);
+  });
+
   it("derives path-safe non-reversible state keys", () => {
     const secret = Buffer.alloc(32, 1);
     const key = deriveStateKey("pane", "session/path\\pane", secret);

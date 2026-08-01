@@ -116,7 +116,7 @@ function isBaseline(value: unknown): boolean {
           (item.end_offset !== undefined && isFingerprintDigest(item.next_anchor_gap_digest))) &&
         isCount(item.context_characters, FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters) &&
         isFingerprintDigest(item.context_digest) &&
-        isCount(item.line_index_from_end, FINGERPRINT_SCHEMA_LIMITS.maxTailAnchors - 1)
+        isCount(item.line_index_from_end, POLICY_LIMITS.paneReadLines - 1)
     )
   );
 }

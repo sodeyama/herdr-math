@@ -372,6 +372,7 @@ function assertUsableFingerprint(state: FingerprintStateV1): void {
         !isNonNegativeInteger(anchor.context_characters) ||
         anchor.context_characters > FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters ||
         !isNonNegativeInteger(anchor.line_index_from_end) ||
+        anchor.line_index_from_end >= POLICY_LIMITS.paneReadLines ||
         (anchor.end_offset !== undefined &&
           (!isPositiveInteger(anchor.end_offset) ||
             anchor.end_offset > baseline.character_count ||
