@@ -121,7 +121,7 @@
   - Acceptance tests: AT-600 through AT-605, AT-610
   - Commit: `feat(state): add atomic session-scoped storage`
 
-- [ ] **T-305: Implement pure lifecycle transitions**
+- [x] **T-305: Implement pure lifecycle transitions**
   - Scope: Model working, blocked, done, idle, unknown, missing baseline, duplicate final content, new generation, and occupant replacement without Herdr I/O.
   - Dependencies: T-303, T-304
   - Acceptance tests: AT-103 through AT-111, AT-601, AT-603
