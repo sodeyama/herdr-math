@@ -23,6 +23,7 @@ import {
 import { createPaneStatePaths, type PaneStatePaths } from "../../src/state/paths.js";
 import { loadPaneState } from "../../src/state/store.js";
 import { deriveViewerSourceToken, VIEWER_IDENTITY } from "../../src/viewer/ownership.js";
+import { ViewerPresenter } from "../../src/viewer/presenter.js";
 import { registerViewer } from "../../src/viewer/runtime.js";
 import { FakeHerdrServer } from "./fake-herdr-server.js";
 import { createFakePane, type FakeStatusEvent } from "./fake-herdr-types.js";
@@ -47,6 +48,7 @@ export class FullLifecycleRig {
     clientOptions: HerdrSocketClientOptions
   ) {
     this.client = new HerdrSocketClient(server.socketPath, clientOptions);
+    const presenter = new ViewerPresenter(this.client, () => Promise.resolve());
     this.#dependencies = {
       client: this.client,
       stateDirectory,
@@ -60,7 +62,12 @@ export class FullLifecycleRig {
         this.renderedFormulas.push(request.formulas.map(({ latex, display }) => ({ latex, display })));
         return this.renderer(request);
       },
-      publish: (request) => publishImage(request, { client: this.client, sessionIdentity: server.socketPath })
+      publish: (request) =>
+        publishImage(request, {
+          client: this.client,
+          sessionIdentity: server.socketPath,
+          present: (presentation) => presenter.present(presentation)
+        })
     };
   }
 

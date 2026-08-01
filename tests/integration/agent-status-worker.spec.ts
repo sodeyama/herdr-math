@@ -20,6 +20,7 @@ import { publishImage } from "../../src/graphics/publisher.js";
 import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
 import { createPaneStatePaths } from "../../src/state/paths.js";
 import { loadPaneState } from "../../src/state/store.js";
+import { ViewerPresenter } from "../../src/viewer/presenter.js";
 import { runAgentStatusHook } from "../../src/on-agent-status.js";
 import { FakeHerdrServer } from "../support/fake-herdr-server.js";
 import { createFakePane, type FakePaneState, type FakeStatusEvent } from "../support/fake-herdr-types.js";
@@ -139,8 +140,14 @@ describe("agent status worker", () => {
   it("publishes a completed formula through the owned graphics viewer", async () => {
     const rig = await createRig();
     const client = new HerdrSocketClient(rig.server.socketPath);
+    const presenter = new ViewerPresenter(client, () => Promise.resolve());
     rig.dependencies.client = client;
-    rig.dependencies.publish = (request) => publishImage(request, { client, sessionIdentity: rig.server.socketPath });
+    rig.dependencies.publish = (request) =>
+      publishImage(request, {
+        client,
+        sessionIdentity: rig.server.socketPath,
+        present: (presentation) => presenter.present(presentation)
+      });
     const baseline = "End-to-end baseline before the formula response.";
     rig.server.setPaneOutput("w1:p1", baseline);
     expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);

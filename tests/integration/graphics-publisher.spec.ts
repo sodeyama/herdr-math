@@ -7,6 +7,7 @@ import { POLICY_LIMITS } from "../../src/core/limits.js";
 import { publishImage } from "../../src/graphics/publisher.js";
 import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
 import { deriveViewerSourceToken, VIEWER_IDENTITY } from "../../src/viewer/ownership.js";
+import { ViewerPresenter } from "../../src/viewer/presenter.js";
 import { FakeHerdrServer } from "../support/fake-herdr-server.js";
 import { createFakePane, type FakeHerdrServerOptions } from "../support/fake-herdr-types.js";
 
@@ -154,6 +155,7 @@ function publish(
   renderedImage: RenderedImage,
   existingViewerPaneId?: string
 ) {
+  const presenter = new ViewerPresenter(client, () => Promise.resolve());
   return publishImage(
     {
       sourcePaneId: "w1:p1",
@@ -162,7 +164,11 @@ function publish(
       image: renderedImage,
       ...(existingViewerPaneId === undefined ? {} : { existingViewerPaneId })
     },
-    { client, sessionIdentity: server.socketPath }
+    {
+      client,
+      sessionIdentity: server.socketPath,
+      present: (presentation) => presenter.present(presentation)
+    }
   );
 }
 
