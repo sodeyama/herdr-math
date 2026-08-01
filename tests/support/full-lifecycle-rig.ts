@@ -12,14 +12,14 @@ import {
   type AgentStatusWorkerOutcome
 } from "../../src/events/agent-status-worker.js";
 import { publishImage } from "../../src/graphics/publisher.js";
-import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
+import { HerdrSocketClient, type HerdrSocketClientOptions } from "../../src/herdr/socket-client.js";
 import {
   renderWithBackend,
   type RendererBackend,
   type RendererBackendContext,
   type RendererFormula
 } from "../../src/renderer/render.js";
-import { createPaneStatePaths } from "../../src/state/paths.js";
+import { createPaneStatePaths, type PaneStatePaths } from "../../src/state/paths.js";
 import { loadPaneState } from "../../src/state/store.js";
 import { deriveViewerSourceToken, VIEWER_IDENTITY } from "../../src/viewer/ownership.js";
 import { registerViewer } from "../../src/viewer/runtime.js";
@@ -41,9 +41,10 @@ export class FullLifecycleRig {
 
   private constructor(
     readonly server: FakeHerdrServer,
-    readonly stateDirectory: string
+    readonly stateDirectory: string,
+    clientOptions: HerdrSocketClientOptions
   ) {
-    this.client = new HerdrSocketClient(server.socketPath);
+    this.client = new HerdrSocketClient(server.socketPath, clientOptions);
     this.#dependencies = {
       client: this.client,
       stateDirectory,
@@ -60,7 +61,7 @@ export class FullLifecycleRig {
     };
   }
 
-  static async start(agent: SupportedAgent): Promise<FullLifecycleRig> {
+  static async start(agent: SupportedAgent, clientOptions: HerdrSocketClientOptions = {}): Promise<FullLifecycleRig> {
     const server = await FakeHerdrServer.start({
       panes: [
         createFakePane({
@@ -72,7 +73,7 @@ export class FullLifecycleRig {
     });
     try {
       const stateDirectory = await mkdtemp(join(tmpdir(), "herdr-math-full-lifecycle-"));
-      return new FullLifecycleRig(server, stateDirectory);
+      return new FullLifecycleRig(server, stateDirectory, clientOptions);
     } catch (error) {
       await server.close();
       throw error;
@@ -106,7 +107,11 @@ export class FullLifecycleRig {
   }
 
   process(event: FakeStatusEvent): Promise<OperationResult<AgentStatusWorkerOutcome>> {
-    return processAgentStatusEvent(JSON.stringify(event), this.#dependencies);
+    return this.processRaw(JSON.stringify(event));
+  }
+
+  processRaw(source: string): Promise<OperationResult<AgentStatusWorkerOutcome>> {
+    return processAgentStatusEvent(source, this.#dependencies);
   }
 
   async registerViewer(viewerPaneId: string): Promise<void> {
@@ -125,8 +130,12 @@ export class FullLifecycleRig {
   }
 
   async state() {
+    return loadPaneState(this.paths(), NOW);
+  }
+
+  paths(): PaneStatePaths {
     const sessionKey = deriveStateKey("session", this.server.socketPath, SECRET);
-    return loadPaneState(createPaneStatePaths(this.stateDirectory, sessionKey, "w1:p1", SECRET), NOW);
+    return createPaneStatePaths(this.stateDirectory, sessionKey, "w1:p1", SECRET);
   }
 
   async close(): Promise<void> {
