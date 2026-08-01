@@ -3,6 +3,12 @@ import { Buffer } from "node:buffer";
 import { failure, success, type Formula, type OperationResult, type RenderedImage } from "../core/contracts.js";
 import { HerdrMathError, serializeError, type SafeLimitKind } from "../core/errors.js";
 import { POLICY_LIMITS } from "../core/limits.js";
+import {
+  composeRendererDocument,
+  type RendererDocument,
+  type RendererDocumentLimits,
+  type RendererDocumentSegment
+} from "./document.js";
 
 export type RendererFormula = Readonly<Pick<Formula, "latex" | "display">>;
 
@@ -10,6 +16,9 @@ export interface RendererLimits {
   formulasPerAnswer: number;
   charactersPerFormula: number;
   aggregateFormulaCharacters: number;
+  responseDocumentBytes: number;
+  responseDocumentLines: number;
+  responseDocumentBlocks: number;
   renderDurationMs: number;
   imageWidthPx: number;
   imageHeightPx: number;
@@ -25,7 +34,7 @@ export interface RendererBackendContext {
 }
 
 export interface RendererBackend {
-  render(formulas: readonly RendererFormula[], context: RendererBackendContext): Promise<RenderedImage>;
+  render(document: RendererDocument, context: RendererBackendContext): Promise<RenderedImage>;
   close(): Promise<void>;
 }
 
@@ -37,6 +46,9 @@ const DEFAULT_RENDERER_LIMITS: Readonly<RendererLimits> = Object.freeze({
   formulasPerAnswer: POLICY_LIMITS.formulasPerAnswer,
   charactersPerFormula: POLICY_LIMITS.charactersPerFormula,
   aggregateFormulaCharacters: POLICY_LIMITS.aggregateFormulaCharacters,
+  responseDocumentBytes: POLICY_LIMITS.responseDocumentBytes,
+  responseDocumentLines: POLICY_LIMITS.responseDocumentLines,
+  responseDocumentBlocks: POLICY_LIMITS.responseDocumentBlocks,
   renderDurationMs: POLICY_LIMITS.renderDurationMs,
   imageWidthPx: POLICY_LIMITS.imageWidthPx,
   imageHeightPx: POLICY_LIMITS.imageHeightPx,
@@ -52,6 +64,27 @@ export async function renderWithBackend(
   backend: RendererBackend,
   options: RendererOptions = {}
 ): Promise<OperationResult<RenderedImage>> {
+  return renderPreparedWithBackend((limits) => success(composeFormulaDocument(formulas, limits)), backend, options);
+}
+
+export async function renderResponseWithBackend(
+  text: string,
+  formulas: readonly Formula[],
+  backend: RendererBackend,
+  options: RendererOptions = {}
+): Promise<OperationResult<RenderedImage>> {
+  return renderPreparedWithBackend(
+    (limits) => composeRendererDocument(text, formulas, documentLimits(limits)),
+    backend,
+    options
+  );
+}
+
+async function renderPreparedWithBackend(
+  prepare: (limits: Readonly<RendererLimits>) => OperationResult<RendererDocument>,
+  backend: RendererBackend,
+  options: RendererOptions
+): Promise<OperationResult<RenderedImage>> {
   const limits = resolveLimits(options.limits);
   const abortController = new AbortController();
   const startedAt = Date.now();
@@ -62,7 +95,11 @@ export async function renderWithBackend(
   );
 
   try {
-    validateRendererInput(formulas, limits);
+    const prepared = prepare(limits);
+    if (!prepared.ok) {
+      outcome = failure(prepared.error);
+      return outcome;
+    }
     const timeout = new Promise<never>((_resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
         timedOut = true;
@@ -72,7 +109,7 @@ export async function renderWithBackend(
       timer = timeoutHandle;
     });
     const image = await Promise.race([
-      backend.render(formulas, {
+      backend.render(prepared.value, {
         signal: abortController.signal,
         limits,
         deadlineMs: startedAt + limits.renderDurationMs
@@ -109,18 +146,24 @@ export function assertImageDimensions(width: number, height: number, limits: Rea
   }
 }
 
-function validateRendererInput(formulas: readonly RendererFormula[], limits: Readonly<RendererLimits>): void {
+function composeFormulaDocument(
+  formulas: readonly RendererFormula[],
+  limits: Readonly<RendererLimits>
+): RendererDocument {
   if (formulas.length === 0) throw new HerdrMathError("formula_not_found");
   if (formulas.length > limits.formulasPerAnswer) {
     throw limitError("renderer_input_limit", "formula_count", limits.formulasPerAnswer, formulas.length);
   }
 
   let aggregate = 0;
+  let textBytes = 0;
+  const segments: RendererDocumentSegment[] = [];
   for (const formula of formulas) {
     if (typeof formula?.latex !== "string" || typeof formula.display !== "boolean" || formula.latex.trim() === "") {
       throw new HerdrMathError("invalid_latex");
     }
     const characters = [...formula.latex].length;
+    textBytes += Buffer.byteLength(formula.latex, "utf8");
     if (characters > limits.charactersPerFormula) {
       throw limitError("renderer_input_limit", "formula_characters", limits.charactersPerFormula, characters);
     }
@@ -133,7 +176,28 @@ function validateRendererInput(formulas: readonly RendererFormula[], limits: Rea
         aggregate
       );
     }
+    if (segments.length > 0) segments.push(Object.freeze({ kind: "text", text: "\n\n" }));
+    segments.push(Object.freeze({ kind: "math", latex: formula.latex, display: formula.display }));
   }
+  return Object.freeze({
+    segments: Object.freeze(segments),
+    textBytes,
+    lineCount: formulas.length,
+    blockCount: formulas.length,
+    formulaCount: formulas.length,
+    formulaCharacters: aggregate
+  });
+}
+
+function documentLimits(limits: Readonly<RendererLimits>): RendererDocumentLimits {
+  return {
+    responseDocumentBytes: limits.responseDocumentBytes,
+    responseDocumentLines: limits.responseDocumentLines,
+    responseDocumentBlocks: limits.responseDocumentBlocks,
+    formulasPerAnswer: limits.formulasPerAnswer,
+    charactersPerFormula: limits.charactersPerFormula,
+    aggregateFormulaCharacters: limits.aggregateFormulaCharacters
+  };
 }
 
 function validateRenderedImage(image: RenderedImage, limits: Readonly<RendererLimits>): void {

@@ -5,10 +5,11 @@ import { chromium } from "playwright";
 import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
 
-import type { RenderedImage } from "../../src/core/contracts.js";
+import type { Formula, RenderedImage } from "../../src/core/contracts.js";
 import { POLICY_LIMITS } from "../../src/core/limits.js";
-import { BrowserRendererBackend } from "../../src/renderer/browser-backend.js";
-import { renderFormulas } from "../../src/renderer/index.js";
+import { BrowserRendererBackend, buildRendererHtml } from "../../src/renderer/browser-backend.js";
+import { composeRendererDocument, type RendererDocument } from "../../src/renderer/document.js";
+import { renderFormulas, renderResponse } from "../../src/renderer/index.js";
 import {
   renderWithBackend,
   type RendererBackend,
@@ -16,6 +17,7 @@ import {
   type RendererFormula,
   type RendererLimits
 } from "../../src/renderer/render.js";
+import { scanLatex } from "../../src/scanner/scan-latex.js";
 
 interface RendererCorpus {
   validCases: Array<{ formulas: RendererFormula[] }>;
@@ -31,6 +33,29 @@ const simpleFormula: RendererFormula = { latex: "x^2+y^2=z^2", display: true };
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 describe("bounded local renderer", () => {
+  it("renders escaped prose and math on a transparent canvas at one base font size", async () => {
+    const text = "Before <unsafe> $E=mc^2$.\n\nThen:\n$$a^2+b^2=c^2$$\nAfter.";
+    const formulas = scanLatex(text);
+    const document = composeRendererDocument(text, formulas);
+    expect(document.ok).toBe(true);
+    if (!document.ok) return;
+
+    const html = buildRendererHtml(document.value, "/* katex */");
+    expect(html).toContain("Before &lt;unsafe&gt;");
+    expect(html).not.toContain("Before <unsafe>");
+    expect(html).toContain("background:transparent");
+    expect(html).toContain("font-size:20px");
+    expect(html).toContain(".katex{font-size:1em}");
+
+    const result = await renderResponse(text, formulas);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const statistics = await sharp(result.value.buffer).ensureAlpha().stats();
+    const alpha = statistics.channels[3];
+    expect(alpha?.min).toBe(0);
+    expect(alpha?.max).toBe(255);
+  }, 30_000);
+
   it("renders the release corpus into a meaningful bounded PNG and closes browser resources", async () => {
     const formulas = corpus.validCases.flatMap((testCase) => testCase.formulas);
     const backend = new BrowserRendererBackend();
@@ -161,7 +186,7 @@ class BlockingBackend implements RendererBackend {
   closeCalls = 0;
   aborted = false;
 
-  render(_formulas: readonly RendererFormula[], context: RendererBackendContext): Promise<RenderedImage> {
+  render(_document: RendererDocument, context: RendererBackendContext): Promise<RenderedImage> {
     return new Promise((_resolve, reject) => {
       context.signal.addEventListener(
         "abort",

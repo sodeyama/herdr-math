@@ -9,12 +9,8 @@ import sharp from "sharp";
 
 import type { RenderedImage } from "../core/contracts.js";
 import { HerdrMathError } from "../core/errors.js";
-import {
-  assertImageDimensions,
-  type RendererBackend,
-  type RendererBackendContext,
-  type RendererFormula
-} from "./render.js";
+import { assertImageDimensions, type RendererBackend, type RendererBackendContext } from "./render.js";
+import type { RendererDocument, RendererDocumentSegment } from "./document.js";
 
 const require = createRequire(import.meta.url);
 const KATEX_CSS_PATH = require.resolve("katex/dist/katex.min.css");
@@ -48,12 +44,12 @@ export class BrowserRendererBackend implements RendererBackend {
   private deniedRequests = 0;
   private closePromise: Promise<void> | undefined;
 
-  async render(formulas: readonly RendererFormula[], renderContext: RendererBackendContext): Promise<RenderedImage> {
+  async render(document: RendererDocument, renderContext: RendererBackendContext): Promise<RenderedImage> {
     const abort = (): void => void this.close();
     renderContext.signal.addEventListener("abort", abort, { once: true });
     try {
-      const markup = buildMarkup(formulas);
       const css = await readFile(KATEX_CSS_PATH, "utf8");
+      const html = buildRendererHtml(document, css);
       if (BROWSER_EXECUTABLE_PATH === undefined) throw new HerdrMathError("renderer_failed", {}, true);
       await this.assertActive(renderContext);
       this.browser = await chromium.launch({
@@ -73,7 +69,7 @@ export class BrowserRendererBackend implements RendererBackend {
       this.page = await this.context.newPage();
       await this.assertActive(renderContext);
       this.page.setDefaultTimeout(remainingMs(renderContext.deadlineMs));
-      await this.page.setContent(pageHtml(css, markup), {
+      await this.page.setContent(html, {
         waitUntil: "load",
         timeout: remainingMs(renderContext.deadlineMs)
       });
@@ -89,6 +85,7 @@ export class BrowserRendererBackend implements RendererBackend {
         type: "png",
         animations: "disabled",
         caret: "hide",
+        omitBackground: true,
         timeout: remainingMs(renderContext.deadlineMs)
       });
       const sharpRemainingMs = remainingMs(renderContext.deadlineMs);
@@ -165,15 +162,16 @@ export class BrowserRendererBackend implements RendererBackend {
   }
 }
 
-function buildMarkup(formulas: readonly RendererFormula[]): string {
+function buildMarkup(segments: readonly RendererDocumentSegment[]): string {
   try {
-    return formulas
-      .map((formula) => {
-        if (DENIED_COMMAND.test(formula.latex) || formula.latex.includes("\0")) {
+    return segments
+      .map((segment) => {
+        if (segment.kind === "text") return escapeHtml(segment.text);
+        if (DENIED_COMMAND.test(segment.latex) || segment.latex.includes("\0")) {
           throw new HerdrMathError("invalid_latex");
         }
-        return katex.renderToString(formula.latex, {
-          displayMode: formula.display,
+        const rendered = katex.renderToString(segment.latex, {
+          displayMode: segment.display,
           throwOnError: true,
           trust: false,
           strict: (code) => (code === "unicodeTextInMathMode" ? "ignore" : "error"),
@@ -182,6 +180,9 @@ function buildMarkup(formulas: readonly RendererFormula[]): string {
           macros: {},
           output: "html"
         });
+        return segment.display
+          ? `<span class="math-display">${rendered}</span>`
+          : `<span class="math-inline">${rendered}</span>`;
       })
       .join("");
   } catch {
@@ -189,8 +190,13 @@ function buildMarkup(formulas: readonly RendererFormula[]): string {
   }
 }
 
-function pageHtml(css: string, markup: string): string {
-  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${css}\nhtml,body{margin:0;background:#fff}#render{box-sizing:border-box;display:flex;flex-direction:column;gap:12px;width:max-content;max-width:4096px;padding:20px;color:#111;font-size:24px}.katex-display{margin:0}</style></head><body><div id="render">${markup}</div></body></html>`;
+export function buildRendererHtml(document: RendererDocument, css: string): string {
+  const markup = buildMarkup(document.segments);
+  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${css}\nhtml,body{margin:0;background:transparent}#render{box-sizing:border-box;width:480px;min-height:1px;padding:20px;color:#e6edf3;background:transparent;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:20px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.katex{font-size:1em}.math-inline{display:inline;white-space:nowrap}.math-display{display:block;margin:.8em 0;text-align:center;white-space:normal}.katex-display{margin:0}</style></head><body><div id="render">${markup}</div></body></html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function isAllowedFontUrl(url: string): boolean {

@@ -10,6 +10,7 @@ import { resolveAnswerFromFingerprint } from "../../src/boundary/fingerprint-res
 import type { RenderedImage } from "../../src/core/contracts.js";
 import { POLICY_LIMITS } from "../../src/core/limits.js";
 import { BrowserRendererBackend } from "../../src/renderer/browser-backend.js";
+import type { RendererDocument } from "../../src/renderer/document.js";
 import {
   renderWithBackend,
   type RendererBackend,
@@ -193,7 +194,7 @@ async function measureRepeatedRendering(): Promise<{
 class BlockingBackend implements RendererBackend {
   closed = false;
 
-  render(_formulas: readonly RendererFormula[], context: RendererBackendContext): Promise<RenderedImage> {
+  render(_document: RendererDocument, context: RendererBackendContext): Promise<RenderedImage> {
     return new Promise((_resolve, reject) => {
       context.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     });

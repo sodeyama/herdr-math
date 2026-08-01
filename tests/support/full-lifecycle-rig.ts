@@ -13,6 +13,7 @@ import {
 } from "../../src/events/agent-status-worker.js";
 import { publishImage } from "../../src/graphics/publisher.js";
 import { HerdrSocketClient, type HerdrSocketClientOptions } from "../../src/herdr/socket-client.js";
+import type { RendererDocument } from "../../src/renderer/document.js";
 import {
   renderWithBackend,
   type RendererBackend,
@@ -176,7 +177,7 @@ class StaticBackend implements RendererBackend {
 }
 
 class BlockingBackend implements RendererBackend {
-  render(_formulas: readonly RendererFormula[], context: RendererBackendContext): Promise<RenderedImage> {
+  render(_document: RendererDocument, context: RendererBackendContext): Promise<RenderedImage> {
     return new Promise((_resolve, reject) => {
       context.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     });
