@@ -57,7 +57,7 @@
   - Acceptance tests: AT-001, AT-002, AT-006, AT-011
   - Commit: `chore(plugin): add public manifest skeleton`
 
-- [ ] **T-106: Add manifest and release metadata validation**
+- [x] **T-106: Add manifest and release metadata validation**
   - Scope: Check version agreement, command targets, paths, platform declarations, unknown events, public text, and forbidden prototype fixture entrypoints.
   - Dependencies: T-105
   - Acceptance tests: AT-002, AT-008, AT-011, AT-706
