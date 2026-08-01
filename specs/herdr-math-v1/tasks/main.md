@@ -237,7 +237,7 @@
   - Acceptance tests: All applicable P0 Integration cases
   - Commit: `test(integration): cover the full formula lifecycle`
 
-- [ ] **T-702: Add adversarial state and protocol tests**
+- [x] **T-702: Add adversarial state and protocol tests**
   - Scope: Test malformed events, oversized JSON, slow responses, disconnects, corrupt state, path traversal attempts, viewer spoofing, lock contention, PID reuse assumptions, and out-of-order generations.
   - Dependencies: T-701
   - Acceptance tests: AT-101, AT-105, AT-111, AT-506, AT-601 through AT-604
