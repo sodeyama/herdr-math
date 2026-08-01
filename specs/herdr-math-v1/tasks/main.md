@@ -291,7 +291,7 @@
   - Acceptance tests: Every automated P0 case
   - Commit: `docs(test): record automated release evidence`
 
-- [ ] **T-706: Extend the integrated presentation matrix**
+- [x] **T-706: Extend the integrated presentation matrix**
   - Scope: Run all four agent structures through conclusion-only extraction, prompt/reasoning/tool formula exclusion, prose/math ordering, Unicode soft-wrap normalization, transparent output, matched typography, single-frame display, multi-frame scrolling, resize, rollback, duplicate delivery, and viewer recreation in the fake server.
   - Dependencies: T-605, T-606, T-607
   - Acceptance tests: AT-309, AT-310, AT-411 through AT-413, AT-503, AT-504, AT-509, AT-511 through AT-513
