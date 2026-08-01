@@ -168,10 +168,10 @@ export function validateManifest(input: ManifestValidationInput): string[] {
   if (
     !sameStrings(
       snapshot.build.map(({ command }) => command.join(" ")),
-      ["npm ci", "npm run build"]
+      ["npm ci", "npm run install:browser", "npm run audit:browser", "npm run build"]
     )
   ) {
-    errors.push("Manifest build commands must run npm ci followed by npm run build.");
+    errors.push("Manifest build commands must install, audit, and build the locked renderer.");
   }
   if (snapshot.startup.length !== 1) errors.push("Manifest must define one startup entrypoint.");
   if (snapshot.actions.length !== 1 || snapshot.actions[0]?.id !== "diagnose")

@@ -9,6 +9,12 @@ platforms = ["macos"]
 command = ["npm", "ci"]
 
 [[build]]
+command = ["npm", "run", "install:browser"]
+
+[[build]]
+command = ["npm", "run", "audit:browser"]
+
+[[build]]
 command = ["npm", "run", "build"]
 
 [[startup]]

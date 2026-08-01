@@ -28,14 +28,20 @@
     "dist/",
     "herdr-plugin.toml",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "scripts/audit-runtime.mjs"
   ],
   "scripts": {
+    "audit:browser": "node scripts/audit-runtime.mjs --browser",
+    "audit:runtime": "node scripts/audit-runtime.mjs",
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run validate:manifest",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run validate:manifest && npm run audit:runtime",
     "format": "prettier --write package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
     "format:check": "prettier --check package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "install:browser": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install --only-shell chromium",
     "lint": "eslint src tests eslint.config.js",
+    "postinstall": "npm run install:browser",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "validate:manifest": "npm run build --silent && node dist/manifest/validate-cli.js"

@@ -21,6 +21,22 @@ const KATEX_CSS_PATH = require.resolve("katex/dist/katex.min.css");
 const KATEX_DIST_PATH = dirname(KATEX_CSS_PATH);
 const KATEX_FONT_PATH = resolve(KATEX_DIST_PATH, "fonts");
 const KATEX_BASE_URL = pathToFileURL(`${KATEX_DIST_PATH}${sep}`).href;
+const PLAYWRIGHT_CORE_PATH = dirname(require.resolve("playwright-core/package.json"));
+const BROWSER_ARCH_DIRECTORY =
+  process.platform === "darwin" && process.arch === "arm64"
+    ? "chrome-headless-shell-mac-arm64"
+    : process.platform === "darwin" && process.arch === "x64"
+      ? "chrome-headless-shell-mac-x64"
+      : undefined;
+const BROWSER_EXECUTABLE_PATH =
+  BROWSER_ARCH_DIRECTORY === undefined
+    ? undefined
+    : resolve(
+        PLAYWRIGHT_CORE_PATH,
+        ".local-browsers/chromium_headless_shell-1234",
+        BROWSER_ARCH_DIRECTORY,
+        "chrome-headless-shell"
+      );
 const DENIED_COMMAND = /\\(?:href|url|includegraphics|htmlClass|htmlId|htmlStyle|htmlData)(?=[^A-Za-z]|$)/;
 const ALLOWED_FONT_EXTENSIONS = new Set([".woff", ".woff2", ".ttf"]);
 
@@ -38,8 +54,13 @@ export class BrowserRendererBackend implements RendererBackend {
     try {
       const markup = buildMarkup(formulas);
       const css = await readFile(KATEX_CSS_PATH, "utf8");
+      if (BROWSER_EXECUTABLE_PATH === undefined) throw new HerdrMathError("renderer_failed", {}, true);
       await this.assertActive(renderContext);
-      this.browser = await chromium.launch({ headless: true, timeout: remainingMs(renderContext.deadlineMs) });
+      this.browser = await chromium.launch({
+        executablePath: BROWSER_EXECUTABLE_PATH,
+        headless: true,
+        timeout: remainingMs(renderContext.deadlineMs)
+      });
       await this.assertActive(renderContext);
       this.context = await this.browser.newContext({
         javaScriptEnabled: false,
