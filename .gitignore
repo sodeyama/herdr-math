@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.log
+*.tgz
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Local Herdr runtime artifacts must stay outside version control.
+.herdr-math/

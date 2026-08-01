@@ -30,5 +30,28 @@
     "LICENSE",
     "README.md"
   ],
-  "scripts": {}
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "npm run typecheck && npm run lint && npm run format:check",
+    "format": "prettier --write package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "lint": "eslint src tests eslint.config.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "prettier": {
+    "printWidth": 120,
+    "semi": true,
+    "singleQuote": false,
+    "trailingComma": "none"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.20.1",
+    "eslint": "10.8.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "4.1.10"
+  }
 }
