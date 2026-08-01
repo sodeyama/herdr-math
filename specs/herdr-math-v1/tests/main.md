@@ -519,6 +519,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given the user closes the owned viewer
 - When the next valid formula answer completes
 - Then stale state is discarded and exactly one replacement viewer is created.
+- And a `pane_not_found` response from `pane.get` is treated as authoritative absence, not as a protocol failure.
 
 ### AT-506 - Viewer ownership validation
 

@@ -263,6 +263,9 @@ The client does not silently fall back to a user-specific socket.
 The socket request for an unwrapped recent pane read uses the protocol enum `recent_unwrapped`. The hyphenated
 `recent-unwrapped` spelling belongs to the Herdr CLI and is not sent over the socket.
 
+For optional pane lookup, the runtime `pane_not_found` error means that the pane is authoritatively absent. Other
+remote errors remain protocol failures and do not authorize state deletion or viewer replacement.
+
 ### 8. Viewer manager
 
 The viewer manager owns the one-to-one mapping between a source pane and a viewer pane.
