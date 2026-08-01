@@ -179,6 +179,13 @@ describe("FakeHerdrServer", () => {
       ok: true,
       value: { cellWidthPx: 0, cellHeightPx: 0 }
     });
+    server.queueResponse("pane.graphics.info", {
+      error: { code: "cell_size_unavailable", message: "host cell size is unavailable" }
+    });
+    expect(await client.paneGraphicsInfo("w1:p2")).toEqual({
+      ok: false,
+      error: { code: "cell_size_unavailable", retryable: false }
+    });
   });
 
   it("injects bounded delays, errors, malformed frames, and disconnects in request order", async () => {

@@ -678,6 +678,7 @@ function parseOkResult(value: unknown): void {
 
 function parseGraphicsRemoteError(error: HerdrWireError): never {
   if (error.code === "feature_disabled") throw new HerdrMathError("graphics_disabled");
+  if (error.code === "cell_size_unavailable") throw new HerdrMathError("cell_size_unavailable");
   throw new HerdrMathError("herdr_protocol_error");
 }
 
