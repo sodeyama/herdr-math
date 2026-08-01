@@ -109,7 +109,7 @@
   - Acceptance tests: AT-103, AT-207, AT-208, AT-605, AT-608
   - Commit: `feat(boundary): create privacy-preserving baselines`
 
-- [ ] **T-303: Implement fingerprint answer resolution**
+- [x] **T-303: Implement fingerprint answer resolution**
   - Scope: Resolve exact prefix, stable checkpoints, sliding windows, and contextual anchors against current text and compare parity with the reference implementation.
   - Dependencies: T-302
   - Acceptance tests: AT-200 through AT-208
