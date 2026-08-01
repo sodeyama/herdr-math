@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildBaselineFingerprint, deriveStateKey } from "../../src/boundary/fingerprint-builder.js";
-import { fingerprintDigest } from "../../src/boundary/fingerprint-digest.js";
+import { fingerprintDigest, formulaFingerprintDigest } from "../../src/boundary/fingerprint-digest.js";
 import { isFingerprintDigest } from "../../src/boundary/fingerprint-schema.js";
 import { loadOrCreateFingerprintSecret } from "../../src/boundary/fingerprint-secret.js";
 import { HerdrMathError, serializeError } from "../../src/core/errors.js";
@@ -144,6 +144,26 @@ describe("baseline fingerprint builder", () => {
     expect(beforeAnchor?.next_anchor_gap_digest).toBe(fingerprintDigest("anchor-gap", gap, secret));
     expect(afterAnchor?.next_anchor_gap_digest).toBeUndefined();
     expect(JSON.stringify(state)).not.toContain(gap);
+  });
+
+  it("fingerprints forward anchor context and formulas in adjacent gaps", () => {
+    const secret = Buffer.alloc(32, 12);
+    const before = "Synthetic prompt anchor with unique value 1234567890";
+    const gap = "\nworking formula $x+y$\n";
+    const after = "Synthetic footer anchor with unique value abcdefghij";
+    const following = "\n\nSynthetic final footer context with unique value 9876543210";
+    const state = buildBaselineFingerprint(`${before}${gap}${after}${following}`, metadata(), secret);
+    const beforeAnchor = state.baseline.tail_anchors.find((anchor) => anchor.end_offset === before.length);
+    const afterAnchor = state.baseline.tail_anchors.find(
+      (anchor) => anchor.end_offset === before.length + gap.length + after.length
+    );
+
+    expect(beforeAnchor?.next_anchor_gap_formula_digests).toEqual([
+      formulaFingerprintDigest({ latex: "x+y", display: false }, secret)
+    ]);
+    expect(afterAnchor?.forward_context_characters).toBe(following.length);
+    expect(afterAnchor?.forward_context_digest).toBe(fingerprintDigest("anchor-forward-context", following, secret));
+    expect(JSON.stringify(state)).not.toContain("x+y");
   });
 
   it("collects eligible anchors beyond blank alternate-screen tail rows", () => {

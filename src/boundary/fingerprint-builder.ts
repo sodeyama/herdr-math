@@ -2,7 +2,8 @@ import { Buffer } from "node:buffer";
 
 import { HerdrMathError } from "../core/errors.js";
 import { POLICY_LIMITS } from "../core/limits.js";
-import { assertFingerprintSecret, fingerprintDigest } from "./fingerprint-digest.js";
+import { scanLatex } from "../scanner/scan-latex.js";
+import { assertFingerprintSecret, fingerprintDigest, formulaFingerprintDigest } from "./fingerprint-digest.js";
 import {
   FINGERPRINT_SCHEMA_LIMITS,
   FINGERPRINT_SCHEMA_VERSION,
@@ -125,8 +126,11 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
       const previousNewline = input.lastIndexOf("\n", Math.max(0, lineStart - 2));
       const contextStart = Math.max(previousNewline + 1, lineStart - FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters);
       const context = input.slice(contextStart, lineStart);
+      const forwardContext = buildForwardContext(input, lineEnd);
       anchors.push({
         end_offset: lineEnd,
+        forward_context_characters: forwardContext.length,
+        forward_context_digest: fingerprintDigest("anchor-forward-context", forwardContext, secret),
         line_characters: line.length,
         line_digest: fingerprintDigest("anchor-line", line, secret),
         context_characters: context.length,
@@ -150,9 +154,29 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
     if (before?.end_offset === undefined || after?.end_offset === undefined) continue;
     const afterStart = after.end_offset - after.line_characters;
     if (afterStart < before.end_offset) continue;
-    before.next_anchor_gap_digest = fingerprintDigest("anchor-gap", input.slice(before.end_offset, afterStart), secret);
+    const gap = input.slice(before.end_offset, afterStart);
+    before.next_anchor_gap_digest = fingerprintDigest("anchor-gap", gap, secret);
+    try {
+      const formulas = scanLatex(gap);
+      before.next_anchor_gap_formula_digests = [
+        ...new Set(formulas.map((formula) => formulaFingerprintDigest(formula, secret)))
+      ];
+    } catch {
+      // Unscannable baseline gaps are not eligible for replacement recovery.
+    }
   }
   return anchors;
+}
+
+function buildForwardContext(input: string, lineEnd: number): string {
+  let contextEnd = lineEnd;
+  for (let line = 0; line < 2; line += 1) {
+    const nextNewline = input.indexOf("\n", contextEnd + 1);
+    contextEnd = nextNewline === -1 ? input.length : nextNewline;
+    if (nextNewline === -1) break;
+  }
+  contextEnd = Math.min(contextEnd, lineEnd + FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters);
+  return input.slice(lineEnd, contextEnd);
 }
 
 function assertInput(input: string): void {

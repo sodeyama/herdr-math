@@ -8,6 +8,7 @@ export const FINGERPRINT_SCHEMA_LIMITS = Object.freeze({
   maxPrefixCheckpoints: 16,
   maxSuffixWindows: 4,
   maxTailAnchors: 20,
+  maxGapFormulaDigests: 20,
   minTailAnchorCharacters: 32,
   maxContextCharacters: 2048
 });
@@ -28,7 +29,10 @@ export interface SuffixWindowV1 {
 
 export interface TailAnchorV1 {
   end_offset?: number;
+  forward_context_characters?: number;
+  forward_context_digest?: FingerprintDigest;
   next_anchor_gap_digest?: FingerprintDigest;
+  next_anchor_gap_formula_digests?: FingerprintDigest[];
   line_characters: number;
   line_digest: FingerprintDigest;
   context_characters: number;

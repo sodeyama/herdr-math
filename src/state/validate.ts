@@ -101,7 +101,13 @@ function isBaseline(value: unknown): boolean {
         hasKeys(
           item,
           ["line_characters", "line_digest", "context_characters", "context_digest", "line_index_from_end"],
-          ["end_offset", "next_anchor_gap_digest"]
+          [
+            "end_offset",
+            "forward_context_characters",
+            "forward_context_digest",
+            "next_anchor_gap_digest",
+            "next_anchor_gap_formula_digests"
+          ]
         ) &&
         isCount(
           item.line_characters,
@@ -112,8 +118,15 @@ function isBaseline(value: unknown): boolean {
           (isPositiveCount(item.end_offset, value.character_count as number) &&
             item.end_offset >= item.line_characters)) &&
         isFingerprintDigest(item.line_digest) &&
+        ((item.forward_context_characters === undefined && item.forward_context_digest === undefined) ||
+          (isCount(item.forward_context_characters, FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters) &&
+            isFingerprintDigest(item.forward_context_digest))) &&
         (item.next_anchor_gap_digest === undefined ||
           (item.end_offset !== undefined && isFingerprintDigest(item.next_anchor_gap_digest))) &&
+        (item.next_anchor_gap_formula_digests === undefined ||
+          (item.next_anchor_gap_digest !== undefined &&
+            isBoundedArray(item.next_anchor_gap_formula_digests, FINGERPRINT_SCHEMA_LIMITS.maxGapFormulaDigests) &&
+            item.next_anchor_gap_formula_digests.every(isFingerprintDigest))) &&
         isCount(item.context_characters, FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters) &&
         isFingerprintDigest(item.context_digest) &&
         isCount(item.line_index_from_end, POLICY_LIMITS.paneReadLines - 1)

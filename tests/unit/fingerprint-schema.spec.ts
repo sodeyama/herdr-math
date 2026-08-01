@@ -38,7 +38,10 @@ function sampleState(): FingerprintStateV1 {
       tail_anchors: [
         {
           end_offset: 480,
+          forward_context_characters: 20,
+          forward_context_digest: digest,
           next_anchor_gap_digest: digest,
+          next_anchor_gap_formula_digests: [digest],
           line_characters: 40,
           line_digest: digest,
           context_characters: 256,
@@ -91,6 +94,7 @@ describe("fingerprint state v1 schema", () => {
       maxPrefixCheckpoints: 16,
       maxSuffixWindows: 4,
       maxTailAnchors: 20,
+      maxGapFormulaDigests: 20,
       minTailAnchorCharacters: 32,
       maxContextCharacters: 2048
     });
