@@ -1,0 +1,179 @@
+import { Buffer } from "node:buffer";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { deriveStateKey } from "../../src/boundary/fingerprint-builder.js";
+import type { SupportedAgent } from "../../src/boundary/fingerprint-schema.js";
+import type { OperationResult, RenderedImage } from "../../src/core/contracts.js";
+import {
+  processAgentStatusEvent,
+  type AgentStatusWorkerDependencies,
+  type AgentStatusWorkerOutcome
+} from "../../src/events/agent-status-worker.js";
+import { publishImage } from "../../src/graphics/publisher.js";
+import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
+import {
+  renderWithBackend,
+  type RendererBackend,
+  type RendererBackendContext,
+  type RendererFormula
+} from "../../src/renderer/render.js";
+import { createPaneStatePaths } from "../../src/state/paths.js";
+import { loadPaneState } from "../../src/state/store.js";
+import { deriveViewerSourceToken, VIEWER_IDENTITY } from "../../src/viewer/ownership.js";
+import { registerViewer } from "../../src/viewer/runtime.js";
+import { FakeHerdrServer } from "./fake-herdr-server.js";
+import { createFakePane, type FakeStatusEvent } from "./fake-herdr-types.js";
+
+const NOW = new Date("2026-08-01T00:00:00.000Z");
+const SECRET = Buffer.alloc(32, 29);
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+export type LifecycleRenderer = (formulas: readonly RendererFormula[]) => Promise<OperationResult<RenderedImage>>;
+
+export class FullLifecycleRig {
+  readonly client: HerdrSocketClient;
+  readonly renderedFormulas: RendererFormula[][] = [];
+  renderer: LifecycleRenderer = renderStatic;
+  readonly #dependencies: AgentStatusWorkerDependencies;
+  #closed = false;
+
+  private constructor(
+    readonly server: FakeHerdrServer,
+    readonly stateDirectory: string
+  ) {
+    this.client = new HerdrSocketClient(server.socketPath);
+    this.#dependencies = {
+      client: this.client,
+      stateDirectory,
+      sessionIdentity: server.socketPath,
+      secret: SECRET,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+      timing: { completionDebounceMs: 0, stableReadIntervalMs: 0 },
+      render: (formulas) => {
+        this.renderedFormulas.push(formulas.map((formula) => ({ ...formula })));
+        return this.renderer(formulas);
+      },
+      publish: (request) => publishImage(request, { client: this.client, sessionIdentity: server.socketPath })
+    };
+  }
+
+  static async start(agent: SupportedAgent): Promise<FullLifecycleRig> {
+    const server = await FakeHerdrServer.start({
+      panes: [
+        createFakePane({
+          agent,
+          agent_status: "idle",
+          agent_session: { source: `herdr:${agent}`, agent, kind: "id", value: `session-${agent}` }
+        })
+      ]
+    });
+    try {
+      const stateDirectory = await mkdtemp(join(tmpdir(), "herdr-math-full-lifecycle-"));
+      return new FullLifecycleRig(server, stateDirectory);
+    } catch (error) {
+      await server.close();
+      throw error;
+    }
+  }
+
+  async runCycle(
+    baseline: string,
+    answer: string,
+    truncated = false
+  ): Promise<{
+    working: OperationResult<AgentStatusWorkerOutcome>;
+    completion: OperationResult<AgentStatusWorkerOutcome>;
+  }> {
+    return this.runOutputs(baseline, `${baseline}${answer}`, truncated);
+  }
+
+  async runOutputs(
+    baseline: string,
+    completionOutput: string,
+    truncated = false
+  ): Promise<{
+    working: OperationResult<AgentStatusWorkerOutcome>;
+    completion: OperationResult<AgentStatusWorkerOutcome>;
+  }> {
+    this.server.setPaneOutput("w1:p1", baseline);
+    const working = await this.process(this.server.transitionPane("w1:p1", "working"));
+    this.server.setPaneOutput("w1:p1", completionOutput, truncated);
+    const completion = await this.process(this.server.transitionPane("w1:p1", "done"));
+    return { working, completion };
+  }
+
+  process(event: FakeStatusEvent): Promise<OperationResult<AgentStatusWorkerOutcome>> {
+    return processAgentStatusEvent(JSON.stringify(event), this.#dependencies);
+  }
+
+  async registerViewer(viewerPaneId: string): Promise<void> {
+    const result = await registerViewer(
+      {
+        HERDR_SOCKET_PATH: this.server.socketPath,
+        HERDR_PLUGIN_ID: VIEWER_IDENTITY.pluginId,
+        HERDR_PLUGIN_ENTRYPOINT_ID: VIEWER_IDENTITY.entrypointId,
+        HERDR_PANE_ID: viewerPaneId,
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_MATH_SOURCE_TOKEN: deriveViewerSourceToken(this.server.socketPath, "w1:p1")
+      },
+      this.client
+    );
+    if (!result.ok) throw new Error(`Viewer registration failed: ${result.error.code}`);
+  }
+
+  async state() {
+    const sessionKey = deriveStateKey("session", this.server.socketPath, SECRET);
+    return loadPaneState(createPaneStatePaths(this.stateDirectory, sessionKey, "w1:p1", SECRET), NOW);
+  }
+
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      await this.server.close();
+    } finally {
+      await rm(this.stateDirectory, { recursive: true, force: true });
+    }
+  }
+}
+
+export function timeoutRenderer(durationMs = 10): LifecycleRenderer {
+  return (formulas) => renderWithBackend(formulas, new BlockingBackend(), { limits: { renderDurationMs: durationMs } });
+}
+
+export function renderStatic(formulas: readonly RendererFormula[]): Promise<OperationResult<RenderedImage>> {
+  return renderWithBackend(formulas, new StaticBackend(image()));
+}
+
+function image(): RenderedImage {
+  const buffer = Buffer.alloc(16);
+  PNG_SIGNATURE.copy(buffer);
+  return { buffer, width: 640, height: 320, bytes: buffer.byteLength, renderer: "lifecycle-test" };
+}
+
+class StaticBackend implements RendererBackend {
+  constructor(private readonly renderedImage: RenderedImage) {}
+
+  render(): Promise<RenderedImage> {
+    return Promise.resolve(this.renderedImage);
+  }
+
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class BlockingBackend implements RendererBackend {
+  render(_formulas: readonly RendererFormula[], context: RendererBackendContext): Promise<RenderedImage> {
+    return new Promise((_resolve, reject) => {
+      context.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+  }
+
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
