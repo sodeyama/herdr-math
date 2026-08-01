@@ -300,7 +300,7 @@
   - Acceptance tests: AT-704
   - Commit: `docs(compat): verify an additional terminal`
 
-- [ ] **T-805: Validate candidate release platforms and architectures**
+- [x] **T-805: Validate candidate release platforms and architectures**
   - Scope: Run clean install, native dependency, render, and runtime tests for each platform/architecture proposed in the manifest.
   - Dependencies: T-705
   - Acceptance tests: AT-700, and AT-701 if Linux is proposed
@@ -380,5 +380,5 @@
 
 ## Current Next Task
 
-Continue with **T-805**. T-804 remains an optional P1 compatibility expansion and does not block the initial
+Continue with **T-806**. T-804 remains an optional P1 compatibility expansion and does not block the initial
 Ghostty-only release scope.
