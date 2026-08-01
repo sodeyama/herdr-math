@@ -7,6 +7,7 @@ This directory separates product intent, target design, and historical evidence 
 - [Concept](concept.md) explains the user problem, product promise, scope, naming, compatibility boundary, privacy model, and success criteria.
 - [Architecture](architecture.md) defines the target v1 components, event lifecycle, state model, viewer ownership, rendering boundary, failure behavior, and packaging model.
 - [Experiment report](experiment-report.md) records what was tested on August 1, 2026, what passed, what failed, and which prototype decisions must change before release.
+- [Licensing and notices](licensing.md) defines the project license, prototype boundary, dependency policy, and release notice gate.
 
 ## Specification
 
