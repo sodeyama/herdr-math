@@ -1,12 +1,11 @@
 import { Buffer } from "node:buffer";
-import { createHmac } from "node:crypto";
 
 import { HerdrMathError } from "../core/errors.js";
 import { POLICY_LIMITS } from "../core/limits.js";
+import { assertFingerprintSecret, fingerprintDigest } from "./fingerprint-digest.js";
 import {
   FINGERPRINT_SCHEMA_LIMITS,
   FINGERPRINT_SCHEMA_VERSION,
-  FINGERPRINT_SECRET_BYTES,
   type FingerprintDigest,
   type FingerprintStateV1,
   type LifecycleAuthority,
@@ -39,7 +38,7 @@ export function buildBaselineFingerprint(
   secret: Uint8Array,
   expiryMs = FINGERPRINT_EXPIRY_MS
 ): FingerprintStateV1 {
-  assertSecret(secret);
+  assertFingerprintSecret(secret);
   assertInput(input);
   assertMetadata(metadata);
   if (!Number.isSafeInteger(expiryMs) || expiryMs <= 0) {
@@ -68,7 +67,7 @@ export function buildBaselineFingerprint(
       character_count: characterCount,
       utf8_bytes: Buffer.byteLength(input, "utf8"),
       line_count: countLines(input),
-      digest: digest("baseline", input, secret),
+      digest: fingerprintDigest("baseline", input, secret),
       prefix_checkpoints: buildPrefixCheckpoints(input, secret),
       suffix_windows: buildSuffixWindows(input, secret),
       tail_anchors: buildTailAnchors(input, secret)
@@ -83,11 +82,11 @@ export function deriveStateKey(
   identity: string,
   secret: Uint8Array
 ): FingerprintDigest {
-  assertSecret(secret);
+  assertFingerprintSecret(secret);
   if (typeof identity !== "string" || identity.length === 0 || identity.length > 4096) {
     throw new HerdrMathError("event_invalid");
   }
-  return digest(`state-key:${purpose}`, identity, secret);
+  return fingerprintDigest(`state-key:${purpose}`, identity, secret);
 }
 
 function buildPrefixCheckpoints(input: string, secret: Uint8Array) {
@@ -99,7 +98,7 @@ function buildPrefixCheckpoints(input: string, secret: Uint8Array) {
       continue;
     }
     seen.add(offset);
-    checkpoints.push({ end_offset: offset, digest: digest("prefix", input.slice(0, offset), secret) });
+    checkpoints.push({ end_offset: offset, digest: fingerprintDigest("prefix", input.slice(0, offset), secret) });
   }
   return checkpoints;
 }
@@ -107,7 +106,10 @@ function buildPrefixCheckpoints(input: string, secret: Uint8Array) {
 function buildSuffixWindows(input: string, secret: Uint8Array) {
   return SUFFIX_WINDOW_LENGTHS.filter((length) => length <= input.length)
     .slice(0, FINGERPRINT_SCHEMA_LIMITS.maxSuffixWindows)
-    .map((length) => ({ character_length: length, digest: digest("suffix", input.slice(-length), secret) }));
+    .map((length) => ({
+      character_length: length,
+      digest: fingerprintDigest("suffix", input.slice(-length), secret)
+    }));
 }
 
 function buildTailAnchors(input: string, secret: Uint8Array) {
@@ -124,9 +126,9 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
       const context = input.slice(contextStart, lineStart);
       anchors.push({
         line_characters: line.length,
-        line_digest: digest("anchor-line", line, secret),
+        line_digest: fingerprintDigest("anchor-line", line, secret),
         context_characters: context.length,
-        context_digest: digest("anchor-context", context, secret),
+        context_digest: fingerprintDigest("anchor-context", context, secret),
         line_index_from_end: lineIndex
       });
     }
@@ -136,16 +138,6 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
     lineEnd = newline;
   }
   return anchors;
-}
-
-function digest(domain: string, value: string, secret: Uint8Array): FingerprintDigest {
-  return createHmac("sha256", secret).update("herdr-math:v1\0").update(domain).update("\0").update(value).digest("hex");
-}
-
-function assertSecret(secret: Uint8Array): void {
-  if (secret.byteLength !== FINGERPRINT_SECRET_BYTES) {
-    throw new HerdrMathError("state_corrupt");
-  }
 }
 
 function assertInput(input: string): void {

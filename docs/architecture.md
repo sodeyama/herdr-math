@@ -441,6 +441,7 @@ Prototype values provide the initial defaults, subject to release validation:
 | Image height | 16,384 px | Renderer/graphics placer |
 | Image pixels | 33,554,432 | Renderer/graphics placer |
 | Anchor occurrences examined | 256 | Boundary resolver |
+| Boundary candidates examined | 2,048 | Boundary resolver |
 | State file | 64 KiB | State store |
 | Socket response | 2 MiB | Herdr client |
 | Stale lock age | 120 seconds | State store |

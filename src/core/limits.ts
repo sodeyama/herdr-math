@@ -15,6 +15,7 @@ export interface PolicyLimits {
   rawPngBytes: number;
   base64PayloadBytes: number;
   anchorOccurrences: number;
+  boundaryCandidates: number;
   stateFileBytes: number;
   socketResponseBytes: number;
   staleLockAgeMs: number;
@@ -38,6 +39,7 @@ export const POLICY_LIMITS: Readonly<PolicyLimits> = Object.freeze({
   rawPngBytes: 512 * 1024,
   base64PayloadBytes: 700 * 1024,
   anchorOccurrences: 256,
+  boundaryCandidates: 2048,
   stateFileBytes: 64 * 1024,
   socketResponseBytes: 2 * 1024 * 1024,
   staleLockAgeMs: 120_000,
