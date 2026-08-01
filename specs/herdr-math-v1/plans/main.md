@@ -371,7 +371,7 @@ The v1 allowlist starts from the already evidenced Claude Code and Codex paths. 
 2. Validate stored pane ids against current plugin ownership before use.
 3. Recover viewer ownership from metadata when state is missing or stale.
 4. Open the viewer through the manifest entrypoint as a right split with focus disabled.
-5. Read bounded text and ANSI snapshots, normalize only safe SGR state, and isolate the final visible answer using recorded Claude Code, Codex, Pi, and OpenCode structures. Require full snapshot equality by default. For Pi only, permit an exact line-aligned suffix after an earlier Herdr unwrapping mismatch when the suffix still proves a styled reasoning or tool boundary, the complete final response, and the footer separator.
+5. Read bounded text and ANSI snapshots, normalize only safe SGR state, and isolate the final visible answer using recorded Claude Code, Codex, Pi, and OpenCode structures. Require full snapshot equality by default. For Pi only, permit an exact line-aligned suffix after an earlier Herdr unwrapping mismatch when the suffix still proves a styled reasoning or tool boundary, the complete final response, and the footer separator. For OpenCode only, permit the proven plain delta without style metadata when textual tool and completion boundaries enclose the complete final response.
 6. Normalize terminal soft wraps into plain paragraphs while retaining lists, display-math boundaries, Unicode, and formula offsets.
 7. Implement graphics capability diagnostics.
 8. Compute the current viewer pixel viewport from cell and layout dimensions.
