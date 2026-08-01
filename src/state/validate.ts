@@ -98,18 +98,19 @@ function isBaseline(value: unknown): boolean {
     ) &&
     value.tail_anchors.every(
       (item) =>
-        hasKeys(item, [
-          "line_characters",
-          "line_digest",
-          "context_characters",
-          "context_digest",
-          "line_index_from_end"
-        ]) &&
+        hasKeys(
+          item,
+          ["line_characters", "line_digest", "context_characters", "context_digest", "line_index_from_end"],
+          ["end_offset"]
+        ) &&
         isCount(
           item.line_characters,
           value.character_count as number,
           FINGERPRINT_SCHEMA_LIMITS.minTailAnchorCharacters
         ) &&
+        (item.end_offset === undefined ||
+          (isPositiveCount(item.end_offset, value.character_count as number) &&
+            item.end_offset >= item.line_characters)) &&
         isFingerprintDigest(item.line_digest) &&
         isCount(item.context_characters, FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters) &&
         isFingerprintDigest(item.context_digest) &&

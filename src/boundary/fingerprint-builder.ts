@@ -125,6 +125,7 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
       const contextStart = Math.max(previousNewline + 1, lineStart - FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters);
       const context = input.slice(contextStart, lineStart);
       anchors.push({
+        end_offset: lineEnd,
         line_characters: line.length,
         line_digest: fingerprintDigest("anchor-line", line, secret),
         context_characters: context.length,

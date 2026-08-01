@@ -37,6 +37,7 @@ function sampleState(): FingerprintStateV1 {
       suffix_windows: [{ character_length: 256, digest }],
       tail_anchors: [
         {
+          end_offset: 480,
           line_characters: 40,
           line_digest: digest,
           context_characters: 256,

@@ -126,6 +126,7 @@ describe("baseline fingerprint builder", () => {
     expect(contextChanged.baseline.tail_anchors[0]?.context_digest).not.toBe(
       first.baseline.tail_anchors[0]?.context_digest
     );
+    expect(first.baseline.tail_anchors[0]?.end_offset).toBe(first.baseline.character_count);
   });
 
   it("derives path-safe non-reversible state keys", () => {
