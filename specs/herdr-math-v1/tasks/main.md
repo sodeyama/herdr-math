@@ -89,7 +89,7 @@
   - Acceptance tests: AT-200 through AT-206, AT-208
   - Commit: `test(boundary): preserve prototype boundary behavior`
 
-- [ ] **T-204: Define shared result, limit, and error contracts**
+- [x] **T-204: Define shared result, limit, and error contracts**
   - Scope: Add typed formulas, boundary results, rendered-image shape, policy limits, error codes, and safe error serialization shared by later modules.
   - Dependencies: T-202, T-203
   - Acceptance tests: AT-101, AT-308, AT-401 through AT-408
