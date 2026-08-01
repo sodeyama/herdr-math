@@ -69,6 +69,19 @@ export function resolveAnswerFromFingerprint(
         )
       );
     }
+    const anchoredSuffix = resolveAnchoredSuffixReplacement(state, current, secret);
+    if (anchoredSuffix.status === "resolved") {
+      return success(
+        result(
+          current,
+          anchoredSuffix.startOffset,
+          anchoredSuffix.proof,
+          currentDigest,
+          readTruncated,
+          anchoredSuffix.endOffset
+        )
+      );
+    }
     const stable = resolveStablePrefix(state, current, secret);
     if (stable !== null) {
       return success(result(current, stable.startOffset, stable.proof, currentDigest, readTruncated));
@@ -82,7 +95,7 @@ export function resolveAnswerFromFingerprint(
     if (sliding !== null) {
       return success(result(current, sliding.startOffset, sliding.proof, currentDigest, readTruncated));
     }
-    if (anchoredPrefix.status === "conflict") {
+    if (anchoredPrefix.status === "conflict" || anchoredSuffix.status === "conflict") {
       return failure(serializeError(new HerdrMathError(readTruncated ? "answer_truncated" : "boundary_failed")));
     }
 
@@ -140,6 +153,15 @@ type AnchoredPrefixReplacementResult =
       startOffset: 0;
       endOffset: number;
       proof: Extract<BoundaryProof, { kind: "anchored_prefix_replacement" }>;
+    };
+
+type AnchoredSuffixReplacementResult =
+  | { status: "none" | "conflict" }
+  | {
+      status: "resolved";
+      startOffset: number;
+      endOffset: number;
+      proof: Extract<BoundaryProof, { kind: "anchored_suffix_replacement" }>;
     };
 
 function resolveMiddleInsertion(
@@ -399,6 +421,106 @@ function resolveAnchoredPrefixReplacement(
     proof: {
       kind: "anchored_prefix_replacement",
       anchorMatchStartOffset: candidate.match.start,
+      lineIndexFromEnd: candidate.lineIndexFromEnd,
+      replacementGrowthCharacters: growth,
+      baselineFormulaDigests: candidate.baselineFormulaDigests
+    }
+  };
+}
+
+function resolveAnchoredSuffixReplacement(
+  state: FingerprintStateV1,
+  current: string,
+  secret: Uint8Array
+): AnchoredSuffixReplacementResult {
+  if (state.agent !== "opencode" || countLines(current) !== state.baseline.line_count) return { status: "none" };
+  const lines = collectRecentLines(current, POLICY_LIMITS.paneReadLines);
+  const candidates: Array<{
+    match: LineRange;
+    growth: number;
+    lineIndexFromEnd: number;
+    baselineFormulaDigests: string[];
+  }> = [];
+  let candidatesExamined = 0;
+  let conflictingAnchor = false;
+
+  for (const anchor of state.baseline.tail_anchors) {
+    if (
+      anchor.end_offset === undefined ||
+      anchor.suffix_formula_digests === undefined ||
+      anchor.forward_context_characters === undefined ||
+      anchor.forward_context_digest === undefined ||
+      anchor.context_characters === 0 ||
+      anchor.forward_context_characters === 0
+    ) {
+      continue;
+    }
+    const rawMatches: LineRange[] = [];
+    for (const line of lines) {
+      if (line.end - line.start !== anchor.line_characters) continue;
+      candidatesExamined += 1;
+      if (candidatesExamined > POLICY_LIMITS.anchorOccurrences) return { status: "conflict" };
+      if (
+        fingerprintDigestsEqual(
+          fingerprintDigest("anchor-line", current.slice(line.start, line.end), secret),
+          anchor.line_digest
+        )
+      ) {
+        rawMatches.push(line);
+      }
+      if (rawMatches.length > 1) break;
+    }
+    if (rawMatches.length === 0) continue;
+    if (rawMatches.length > 1) {
+      conflictingAnchor = true;
+      continue;
+    }
+    const match = rawMatches[0];
+    if (match === undefined) continue;
+    const lineIndexFromEnd = lines.length - 1 - lines.indexOf(match);
+    if (
+      lineIndexFromEnd !== anchor.line_index_from_end ||
+      match.end !== anchor.end_offset ||
+      !anchorContextMatches(anchor, match, current, secret) ||
+      !anchorForwardContextMatches(anchor, match, current, secret)
+    ) {
+      conflictingAnchor = true;
+      continue;
+    }
+    const growth = current.length - state.baseline.character_count;
+    if (growth <= 0) continue;
+    candidates.push({
+      match,
+      growth,
+      lineIndexFromEnd: anchor.line_index_from_end,
+      baselineFormulaDigests: anchor.suffix_formula_digests
+    });
+  }
+  if (candidates.length === 0) return { status: conflictingAnchor ? "conflict" : "none" };
+  const growth = candidates[0]?.growth;
+  if (growth === undefined || candidates.some((candidate) => candidate.growth !== growth))
+    return { status: "conflict" };
+  const candidate = [...candidates].sort((left, right) => right.match.end - left.match.end)[0];
+  if (candidate === undefined) return { status: "none" };
+
+  let formulas: ReturnType<typeof scanLatex>;
+  try {
+    formulas = scanLatex(current.slice(candidate.match.end));
+  } catch {
+    return { status: "conflict" };
+  }
+  const hasNewFormula = formulas.some((formula) => {
+    const digest = formulaFingerprintDigest(formula, secret);
+    return !candidate.baselineFormulaDigests.some((baselineDigest) => fingerprintDigestsEqual(digest, baselineDigest));
+  });
+  if (!hasNewFormula) return { status: "none" };
+  return {
+    status: "resolved",
+    startOffset: candidate.match.end,
+    endOffset: current.length,
+    proof: {
+      kind: "anchored_suffix_replacement",
+      anchorMatchEndOffset: candidate.match.end,
       lineIndexFromEnd: candidate.lineIndexFromEnd,
       replacementGrowthCharacters: growth,
       baselineFormulaDigests: candidate.baselineFormulaDigests

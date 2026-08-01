@@ -14,6 +14,7 @@ export type BoundaryStrategy =
   | "middle_insertion"
   | "middle_replacement"
   | "anchored_prefix_replacement"
+  | "anchored_suffix_replacement"
   | "stable_prefix"
   | "sliding_window"
   | "contextual_anchor";
@@ -38,6 +39,13 @@ export type BoundaryProof =
   | {
       kind: "anchored_prefix_replacement";
       anchorMatchStartOffset: number;
+      lineIndexFromEnd: number;
+      replacementGrowthCharacters: number;
+      baselineFormulaDigests: readonly string[];
+    }
+  | {
+      kind: "anchored_suffix_replacement";
+      anchorMatchEndOffset: number;
       lineIndexFromEnd: number;
       replacementGrowthCharacters: number;
       baselineFormulaDigests: readonly string[];

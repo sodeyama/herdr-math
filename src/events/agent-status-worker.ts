@@ -344,7 +344,9 @@ async function processCompletion(
     answerStartOffset,
     snapshot: stable.value.styledSnapshot,
     ...(stable.value.snapshotMode === "pi_suffix" ? { requirePiFooter: true } : {}),
-    ...(stable.value.snapshotMode === "opencode_plain" || boundary.value.proof.kind === "anchored_prefix_replacement"
+    ...(stable.value.snapshotMode === "opencode_plain" ||
+    boundary.value.proof.kind === "anchored_prefix_replacement" ||
+    boundary.value.proof.kind === "anchored_suffix_replacement"
       ? { requireOpenCodeChrome: true }
       : {})
   });
@@ -361,7 +363,8 @@ async function processCompletion(
     formulas = scanLatex(finalResponse.value.text);
     if (
       boundary.value.proof.kind === "middle_replacement" ||
-      boundary.value.proof.kind === "anchored_prefix_replacement"
+      boundary.value.proof.kind === "anchored_prefix_replacement" ||
+      boundary.value.proof.kind === "anchored_suffix_replacement"
     ) {
       const baselineFormulaDigests = boundary.value.proof.baselineFormulaDigests;
       formulas = formulas.filter((formula) => {

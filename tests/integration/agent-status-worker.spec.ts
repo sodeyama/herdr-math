@@ -231,6 +231,29 @@ describe("agent status worker", () => {
     }
   });
 
+  it("recovers OpenCode final output after a fixed same-row header", async () => {
+    const rig = await createRig({
+      agent: "opencode",
+      agent_session: { source: "herdr:opencode", agent: "opencode", kind: "id", value: "session-opencode-suffix" }
+    });
+    const anchor = "Synthetic fixed OpenCode header anchor with unique value 1234567890";
+    const prefix = `Stable header context with unique value abcdefghij\n${anchor}`;
+    const baseline = `${prefix}\nstable bridge one\nstable bridge two\n→ Read source\n\nWorking $u$.\n\n▣ Working`;
+    rig.server.setPaneOutput("w1:p1", baseline);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+
+    const plain = `${prefix}\nstable bridge one\nstable bridge two\n→ Read package.json\n\nFinal response keeps $u$ and adds $x=1$.\n\n▣ Done`;
+    const ansi = `${prefix}\nstable bridge one\nstable bridge two\n→ Read changed package.json\n\nFinal response keeps $u$ and adds $x=1$.\n\n▣ Done`;
+    rig.server.setPaneOutput("w1:p1", plain, false, ansi);
+
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
+      ok: true,
+      value: { kind: "image_published", formulaCount: 1 }
+    });
+    expect(rig.renderedTexts).toEqual(["Final response keeps $u$ and adds $x=1$."]);
+    expect(rig.renders).toEqual([[{ latex: "x=1", display: false }]]);
+  });
+
   it("publishes a completed formula through the owned graphics viewer", async () => {
     const rig = await createRig();
     const client = new HerdrSocketClient(rig.server.socketPath);

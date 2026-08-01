@@ -240,6 +240,44 @@ describe("fingerprint answer resolver", () => {
     });
   });
 
+  it("resolves an OpenCode suffix replacement after a fixed same-row anchor", () => {
+    const anchor = "Synthetic fixed OpenCode header anchor with unique value 1234567890";
+    const prefix = `Stable header context with unique value abcdefghij\n${anchor}`;
+    const baselineTail = "\nstable bridge one\nstable bridge two\n→ Read source\n\nWorking $u$.\n\n▣ Working";
+    const currentTail =
+      "\nstable bridge one\nstable bridge two\n→ Read package.json\n\nFinal response keeps $u$ and adds $x=1$.\n\n▣ Done";
+    const testCase: BoundaryCase = {
+      id: "opencode-anchored-suffix-replacement",
+      agent: "opencode",
+      baseline: prefix + baselineTail,
+      completion: prefix + currentTail,
+      expectedAnswer: currentTail,
+      expectedStrategy: "contextual_anchor",
+      readTruncated: false
+    };
+
+    const result = resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.strategy).toBe("anchored_suffix_replacement");
+    expect(result.value.answer).toBe(currentTail);
+    expect(result.value.proof).toMatchObject({
+      kind: "anchored_suffix_replacement",
+      replacementGrowthCharacters: currentTail.length - baselineTail.length
+    });
+    expect(result.value.proof).toHaveProperty("baselineFormulaDigests", [
+      formulaFingerprintDigest({ latex: "u", display: false }, secret)
+    ]);
+    expect(JSON.stringify(result.value.proof)).not.toContain("$u$");
+
+    const contextChanged = `${prefix}\nchanged bridge one\nstable bridge two\n→ Read package.json\n\nFinal $x=1$.\n\n▣ Done`;
+    expect(resolveAnswerFromFingerprint(fingerprint(testCase), contextChanged, secret)).toEqual({
+      ok: false,
+      error: { code: "boundary_failed", retryable: false }
+    });
+  });
+
   it("fails closed for a replacement with unscannable delimiters", () => {
     const before = "Synthetic working anchor with unique value 1234567890";
     const baselineGap = "\nworking $u$\n";
