@@ -135,23 +135,28 @@ describe("FakeHerdrServer", () => {
   it("tracks graphics capability and atomic replacement without an implicit clear", async () => {
     const viewer = createFakePane({ pane_id: "w1:p2", terminal_id: "term-2", focused: false, agent: null });
     const server = await startFake({ panes: [createFakePane(), viewer] });
-    const info = await call(server, "pane.graphics.info", { pane_id: "w1:p2" });
-    expect(validateSuccess(info), JSON.stringify(validateSuccess.errors)).toBe(true);
-    expect(info).toMatchObject({ result: { cell_width_px: 8, cell_height_px: 16 } });
+    const client = new HerdrSocketClient(server.socketPath);
+    expect(await client.paneGraphicsInfo("w1:p2")).toEqual({
+      ok: true,
+      value: { cellWidthPx: 8, cellHeightPx: 16 }
+    });
+    expect(await client.paneLayout("w1:p2")).toMatchObject({
+      ok: true,
+      value: { workspaceId: "w1", tabId: "w1:t1", panes: [{ paneId: "w1:p1" }, { paneId: "w1:p2" }] }
+    });
 
-    for (const data of ["first-image", "second-image"]) {
-      const response = await call(server, "pane.graphics.set", {
-        pane_id: "w1:p2",
-        format: "png",
-        image_width: 640,
-        image_height: 320,
-        data_base64: data,
-        placement: { viewport_col: 0, viewport_row: 0, grid_cols: 80, grid_rows: 20 }
+    for (const data of ["first-image", "second-image"].map((value) => Buffer.from(value).toString("base64"))) {
+      const response = await client.paneGraphicsSet({
+        paneId: "w1:p2",
+        imageWidth: 640,
+        imageHeight: 320,
+        dataBase64: data,
+        placement: { viewportCol: 0, viewportRow: 0, gridCols: 80, gridRows: 20 }
       });
-      expect(validateSuccess(response), JSON.stringify(validateSuccess.errors)).toBe(true);
+      expect(response).toEqual({ ok: true, value: undefined });
     }
     expect(server.graphicsUpdates).toHaveLength(2);
-    expect(server.getGraphics("w1:p2")?.data_base64).toBe("second-image");
+    expect(server.getGraphics("w1:p2")?.data_base64).toBe(Buffer.from("second-image").toString("base64"));
     expect(server.requests.some(({ method }) => method === "pane.graphics.clear")).toBe(false);
 
     server.queueResponse("pane.graphics.set", { error: { code: "payload_rejected", message: "rejected" } });
@@ -163,15 +168,17 @@ describe("FakeHerdrServer", () => {
       data_base64: "invalid"
     });
     expect(validateError(rejected), JSON.stringify(validateError.errors)).toBe(true);
-    expect(server.getGraphics("w1:p2")?.data_base64).toBe("second-image");
+    expect(server.getGraphics("w1:p2")?.data_base64).toBe(Buffer.from("second-image").toString("base64"));
 
     server.setGraphicsCapability({ enabled: false });
-    const disabled = await call(server, "pane.graphics.info", { pane_id: "w1:p2" });
-    expect(validateError(disabled), JSON.stringify(validateError.errors)).toBe(true);
-    expect(disabled).toMatchObject({ error: { code: "feature_disabled" } });
+    expect(await client.paneGraphicsInfo("w1:p2")).toEqual({
+      ok: false,
+      error: { code: "graphics_disabled", retryable: false }
+    });
     server.setGraphicsCapability({ enabled: true, cellWidthPx: 0, cellHeightPx: 0 });
-    expect(await call(server, "pane.graphics.info", { pane_id: "w1:p2" })).toMatchObject({
-      result: { cell_width_px: 0, cell_height_px: 0 }
+    expect(await client.paneGraphicsInfo("w1:p2")).toEqual({
+      ok: true,
+      value: { cellWidthPx: 0, cellHeightPx: 0 }
     });
   });
 

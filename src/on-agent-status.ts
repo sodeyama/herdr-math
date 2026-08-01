@@ -2,13 +2,10 @@ import { pathToFileURL } from "node:url";
 
 import { failure, type OperationResult } from "./core/contracts.js";
 import { HerdrMathError, serializeError } from "./core/errors.js";
-import {
-  processDecodedAgentStatusEvent,
-  type AgentStatusWorkerOutcome,
-  type ImagePublishResult
-} from "./events/agent-status-worker.js";
+import { processDecodedAgentStatusEvent, type AgentStatusWorkerOutcome } from "./events/agent-status-worker.js";
 import { decodeAgentStatusEvent } from "./herdr/event-decoder.js";
 import { HerdrSocketClient } from "./herdr/socket-client.js";
+import { publishImage } from "./graphics/publisher.js";
 import { renderFormulas } from "./renderer/index.js";
 import { loadOrCreateFingerprintSecret } from "./boundary/fingerprint-secret.js";
 
@@ -44,15 +41,11 @@ export async function runAgentStatusHook(
       sessionIdentity: socketPath,
       secret,
       render: renderFormulas,
-      publish: unavailablePublisher
+      publish: (request) => publishImage(request, { client, sessionIdentity: socketPath })
     });
   } catch (error) {
     return failure(serializeError(error));
   }
-}
-
-function unavailablePublisher(): Promise<OperationResult<ImagePublishResult>> {
-  return Promise.resolve(failure(serializeError(new HerdrMathError("viewer_open_failed", {}, true))));
 }
 
 async function main(): Promise<void> {

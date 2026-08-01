@@ -16,6 +16,7 @@ import {
   type AgentStatusWorkerOutcome,
   type ImagePublishRequest
 } from "../../src/events/agent-status-worker.js";
+import { publishImage } from "../../src/graphics/publisher.js";
 import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
 import { createPaneStatePaths } from "../../src/state/paths.js";
 import { loadPaneState } from "../../src/state/store.js";
@@ -86,6 +87,29 @@ describe("agent status worker", () => {
       expect(stateBytes).not.toContain("E=mc^2");
       expect(stateBytes).not.toContain(`session-${agent}`);
     }
+  });
+
+  it("publishes a completed formula through the owned graphics viewer", async () => {
+    const rig = await createRig();
+    const client = new HerdrSocketClient(rig.server.socketPath);
+    rig.dependencies.client = client;
+    rig.dependencies.publish = (request) => publishImage(request, { client, sessionIdentity: rig.server.socketPath });
+    const baseline = "End-to-end baseline before the formula response.";
+    rig.server.setPaneOutput("w1:p1", baseline);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+    rig.server.setPaneOutput("w1:p1", `${baseline}\nResult $x^2$.`);
+
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
+      ok: true,
+      value: { kind: "image_published", viewerPaneId: "w1:p2", formulaCount: 1 }
+    });
+    expect(rig.server.getGraphics("w1:p2")).toMatchObject({
+      image_width: 1,
+      image_height: 1,
+      placement: { grid_cols: 1, grid_rows: 1 }
+    });
+    expect(rig.server.getPane("w1:p1")?.focused).toBe(true);
+    expect(await loadState(rig)).toMatchObject({ viewer_pane_id: "w1:p2", processed: { pane_revision: 3 } });
   });
 
   it("preserves blocked and unknown baselines, records no-formula content, and suppresses idle duplicates", async () => {

@@ -18,6 +18,8 @@ export const HERDR_CLIENT_LIMITS = Object.freeze({
   paneReadTimeoutMs: 2000,
   paneListTimeoutMs: 2000,
   paneMetadataTimeoutMs: 2000,
+  paneGraphicsTimeoutMs: 2000,
+  paneLayoutTimeoutMs: 2000,
   pluginPaneOpenTimeoutMs: 5000,
   agentSessionValueBytes: 4096
 });
@@ -55,6 +57,8 @@ export interface HerdrSocketClientOptions {
   paneReadTimeoutMs?: number;
   paneListTimeoutMs?: number;
   paneMetadataTimeoutMs?: number;
+  paneGraphicsTimeoutMs?: number;
+  paneLayoutTimeoutMs?: number;
   pluginPaneOpenTimeoutMs?: number;
   responseBytes?: number;
 }
@@ -82,9 +86,61 @@ export interface HerdrPluginPaneSnapshot {
   pane: HerdrPaneSnapshot;
 }
 
+export interface HerdrGraphicsInfo {
+  cellWidthPx: number;
+  cellHeightPx: number;
+}
+
+export interface HerdrLayoutRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface HerdrLayoutPane {
+  paneId: string;
+  focused: boolean;
+  rect: HerdrLayoutRect;
+}
+
+export interface HerdrPaneLayoutSnapshot {
+  workspaceId: string;
+  tabId: string;
+  focusedPaneId: string;
+  panes: readonly HerdrLayoutPane[];
+}
+
+export interface HerdrGraphicsSetRequest {
+  paneId: string;
+  imageWidth: number;
+  imageHeight: number;
+  dataBase64: string;
+  placement: {
+    viewportCol: number;
+    viewportRow: number;
+    gridCols: number;
+    gridRows: number;
+  };
+}
+
 type HerdrRequest =
   | { id: string; method: "pane.get"; params: { pane_id: string } }
   | { id: string; method: "pane.list"; params: { workspace_id: string } }
+  | { id: string; method: "pane.layout"; params: { pane_id: string } }
+  | { id: string; method: "pane.graphics.info"; params: { pane_id: string } }
+  | {
+      id: string;
+      method: "pane.graphics.set";
+      params: {
+        pane_id: string;
+        format: "png";
+        image_width: number;
+        image_height: number;
+        data_base64: string;
+        placement: { viewport_col: number; viewport_row: number; grid_cols: number; grid_rows: number };
+      };
+    }
   | {
       id: string;
       method: "pane.read";
@@ -111,6 +167,8 @@ export class HerdrSocketClient {
   readonly #paneReadTimeoutMs: number;
   readonly #paneListTimeoutMs: number;
   readonly #paneMetadataTimeoutMs: number;
+  readonly #paneGraphicsTimeoutMs: number;
+  readonly #paneLayoutTimeoutMs: number;
   readonly #pluginPaneOpenTimeoutMs: number;
   readonly #responseBytes: number;
 
@@ -137,6 +195,16 @@ export class HerdrSocketClient {
       options.paneMetadataTimeoutMs,
       HERDR_CLIENT_LIMITS.paneMetadataTimeoutMs,
       "paneMetadataTimeoutMs"
+    );
+    this.#paneGraphicsTimeoutMs = boundedOverride(
+      options.paneGraphicsTimeoutMs,
+      HERDR_CLIENT_LIMITS.paneGraphicsTimeoutMs,
+      "paneGraphicsTimeoutMs"
+    );
+    this.#paneLayoutTimeoutMs = boundedOverride(
+      options.paneLayoutTimeoutMs,
+      HERDR_CLIENT_LIMITS.paneLayoutTimeoutMs,
+      "paneLayoutTimeoutMs"
     );
     this.#pluginPaneOpenTimeoutMs = boundedOverride(
       options.pluginPaneOpenTimeoutMs,
@@ -184,6 +252,30 @@ export class HerdrSocketClient {
       params: { workspace_id: workspaceId }
     };
     return this.#request(outbound, this.#paneListTimeoutMs, parsePaneListResult);
+  }
+
+  paneLayout(paneId: string): Promise<OperationResult<HerdrPaneLayoutSnapshot>> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(paneId)) {
+      return Promise.resolve(protocolFailure());
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "pane.layout",
+      params: { pane_id: paneId }
+    };
+    return this.#request(outbound, this.#paneLayoutTimeoutMs, parsePaneLayoutResult);
+  }
+
+  paneGraphicsInfo(paneId: string): Promise<OperationResult<HerdrGraphicsInfo>> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(paneId)) {
+      return Promise.resolve(protocolFailure());
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "pane.graphics.info",
+      params: { pane_id: paneId }
+    };
+    return this.#request(outbound, this.#paneGraphicsTimeoutMs, parseGraphicsInfoResult, parseGraphicsRemoteError);
   }
 
   paneRead(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>> {
@@ -245,6 +337,30 @@ export class HerdrSocketClient {
       }
     };
     return this.#request(outbound, this.#pluginPaneOpenTimeoutMs, parsePluginPaneOpenResult);
+  }
+
+  paneGraphicsSet(request: HerdrGraphicsSetRequest): Promise<OperationResult<void>> {
+    if (!isSocketPath(this.socketPath) || !isGraphicsSetRequest(request)) {
+      return Promise.resolve(protocolFailure());
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "pane.graphics.set",
+      params: {
+        pane_id: request.paneId,
+        format: "png",
+        image_width: request.imageWidth,
+        image_height: request.imageHeight,
+        data_base64: request.dataBase64,
+        placement: {
+          viewport_col: request.placement.viewportCol,
+          viewport_row: request.placement.viewportRow,
+          grid_cols: request.placement.gridCols,
+          grid_rows: request.placement.gridRows
+        }
+      }
+    };
+    return this.#request(outbound, this.#paneGraphicsTimeoutMs, parseOkResult, parseGraphicsRemoteError);
   }
 
   #request<T>(
@@ -438,6 +554,67 @@ function parsePluginPaneOpenResult(value: unknown): HerdrPluginPaneSnapshot {
   });
 }
 
+function parseGraphicsInfoResult(value: unknown): HerdrGraphicsInfo {
+  if (
+    !isRecord(value) ||
+    value.type !== "pane_graphics_info" ||
+    !isUint32(value.cell_width_px) ||
+    !isUint32(value.cell_height_px)
+  ) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  return Object.freeze({ cellWidthPx: value.cell_width_px, cellHeightPx: value.cell_height_px });
+}
+
+function parsePaneLayoutResult(value: unknown): HerdrPaneLayoutSnapshot {
+  if (
+    !isRecord(value) ||
+    value.type !== "pane_layout" ||
+    !isRecord(value.layout) ||
+    !isIdentifier(value.layout.workspace_id) ||
+    !isIdentifier(value.layout.tab_id) ||
+    !isIdentifier(value.layout.focused_pane_id) ||
+    !Array.isArray(value.layout.panes) ||
+    value.layout.panes.length > 4096
+  ) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  const panes = value.layout.panes.map((pane): HerdrLayoutPane => {
+    if (!isRecord(pane) || !isIdentifier(pane.pane_id) || typeof pane.focused !== "boolean") {
+      throw new HerdrMathError("herdr_protocol_error");
+    }
+    return Object.freeze({ paneId: pane.pane_id, focused: pane.focused, rect: parseLayoutRect(pane.rect) });
+  });
+  return Object.freeze({
+    workspaceId: value.layout.workspace_id,
+    tabId: value.layout.tab_id,
+    focusedPaneId: value.layout.focused_pane_id,
+    panes: Object.freeze(panes)
+  });
+}
+
+function parseLayoutRect(value: unknown): HerdrLayoutRect {
+  if (
+    !isRecord(value) ||
+    !isUint16(value.x) ||
+    !isUint16(value.y) ||
+    !isUint16(value.width) ||
+    !isUint16(value.height)
+  ) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  return Object.freeze({ x: value.x, y: value.y, width: value.width, height: value.height });
+}
+
+function parseOkResult(value: unknown): void {
+  if (!isRecord(value) || value.type !== "ok") throw new HerdrMathError("herdr_protocol_error");
+}
+
+function parseGraphicsRemoteError(error: HerdrWireError): never {
+  if (error.code === "feature_disabled") throw new HerdrMathError("graphics_disabled");
+  throw new HerdrMathError("herdr_protocol_error");
+}
+
 function parsePaneReadResult(value: unknown): HerdrPaneReadSnapshot {
   if (!isRecord(value) || value.type !== "pane_read" || !isRecord(value.read)) {
     throw new HerdrMathError("herdr_protocol_error");
@@ -599,6 +776,48 @@ function isPluginPaneOpenRequest(value: unknown): value is HerdrPluginPaneOpenRe
         Buffer.byteLength(entry, "utf8") <= 4096
     )
   );
+}
+
+function isGraphicsSetRequest(value: unknown): value is HerdrGraphicsSetRequest {
+  if (
+    !isRecord(value) ||
+    !isIdentifier(value.paneId) ||
+    !isPositiveUint32(value.imageWidth) ||
+    !isPositiveUint32(value.imageHeight) ||
+    typeof value.dataBase64 !== "string" ||
+    Buffer.byteLength(value.dataBase64, "ascii") > POLICY_LIMITS.base64PayloadBytes ||
+    !isCanonicalBase64(value.dataBase64) ||
+    !isRecord(value.placement)
+  ) {
+    return false;
+  }
+  return (
+    isInt32(value.placement.viewportCol) &&
+    isInt32(value.placement.viewportRow) &&
+    isPositiveUint32(value.placement.gridCols) &&
+    isPositiveUint32(value.placement.gridRows)
+  );
+}
+
+function isCanonicalBase64(value: string): boolean {
+  if (value.length === 0 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  return Buffer.from(value, "base64").toString("base64") === value;
+}
+
+function isUint16(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 65_535;
+}
+
+function isUint32(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 4_294_967_295;
+}
+
+function isPositiveUint32(value: unknown): value is number {
+  return isUint32(value) && value > 0;
+}
+
+function isInt32(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= -2_147_483_648 && (value as number) <= 2_147_483_647;
 }
 
 function containsMetadataControl(value: string): boolean {
