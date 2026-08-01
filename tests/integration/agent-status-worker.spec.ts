@@ -112,6 +112,38 @@ describe("agent status worker", () => {
     expect(await loadState(rig)).toMatchObject({ viewer_pane_id: "w1:p2", processed: { pane_revision: 3 } });
   });
 
+  it("processes a later turn when the agent sequence advances without a pane revision change", async () => {
+    const rig = await createRig({ revision: 4, state_change_seq: 10 });
+    const firstBaseline = "First baseline for a stable pane metadata revision.";
+    rig.server.setPaneOutput("w1:p1", firstBaseline);
+    rig.server.updatePane("w1:p1", { agent_status: "working", revision: 4, state_change_seq: 11 });
+    expect(await process(rig, statusEvent("w1", "w1:p1", "working", "codex"))).toMatchObject({
+      ok: true,
+      value: { kind: "baseline_stored", generation: 1 }
+    });
+    rig.server.setPaneOutput("w1:p1", `${firstBaseline}\nFirst $x$.`);
+    rig.server.updatePane("w1:p1", { agent_status: "done", revision: 4, state_change_seq: 12 });
+    expect((await process(rig, statusEvent("w1", "w1:p1", "done", "codex"))).ok).toBe(true);
+
+    const secondBaseline = "Second baseline while pane revision remains unchanged.";
+    rig.server.setPaneOutput("w1:p1", secondBaseline);
+    rig.server.updatePane("w1:p1", { agent_status: "working", revision: 4, state_change_seq: 13 });
+    expect(await process(rig, statusEvent("w1", "w1:p1", "working", "codex"))).toMatchObject({
+      ok: true,
+      value: { kind: "baseline_stored", generation: 2 }
+    });
+    rig.server.setPaneOutput("w1:p1", `${secondBaseline}\nSecond $y$.`);
+    rig.server.updatePane("w1:p1", { agent_status: "done", revision: 4, state_change_seq: 14 });
+    expect(await process(rig, statusEvent("w1", "w1:p1", "done", "codex"))).toMatchObject({
+      ok: true,
+      value: { kind: "image_published", generation: 2 }
+    });
+
+    expect(rig.renders).toEqual([[{ latex: "x", display: false }], [{ latex: "y", display: false }]]);
+    expect(rig.publications).toHaveLength(2);
+    expect(await loadState(rig)).toMatchObject({ generation: 2, pane_revision: 4, event_sequence: 14 });
+  });
+
   it("preserves blocked and unknown baselines, records no-formula content, and suppresses idle duplicates", async () => {
     const rig = await createRig();
     const baseline = "A stable baseline before the coding agent response.";
@@ -177,6 +209,10 @@ describe("agent status worker", () => {
         calls += 1;
         return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
       },
+      agentGet: () => {
+        calls += 1;
+        return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
+      },
       paneRead: () => {
         calls += 1;
         return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
@@ -216,6 +252,22 @@ describe("agent status worker", () => {
       const result = await process(rig, testCase.event);
       expect(result).toEqual({ ok: false, error: { code: testCase.code, retryable: false } });
     }
+
+    rig.server.updatePane("w1:p1", { agent: "codex", agent_status: "working" });
+    const baseClient = rig.dependencies.client;
+    expect(
+      await processAgentStatusEvent(JSON.stringify(statusEvent("w1", "w1:p1", "working", "codex")), {
+        ...rig.dependencies,
+        client: {
+          paneGet: (paneId) => baseClient.paneGet(paneId),
+          paneRead: (paneId) => baseClient.paneRead(paneId),
+          agentGet: async (paneId) => {
+            const resolved = await baseClient.agentGet(paneId);
+            return resolved.ok ? success({ ...resolved.value, status: "done" }) : resolved;
+          }
+        }
+      })
+    ).toEqual({ ok: false, error: { code: "event_invalid", retryable: false } });
     expect(rig.renders).toHaveLength(0);
     expect(rig.publications).toHaveLength(0);
     expect(await readdir(rig.directory)).toEqual([]);
@@ -298,6 +350,7 @@ describe("agent status worker", () => {
     let readNumber = 0;
     rig.dependencies.client = {
       paneGet: (paneId) => baseClient.paneGet(paneId),
+      agentGet: (paneId) => baseClient.agentGet(paneId),
       paneRead: (paneId) => {
         readNumber += 1;
         rig.server.setPaneOutput(paneId, `${baseline}\nChanging answer ${readNumber}: $x_${readNumber}$.`);

@@ -11,7 +11,7 @@ import {
   type LifecycleEvent
 } from "./lifecycle.js";
 import { decodeAgentStatusEvent, type DecodedAgentStatusEvent } from "../herdr/event-decoder.js";
-import type { HerdrPaneReadSnapshot, HerdrPaneSnapshot } from "../herdr/socket-client.js";
+import type { HerdrAgentSnapshot, HerdrPaneReadSnapshot, HerdrPaneSnapshot } from "../herdr/socket-client.js";
 import type { RendererFormula } from "../renderer/render.js";
 import { scanLatex } from "../scanner/scan-latex.js";
 import { acquirePaneLock } from "../state/pane-lock.js";
@@ -27,6 +27,7 @@ export const AGENT_STATUS_TIMING = Object.freeze({
 
 export interface AgentStatusHerdrClient {
   paneGet(paneId: string): Promise<OperationResult<HerdrPaneSnapshot>>;
+  agentGet(paneId: string): Promise<OperationResult<HerdrAgentSnapshot>>;
   paneRead(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>>;
 }
 
@@ -97,6 +98,7 @@ interface ResolvedEvent {
   agent: SupportedAgent;
   authority: LifecycleAuthority;
   occupantIdentity: string;
+  stateChangeSequence: number;
   lifecycle: LifecycleEvent;
 }
 
@@ -163,27 +165,35 @@ async function resolveEvent(
   if (pane.status !== decoded.status || (decoded.agentHint !== undefined && decoded.agentHint !== pane.agent)) {
     return safeFailure("event_invalid");
   }
-  const authority = AGENT_AUTHORITIES[pane.agent];
-  const occupantIdentity = buildOccupantIdentity(pane, pane.agent, authority);
+  const agentResult = await dependencies.client.agentGet(decoded.sourcePaneId);
+  if (!agentResult.ok) return failure(agentResult.error);
+  const agent = agentResult.value;
+  if (!sameAgentPane(pane, agent) || (decoded.agentHint !== undefined && decoded.agentHint !== agent.agent)) {
+    return safeFailure("event_invalid");
+  }
+  if (agent.agent === null || !isSupportedAgent(agent.agent)) return safeFailure("event_invalid");
+  const authority = AGENT_AUTHORITIES[agent.agent];
+  const occupantIdentity = buildOccupantIdentity(agent, agent.agent, authority);
   if (occupantIdentity === undefined) return safeFailure("event_invalid");
   const occupantKey = deriveStateKey("occupant", occupantIdentity, dependencies.secret);
   const sessionKey = deriveStateKey("session", dependencies.sessionIdentity, dependencies.secret);
   return success({
     decoded,
     pane,
-    agent: pane.agent,
+    agent: agent.agent,
     authority,
     occupantIdentity,
+    stateChangeSequence: agent.stateChangeSequence,
     lifecycle: {
       status: decoded.status,
       sessionKey,
       workspaceId: decoded.workspaceId,
       sourcePaneId: decoded.sourcePaneId,
-      agent: pane.agent,
+      agent: agent.agent,
       lifecycleAuthority: authority,
       occupantKey,
       paneRevision: pane.revision,
-      eventSequence: pane.revision
+      eventSequence: agent.stateChangeSequence
     }
   });
 }
@@ -216,7 +226,7 @@ async function processWorking(
         agent: resolved.agent,
         lifecycleAuthority: resolved.authority,
         paneRevision: resolved.pane.revision,
-        eventSequence: resolved.pane.revision,
+        eventSequence: resolved.stateChangeSequence,
         generation: current?.generation ?? 0,
         createdAt: now
       },
@@ -459,8 +469,28 @@ function sameResolvedEvent(left: ResolvedEvent, right: ResolvedEvent): boolean {
     left.agent === right.agent &&
     left.authority === right.authority &&
     left.occupantIdentity === right.occupantIdentity &&
+    left.stateChangeSequence === right.stateChangeSequence &&
     left.pane.revision === right.pane.revision &&
     left.pane.status === right.pane.status
+  );
+}
+
+function sameAgentPane(pane: HerdrPaneSnapshot, agent: HerdrAgentSnapshot): boolean {
+  return (
+    pane.paneId === agent.paneId &&
+    pane.workspaceId === agent.workspaceId &&
+    pane.tabId === agent.tabId &&
+    pane.agent === agent.agent &&
+    pane.status === agent.status &&
+    pane.revision === agent.revision &&
+    sameAgentSession(pane.agentSession, agent.agentSession)
+  );
+}
+
+function sameAgentSession(left: HerdrPaneSnapshot["agentSession"], right: HerdrPaneSnapshot["agentSession"]): boolean {
+  if (left === null || right === null) return left === right;
+  return (
+    left.source === right.source && left.agent === right.agent && left.kind === right.kind && left.value === right.value
   );
 }
 

@@ -71,7 +71,7 @@ export function transitionLifecycle(
   if (event.eventSequence < current.event_sequence || event.paneRevision < current.pane_revision) {
     return { kind: "preserve", reason: "stale_event" };
   }
-  if (current.processed !== undefined && event.paneRevision <= current.processed.pane_revision) {
+  if (current.processed !== undefined && event.eventSequence <= current.event_sequence) {
     return { kind: "preserve", reason: "duplicate_completion" };
   }
   return {

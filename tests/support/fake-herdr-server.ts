@@ -116,7 +116,11 @@ export class FakeHerdrServer {
   }
 
   transitionPane(paneId: string, status: FakeAgentStatus, includeAgentHint = true): FakeStatusEvent {
-    const pane = this.updatePane(paneId, { agent_status: status });
+    const current = this.#requirePane(paneId);
+    const pane = this.updatePane(paneId, {
+      agent_status: status,
+      state_change_seq: (current.state_change_seq ?? current.revision) + 1
+    });
     const data: FakeStatusEvent["data"] = {
       type: "pane_agent_status_changed",
       workspace_id: pane.workspace_id,

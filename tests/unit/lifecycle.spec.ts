@@ -118,11 +118,11 @@ describe("pure lifecycle transitions", () => {
       viewer_pane_id: "w1:p2",
       processed: {
         content_digest: "c".repeat(64),
-        pane_revision: 11,
+        pane_revision: 10,
         processed_at: "2026-08-01T00:01:00.000Z"
       }
     };
-    const nextEvent = lifecycleEvent({ eventSequence: 7, paneRevision: 12 });
+    const nextEvent = lifecycleEvent({ eventSequence: 7, paneRevision: 10 });
     const decision = transitionLifecycle(current, nextEvent, candidate(nextEvent));
 
     expect(decision.kind).toBe("store_baseline");
@@ -178,7 +178,7 @@ describe("pure lifecycle transitions", () => {
     });
   });
 
-  it("suppresses done and idle after the same pane revision was processed", () => {
+  it("suppresses done and idle with the same agent state sequence", () => {
     const current = commitCompletion(initialState(), {
       ...authorization(),
       contentDigest: "d".repeat(64),
@@ -187,10 +187,9 @@ describe("pure lifecycle transitions", () => {
     });
     if (current.kind !== "commit_completion") throw new Error("Expected a committed completion.");
 
-    expect(transitionLifecycle(current.state, completionEvent({ status: "idle" }))).toEqual({
-      kind: "preserve",
-      reason: "duplicate_completion"
-    });
+    expect(
+      transitionLifecycle(current.state, completionEvent({ status: "idle", paneRevision: 11, eventSequence: 6 }))
+    ).toEqual({ kind: "preserve", reason: "duplicate_completion" });
   });
 });
 
