@@ -5,7 +5,7 @@ import { chromium } from "playwright";
 import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Formula, RenderedImage } from "../../src/core/contracts.js";
+import type { RenderedImage } from "../../src/core/contracts.js";
 import { POLICY_LIMITS } from "../../src/core/limits.js";
 import { BrowserRendererBackend, buildRendererHtml } from "../../src/renderer/browser-backend.js";
 import { composeRendererDocument, type RendererDocument } from "../../src/renderer/document.js";
