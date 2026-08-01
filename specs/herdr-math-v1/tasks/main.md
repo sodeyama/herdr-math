@@ -51,7 +51,7 @@
   - Acceptance tests: AT-002, AT-003, AT-100, AT-112, AT-113
   - Commit: `test(herdr): add manifest and event contract fixtures`
 
-- [ ] **T-105: Add the public plugin manifest skeleton**
+- [x] **T-105: Add the public plugin manifest skeleton**
   - Scope: Add `herdr-plugin.toml` with public identity, build commands, one-shot startup cleanup, status and pane-close events, diagnostics action, viewer entrypoint, and conservative platform declaration.
   - Dependencies: T-104
   - Acceptance tests: AT-001, AT-002, AT-006, AT-011
