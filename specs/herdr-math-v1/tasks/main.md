@@ -127,7 +127,7 @@
   - Acceptance tests: AT-103 through AT-111, AT-601, AT-603
   - Commit: `feat(events): model idempotent agent lifecycle`
 
-- [ ] **T-306: Add fingerprint privacy and complexity gates**
+- [x] **T-306: Add fingerprint privacy and complexity gates**
   - Scope: Run sentinel, reversible-encoding, dictionary-like short-anchor, maximum-size, repeated-anchor, and timing tests; adjust schema thresholds without weakening boundary proof.
   - Dependencies: T-303, T-304
   - Acceptance tests: AT-207, AT-208, AT-608, AT-609

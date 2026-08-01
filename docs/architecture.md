@@ -440,6 +440,7 @@ Prototype values provide the initial defaults, subject to release validation:
 | Image width | 4,096 px | Renderer/graphics placer |
 | Image height | 16,384 px | Renderer/graphics placer |
 | Image pixels | 33,554,432 | Renderer/graphics placer |
+| Tail anchor minimum | 32 characters | Fingerprint builder/state validator |
 | Anchor occurrences examined | 256 | Boundary resolver |
 | Boundary candidates examined | 2,048 | Boundary resolver |
 | State file | 64 KiB | State store |
