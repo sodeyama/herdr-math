@@ -415,6 +415,8 @@ Prototype values provide the initial defaults, subject to release validation:
 | Limit | Initial value | Enforcement point |
 |---|---:|---|
 | Pane read | 1,000 recent lines | Herdr reader |
+| Event JSON | 64 KiB UTF-8 | Event decoder |
+| Pane read bytes | 1 MiB UTF-8 | Herdr reader |
 | Scanner input | 1 MiB UTF-8 | Scanner |
 | Delimiter runs per answer | 4,096 | Scanner |
 | Characters per delimiter run | 8 | Scanner |
@@ -423,9 +425,16 @@ Prototype values provide the initial defaults, subject to release validation:
 | Aggregate formula characters | 10,000 | Renderer boundary |
 | Render duration | 8 seconds | Renderer |
 | Raw PNG bytes | 512 KiB | Graphics placer |
+| Base64 graphics payload | 700 KiB | Graphics placer |
+| Image width | 4,096 px | Renderer/graphics placer |
+| Image height | 16,384 px | Renderer/graphics placer |
+| Image pixels | 33,554,432 | Renderer/graphics placer |
 | Anchor occurrences examined | 256 | Boundary resolver |
+| State file | 64 KiB | State store |
+| Socket response | 2 MiB | Herdr client |
+| Stale lock age | 120 seconds | State store |
 
-The public implementation must also set explicit limits for event JSON size, pane-read bytes, image width and height, state-file bytes, socket response bytes, and lock age.
+These initial values remain release-gated. Lower them if renderer or protocol evidence requires a stricter bound; do not raise them without updating the threat model and acceptance tests.
 
 ## Error Model
 
@@ -437,6 +446,7 @@ Stable v1 error codes include:
 - `boundary_failed`
 - `answer_truncated`
 - `formula_not_found`
+- `scanner_input_limit`
 - `invalid_latex`
 - `renderer_input_limit`
 - `renderer_timeout`
@@ -450,6 +460,7 @@ Stable v1 error codes include:
 - `herdr_protocol_error`
 - `state_locked`
 - `state_corrupt`
+- `internal_error`
 
 Expected input rejection is not logged as an unhandled exception. Unexpected failures produce a bounded error record and a non-zero worker exit without affecting the agent process.
 

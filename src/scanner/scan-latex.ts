@@ -1,9 +1,8 @@
-export interface Formula {
-  latex: string;
-  display: boolean;
-  start: number;
-  end: number;
-}
+import type { Formula } from "../core/contracts.js";
+import { HerdrMathError, type SafeLimitKind } from "../core/errors.js";
+import { POLICY_LIMITS } from "../core/limits.js";
+
+export type { Formula } from "../core/contracts.js";
 
 export interface ScannerLimits {
   maxInputBytes: number;
@@ -13,26 +12,26 @@ export interface ScannerLimits {
   maxFormulaCharacters: number;
 }
 
-export type ScannerLimitKind =
-  "input_bytes" | "delimiter_runs" | "delimiter_run_length" | "formula_count" | "formula_characters";
+export type ScannerLimitKind = Extract<
+  SafeLimitKind,
+  "input_bytes" | "delimiter_runs" | "delimiter_run_length" | "formula_count" | "formula_characters"
+>;
 
 export const DEFAULT_SCANNER_LIMITS: Readonly<ScannerLimits> = Object.freeze({
-  maxInputBytes: 1024 * 1024,
-  maxDelimiterRuns: 4096,
-  maxDelimiterRunLength: 8,
-  maxFormulaCount: 20,
-  maxFormulaCharacters: 2000
+  maxInputBytes: POLICY_LIMITS.scannerInputBytes,
+  maxDelimiterRuns: POLICY_LIMITS.delimiterRuns,
+  maxDelimiterRunLength: POLICY_LIMITS.delimiterRunCharacters,
+  maxFormulaCount: POLICY_LIMITS.formulasPerAnswer,
+  maxFormulaCharacters: POLICY_LIMITS.charactersPerFormula
 });
 
-export class ScannerLimitError extends Error {
-  readonly code = "scanner_input_limit";
-
+export class ScannerLimitError extends HerdrMathError {
   constructor(
     readonly limitKind: ScannerLimitKind,
     readonly limit: number,
     readonly actual: number
   ) {
-    super(`Scanner ${limitKind} limit exceeded.`);
+    super("scanner_input_limit", { limit_kind: limitKind, limit, actual });
     this.name = "ScannerLimitError";
   }
 }
