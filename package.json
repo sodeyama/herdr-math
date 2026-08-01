@@ -1,0 +1,34 @@
+{
+  "name": "herdr-math",
+  "version": "0.1.0",
+  "description": "Render LaTeX from AI agent responses in a side pane.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "sodeyama",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "npm@10.9.4",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sodeyama/herdr-math.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sodeyama/herdr-math/issues"
+  },
+  "homepage": "https://github.com/sodeyama/herdr-math#readme",
+  "keywords": [
+    "herdr-plugin",
+    "latex",
+    "math",
+    "terminal"
+  ],
+  "files": [
+    "dist/",
+    "herdr-plugin.toml",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {}
+}
