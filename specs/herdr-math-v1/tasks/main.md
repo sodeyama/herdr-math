@@ -380,5 +380,6 @@
 
 ## Current Next Task
 
-Continue with **T-901**. T-804 remains an optional P1 compatibility expansion and does not block the initial
-Ghostty-only release scope.
+Continue with **T-902**. T-901 documentation is implemented, but its checkbox remains open until tagged install,
+same-tag reinstall, and managed uninstall evidence close AT-004, AT-005, and AT-010. T-804 remains an optional P1
+compatibility expansion and does not block the initial Ghostty-only release scope.

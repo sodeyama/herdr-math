@@ -2,61 +2,93 @@
 
 Render LaTeX from AI agent responses in a side pane.
 
-Herdr Math is a planned public [Herdr](https://herdr.dev/) plugin. When a supported coding agent finishes a response, the plugin extracts inline and display equations, renders them locally, and updates a reusable viewer pane without taking focus away from the agent.
+Herdr Math is a [Herdr](https://herdr.dev/) plugin. It detects `$...$` and `$$...$$` equations in completed coding-agent responses, renders them locally, and updates one reusable viewer pane without taking focus from the agent.
 
 ## Status
 
-This repository currently contains the product design, experiment evidence, target architecture, and v1 implementation plan. It is **not yet an installable release**.
+Version 0.1.0 is a development build, not a published release. The implementation and automated suite are complete through the real Herdr runtime and compatibility gates. Public maintenance files, CI, screenshots, and immutable-tag installation remain release work.
 
-A local prototype proved the core path on August 1, 2026:
+Verified release-candidate environment:
 
-```text
-agent completion
-  -> current-answer boundary detection
-  -> LaTeX scanning
-  -> local PNG rendering
-  -> Herdr pane.graphics.set
-  -> reusable side pane
+- Herdr 0.7.5, protocol 17
+- macOS arm64
+- Ghostty 1.3.1
+- Claude Code, Codex CLI, Pi, and OpenCode
+
+See [Compatibility](docs/compatibility.md) for exact versions and unverified combinations.
+
+## Development installation
+
+Herdr local linking expects an already-built checkout:
+
+```sh
+npm ci
+npm run audit:browser
+npm run build
+herdr plugin link /path/to/herdr-math --enabled
 ```
 
-The production implementation will be built in this repository from the specifications below. Prototype code will be ported selectively rather than copied as-is.
+Enable Herdr's experimental graphics support, then reload the server configuration:
 
-## Design Principles
+```toml
+[experimental]
+kitty_graphics = true
+```
 
-- Local-only processing: no pane content or equations leave the machine.
-- Fail-closed answer detection: uncertain historical content is not rendered.
-- One viewer per source pane: repeated answers update the same split.
-- Safe rendering: no TeX executable, shell evaluation, or trusted remote content.
-- Herdr-native lifecycle: event hooks and Herdr-managed plugin state.
-- Honest compatibility: Ghostty is a verified terminal, not a direct dependency.
+```sh
+herdr server reload-config
+```
+
+The future tagged installation command is documented in [Getting started](docs/getting-started.md), but it is not valid until the v0.1.0 tag is published.
+
+## Use
+
+Install the Herdr integration for each coding agent you use:
+
+```sh
+herdr integration install claude
+herdr integration install codex
+herdr integration install pi
+herdr integration install opencode
+herdr integration status
+```
+
+Run a supported agent in Herdr and complete a response containing inline or display LaTeX. Herdr Math opens one `Math` pane to the right. Later valid answers replace the image in that pane. Answers without math and rejected updates leave the previous image unchanged.
+
+Run privacy-safe diagnostics from a Herdr pane:
+
+```sh
+herdr plugin action invoke diagnose --plugin io.github.sodeyama.herdr-math
+```
+
+## Safety
+
+- Pane text and equations stay local.
+- Durable state contains keyed fingerprints, not transcripts or LaTeX source.
+- Rendering uses local KaTeX and Chromium assets with remote loading and trusted links disabled.
+- The plugin does not execute TeX, shell input, user JavaScript, or remote resources.
+- Uncertain answer boundaries fail closed instead of rendering historical pane content.
 
 ## Documentation
 
+- [Getting started and troubleshooting](docs/getting-started.md)
+- [Compatibility](docs/compatibility.md)
 - [Concept and product boundaries](docs/concept.md)
-- [Target architecture](docs/architecture.md)
-- [August 2026 experiment report](docs/experiment-report.md)
+- [Architecture](docs/architecture.md)
 - [Documentation index](docs/README.md)
-
-## Implementation Specification
-
-The canonical v1 specification is split into three synchronized documents:
-
 - [Acceptance tests](specs/herdr-math-v1/tests/main.md)
-- [Implementation plan](specs/herdr-math-v1/plans/main.md)
-- [Executable task list](specs/herdr-math-v1/tasks/main.md)
 
-## Compatibility Direction
+## Development
 
-The current 0.1.0 development build is verified with Herdr 0.7.5 on macOS arm64 using Ghostty 1.3.1 and Herdr's experimental Kitty graphics support. The first release will declare only combinations that pass the release matrix. See [Compatibility](docs/compatibility.md) for verified and unverified combinations.
+```sh
+npm ci
+npm run check
+npm test
+npm run test:integration
+npm run build
+npm run smoke:render
+```
 
-Herdr Math does not call Ghostty APIs. It uses Herdr's plugin and pane graphics APIs; the attached outer terminal must support the image path used by Herdr.
+Read [AGENTS.md](AGENTS.md) before contributing. Public documentation, code comments, logs, commits, and release material are written in English.
 
-## Contributing
-
-Read [AGENTS.md](AGENTS.md) before making changes. Public documentation, code comments, logs, commits, and release material are written in English.
-
-## Official Herdr References
-
-- [Plugins](https://herdr.dev/docs/plugins/)
-- [Socket API](https://herdr.dev/docs/socket-api/)
-- [Marketplace](https://herdr.dev/docs/marketplace/)
+Herdr Math is licensed under the [MIT License](LICENSE). Third-party runtime notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
