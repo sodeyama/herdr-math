@@ -97,7 +97,7 @@
 
 ## Phase 3 - Fingerprint Boundary and Atomic State
 
-- [ ] **T-301: Define the boundary fingerprint schema**
+- [x] **T-301: Define the boundary fingerprint schema**
   - Scope: Version the full digest, prefix checkpoints, suffix windows, contextual tail anchors, session/pane metadata, expiry, and processed-digest record.
   - Dependencies: T-203, T-204
   - Acceptance tests: AT-200 through AT-208, AT-207 in particular
