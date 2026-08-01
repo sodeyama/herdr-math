@@ -102,6 +102,29 @@ export async function isCurrentGeneration(
   return state?.generation === generation && state.occupant_key === occupantKey;
 }
 
+export async function removePaneState(
+  paths: PaneStatePaths,
+  expectedGeneration: number,
+  now = new Date()
+): Promise<boolean> {
+  if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0 || Number.isNaN(now.getTime())) {
+    throw new HerdrMathError("event_invalid");
+  }
+  await ensurePaneStateDirectories(paths);
+  const loaded = await readCanonicalState(paths);
+  if (loaded === undefined) return false;
+  if (
+    loaded.state.session_key !== paths.sessionKey ||
+    loaded.state.source_pane_id !== paths.sourcePaneId ||
+    loaded.state.generation !== expectedGeneration
+  ) {
+    return false;
+  }
+  if (!(await unlinkIfIdentityMatches(paths.statePath, loaded.identity))) return false;
+  await syncDirectory(paths.panesDirectory);
+  return true;
+}
+
 export async function cleanupPaneTemporaryFiles(
   paths: PaneStatePaths,
   minimumAgeMs: number,

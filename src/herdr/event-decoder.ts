@@ -6,6 +6,7 @@ import { POLICY_LIMITS } from "../core/limits.js";
 import type { AgentStatus } from "../events/lifecycle.js";
 
 const EVENT_NAME = "pane_agent_status_changed" as const;
+const PANE_CLOSED_EVENT = "pane_closed" as const;
 const EVENT_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const AGENT_STATUSES = new Set<AgentStatus>(["working", "blocked", "done", "idle", "unknown"]);
 
@@ -15,6 +16,12 @@ export interface DecodedAgentStatusEvent {
   sourcePaneId: string;
   status: AgentStatus;
   agentHint?: string;
+}
+
+export interface DecodedPaneClosedEvent {
+  event: typeof PANE_CLOSED_EVENT;
+  workspaceId: string;
+  paneId: string;
 }
 
 export function decodeAgentStatusEvent(source: string): OperationResult<DecodedAgentStatusEvent> {
@@ -46,6 +53,34 @@ export function decodeAgentStatusEvent(source: string): OperationResult<DecodedA
     };
     if (typeof data.agent === "string") decoded.agentHint = data.agent;
     return success(Object.freeze(decoded));
+  } catch {
+    return failure(serializeError(new HerdrMathError("event_invalid")));
+  }
+}
+
+export function decodePaneClosedEvent(source: string): OperationResult<DecodedPaneClosedEvent> {
+  try {
+    if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > POLICY_LIMITS.eventJsonBytes) {
+      throw new HerdrMathError("event_invalid");
+    }
+    const envelope: unknown = JSON.parse(source);
+    if (
+      !isRecord(envelope) ||
+      envelope.event !== PANE_CLOSED_EVENT ||
+      !isRecord(envelope.data) ||
+      envelope.data.type !== PANE_CLOSED_EVENT ||
+      !isEventIdentifier(envelope.data.workspace_id) ||
+      !isEventIdentifier(envelope.data.pane_id)
+    ) {
+      throw new HerdrMathError("event_invalid");
+    }
+    return success(
+      Object.freeze({
+        event: PANE_CLOSED_EVENT,
+        workspaceId: envelope.data.workspace_id,
+        paneId: envelope.data.pane_id
+      })
+    );
   } catch {
     return failure(serializeError(new HerdrMathError("event_invalid")));
   }

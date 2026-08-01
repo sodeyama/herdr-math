@@ -17,18 +17,12 @@ import { scanLatex } from "../scanner/scan-latex.js";
 import { acquirePaneLock } from "../state/pane-lock.js";
 import { createPaneStatePaths, type PaneStatePaths } from "../state/paths.js";
 import { isCurrentGeneration, loadPaneState, writePaneState } from "../state/store.js";
+import { AGENT_AUTHORITIES, buildOccupantIdentity, isSupportedAgent } from "./agent-identity.js";
 
 export const AGENT_STATUS_TIMING = Object.freeze({
   completionDebounceMs: 500,
   stableReadIntervalMs: 100,
   stableReadAttempts: 3
-});
-
-const AGENT_AUTHORITIES: Readonly<Record<SupportedAgent, LifecycleAuthority>> = Object.freeze({
-  claude: "screen_detection",
-  codex: "screen_detection",
-  pi: "integration_hook",
-  opencode: "integration_hook"
 });
 
 export interface AgentStatusHerdrClient {
@@ -161,13 +155,9 @@ async function resolveEvent(
     return safeFailure("event_invalid");
   }
   if (!isSupportedAgent(pane.agent)) return safeFailure("agent_unsupported");
-  if (pane.agentSession !== null && pane.agentSession.agent !== pane.agent) return safeFailure("event_invalid");
-
   const authority = AGENT_AUTHORITIES[pane.agent];
-  const occupantIdentity =
-    pane.agentSession === null
-      ? `pane-agent\0${pane.paneId}\0${pane.agent}\0${authority}`
-      : `agent-session\0${pane.agentSession.source}\0${pane.agentSession.agent}\0${pane.agentSession.kind}\0${pane.agentSession.value}`;
+  const occupantIdentity = buildOccupantIdentity(pane, pane.agent, authority);
+  if (occupantIdentity === undefined) return safeFailure("event_invalid");
   const occupantKey = deriveStateKey("occupant", occupantIdentity, dependencies.secret);
   const sessionKey = deriveStateKey("session", dependencies.sessionIdentity, dependencies.secret);
   return success({
@@ -482,10 +472,6 @@ function currentTime(dependencies: AgentStatusWorkerDependencies): Date {
   const value = dependencies.now?.() ?? new Date();
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) throw new HerdrMathError("event_invalid");
   return new Date(value.getTime());
-}
-
-function isSupportedAgent(value: string): value is SupportedAgent {
-  return Object.hasOwn(AGENT_AUTHORITIES, value);
 }
 
 function safeFailure<T>(code: HerdrMathError["code"], retryable = false): OperationResult<T> {

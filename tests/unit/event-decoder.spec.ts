@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import { POLICY_LIMITS } from "../../src/core/limits.js";
-import { decodeAgentStatusEvent } from "../../src/herdr/event-decoder.js";
+import { decodeAgentStatusEvent, decodePaneClosedEvent } from "../../src/herdr/event-decoder.js";
 
 interface EventFixture {
   event: string;
@@ -111,6 +111,36 @@ describe("Herdr agent-status event decoder", () => {
   });
 });
 
+describe("Herdr pane-closed event decoder", () => {
+  it("extracts only the schema-compatible workspace and pane ids", () => {
+    const result = decodePaneClosedEvent(
+      JSON.stringify({
+        event: "pane_closed",
+        data: { type: "pane_closed", workspace_id: "w1", pane_id: "w1:p2", ignored: "not returned" }
+      })
+    );
+    expect(result).toEqual({
+      ok: true,
+      value: { event: "pane_closed", workspaceId: "w1", paneId: "w1:p2" }
+    });
+    if (result.ok) expect(Object.isFrozen(result.value)).toBe(true);
+  });
+
+  it.each([
+    ["invalid JSON", "{"],
+    ["wrong event", closeSource({ event: "pane_agent_status_changed" })],
+    ["wrong data type", closeSource({ data: { type: "pane_updated" } })],
+    ["missing workspace", closeSource({ data: { workspace_id: undefined } })],
+    ["path-like pane", closeSource({ data: { pane_id: "../pane" } })],
+    ["oversized", closeSource({ data: { ignored: "x".repeat(POLICY_LIMITS.eventJsonBytes) } })]
+  ])("rejects %s", (_name, source) => {
+    expect(decodePaneClosedEvent(source)).toEqual({
+      ok: false,
+      error: { code: "event_invalid", retryable: false }
+    });
+  });
+});
+
 function validSource(overrides: { event?: unknown; data?: Record<string, unknown> } = {}): string {
   const data: Record<string, unknown> = {
     type: "pane_agent_status_changed",
@@ -124,4 +154,17 @@ function validSource(overrides: { event?: unknown; data?: Record<string, unknown
     if (value === undefined) delete data[key];
   }
   return JSON.stringify({ event: overrides.event ?? "pane_agent_status_changed", data });
+}
+
+function closeSource(overrides: { event?: unknown; data?: Record<string, unknown> } = {}): string {
+  const data: Record<string, unknown> = {
+    type: "pane_closed",
+    workspace_id: "w1",
+    pane_id: "w1:p1",
+    ...overrides.data
+  };
+  for (const [key, value] of Object.entries(data)) {
+    if (value === undefined) delete data[key];
+  }
+  return JSON.stringify({ event: overrides.event ?? "pane_closed", data });
 }

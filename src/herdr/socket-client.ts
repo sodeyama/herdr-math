@@ -92,6 +92,21 @@ export class HerdrSocketClient {
     return this.#request(outbound, this.#paneGetTimeoutMs, parsePaneGetResult);
   }
 
+  paneGetIfPresent(paneId: string): Promise<OperationResult<HerdrPaneSnapshot | null>> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(paneId)) {
+      return Promise.resolve(protocolFailure());
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "pane.get",
+      params: { pane_id: paneId }
+    };
+    return this.#request(outbound, this.#paneGetTimeoutMs, parsePaneGetResult, (remote) => {
+      if (remote.code === "not_found") return null;
+      throw new HerdrMathError("herdr_protocol_error");
+    });
+  }
+
   paneRead(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>> {
     if (!isSocketPath(this.socketPath) || !isIdentifier(paneId)) {
       return Promise.resolve(protocolFailure());
@@ -113,7 +128,8 @@ export class HerdrSocketClient {
   #request<T>(
     outbound: HerdrRequest,
     timeoutMs: number,
-    parseResult: (value: unknown) => T
+    parseResult: (value: unknown) => T,
+    parseRemoteError?: (error: HerdrWireError) => T
   ): Promise<OperationResult<T>> {
     return new Promise((resolve) => {
       let socket: Socket;
@@ -182,7 +198,7 @@ export class HerdrSocketClient {
 
         try {
           const parsed: unknown = JSON.parse(UTF8_DECODER.decode(line));
-          settle(success(parseResponse(parsed, outbound.id, parseResult)));
+          settle(success(parseResponse(parsed, outbound.id, parseResult, parseRemoteError)));
         } catch (error) {
           settle(
             failure(
@@ -199,7 +215,17 @@ export class HerdrSocketClient {
   }
 }
 
-function parseResponse<T>(value: unknown, requestId: string, parseResult: (result: unknown) => T): T {
+interface HerdrWireError {
+  code: string;
+  message: string;
+}
+
+function parseResponse<T>(
+  value: unknown,
+  requestId: string,
+  parseResult: (result: unknown) => T,
+  parseRemoteError?: (error: HerdrWireError) => T
+): T {
   if (!isRecord(value) || value.id !== requestId) {
     throw new HerdrMathError("herdr_protocol_error");
   }
@@ -211,6 +237,7 @@ function parseResponse<T>(value: unknown, requestId: string, parseResult: (resul
   }
   if (hasError) {
     if (!isHerdrError(value.error)) throw new HerdrMathError("herdr_protocol_error");
+    if (parseRemoteError !== undefined) return parseRemoteError(value.error);
     throw new HerdrMathError("herdr_protocol_error");
   }
   return parseResult(value.result);
@@ -332,6 +359,6 @@ function isAgentStatus(value: unknown): value is AgentStatus {
   return typeof value === "string" && AGENT_STATUSES.has(value as AgentStatus);
 }
 
-function isHerdrError(value: unknown): value is { code: string; message: string } {
+function isHerdrError(value: unknown): value is HerdrWireError {
   return isRecord(value) && isIdentifier(value.code) && typeof value.message === "string";
 }
