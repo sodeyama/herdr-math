@@ -448,14 +448,17 @@ The v1 allowlist starts from the already evidenced Claude Code and Codex paths. 
 
 ### Work
 
-1. Replace README planning language with tested install, configuration, usage, diagnose, troubleshooting, update/reinstall, and uninstall instructions.
+1. Replace README planning language with verified local-link, configuration, usage, diagnose, and troubleshooting
+   instructions. Document tagged install, reinstall, and managed uninstall as release-pending until their immutable
+   tag tests pass.
 2. Add `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, compatibility table, privacy statement, and known limitations.
 3. Add sanitized screenshots generated from the public implementation.
 4. Audit dependency and font licenses and generate notices if required.
 5. Add CI for clean install, static checks, unit/integration/render tests, build, and release artifact checks.
 6. Prepare release notes with exact supported versions and terminals.
 7. Commit the final version bump and changelog entry.
-8. Create an immutable release candidate tag and run `herdr plugin install` from it in a clean environment.
+8. Create an immutable release candidate tag and run clean install, same-tag reinstall, managed uninstall, and a
+   documented first-use smoke from it in an isolated environment.
 9. Fix any issue in a new commit and tag; do not move a published tag.
 10. Publish the GitHub release only after the final tag passes.
 11. Add GitHub repository topics including `herdr-plugin` after install readiness.

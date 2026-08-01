@@ -314,10 +314,10 @@
 
 ## Phase 9 - Public Documentation and Release
 
-- [ ] **T-901: Write tested installation and usage documentation**
-  - Scope: Replace planning status with clean install, local link, configuration, first use, supported coding-agent matrix, required Herdr integrations, diagnose, update/reinstall, uninstall, and limitations based on actual commands.
+- [x] **T-901: Write tested installation and usage documentation**
+  - Scope: Replace planning status with verified local-link, configuration, first use, supported coding-agent matrix, required Herdr integrations, diagnose, and limitations. Clearly label tagged install, same-tag reinstall, and managed uninstall as release-pending until T-906.
   - Dependencies: T-806
-  - Acceptance tests: AT-004 through AT-006, AT-010, AT-705 through AT-707
+  - Acceptance tests: AT-006, AT-705 through AT-707
   - Commit: `docs(readme): add tested install and usage guide`
 
 - [x] **T-902: Add contribution, security, changelog, and support files**
@@ -341,13 +341,13 @@
 - [ ] **T-905: Prepare version `0.1.0`**
   - Scope: Set version in manifest/package/changelog, write release notes, verify repository description and planned topics, and run the full suite from the release commit.
   - Dependencies: T-901, T-902, T-903, T-904
-  - Acceptance tests: AT-001, AT-011, AT-706 through AT-711
+  - Acceptance tests: AT-001, AT-011, AT-706 through AT-709
   - Commit: `chore(release): prepare v0.1.0`
 
 - [ ] **T-906: Run immutable-tag clean installation**
-  - Scope: Create a release-candidate tag, install it through Herdr in a clean environment, run first-use and runtime smoke, and create a new tag rather than moving it if a fix is needed.
+  - Scope: Create a release-candidate tag, run clean GitHub install, same-tag reinstall, managed uninstall, and documented first-use/runtime smoke in an isolated environment, and create a new tag rather than moving it if a fix is needed.
   - Dependencies: T-905
-  - Acceptance tests: AT-004, AT-005, AT-710
+  - Acceptance tests: AT-004, AT-005, AT-010, AT-710
   - Commit: Evidence-only follow-up if a new commit is required; never mutate a published tag.
 
 - [ ] **T-907: Publish the first public release**
@@ -380,7 +380,7 @@
 
 ## Current Next Task
 
-Resolve the Phase 9 dependency mapping next. T-903 remains open because the current Computer Use safety policy blocks direct Ghostty
-capture; do not substitute an unverified or unredacted screenshot. T-901 documentation is implemented, but its
-checkbox remains open until tagged install, same-tag reinstall, and managed uninstall evidence close AT-004,
-AT-005, and AT-010. T-804 remains an optional P1 compatibility expansion.
+Continue with **T-903**. The current Computer Use safety policy blocks direct Ghostty capture; do not substitute an
+unverified or unredacted screenshot. T-905 remains dependency-blocked by T-903. Tagged install, same-tag reinstall,
+and managed uninstall are assigned to T-906 without creating a dependency cycle. T-804 remains an optional P1
+compatibility expansion.
