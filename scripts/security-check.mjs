@@ -80,13 +80,27 @@ for (const path of runtimeFiles) {
   for (const match of source.matchAll(/executablePath\s*:\s*([A-Za-z0-9_.$]+)/gu)) {
     if (match[1] !== "BROWSER_EXECUTABLE_PATH") violations.push(`${path}: executable_path_input`);
   }
-  if (source.includes('from "node:net"') && path !== "src/herdr/socket-client.ts") {
+  const localSocketFiles = new Set(["src/herdr/socket-client.ts", "src/viewer/transport.ts"]);
+  if (source.includes('from "node:net"') && !localSocketFiles.has(path)) {
     violations.push(`${path}: network_socket_outside_herdr_client`);
   }
   if (path === "src/herdr/socket-client.ts") {
     const calls = [...source.matchAll(/createConnection\s*\(/gu)].length;
     if (calls !== 1 || !source.includes("createConnection({ path: this.socketPath })")) {
       violations.push(`${path}: non_local_socket_connection`);
+    }
+  }
+  if (path === "src/viewer/transport.ts") {
+    const connections = [...source.matchAll(/createConnection\s*\(/gu)].length;
+    const listeners = [...source.matchAll(/\.listen\s*\(/gu)].length;
+    if (
+      connections !== 1 ||
+      listeners !== 1 ||
+      !source.includes("createConnection(socketPath)") ||
+      !source.includes("server.listen(socketPath)") ||
+      !source.includes("chmod(socketPath, 0o600)")
+    ) {
+      violations.push(`${path}: non_local_viewer_transport`);
     }
   }
 }
