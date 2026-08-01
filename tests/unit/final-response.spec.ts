@@ -120,6 +120,37 @@ describe("coding-agent final response extraction", () => {
     ).toMatchObject({ ok: false, error: { code: "conclusion_boundary_failed" } });
   });
 
+  it("requires OpenCode tool and completion chrome for plain snapshot recovery", () => {
+    const complete = "→ Read source\n\nFinal response is $x=1$.\n\n▣ Done";
+    const completeSnapshot = parseMatchingAnsiSnapshot(complete, complete);
+    expect(completeSnapshot.ok).toBe(true);
+    if (!completeSnapshot.ok) return;
+    expect(
+      extractFinalResponse({
+        agent: "opencode",
+        answer: complete,
+        answerStartOffset: 0,
+        snapshot: completeSnapshot.value,
+        requireOpenCodeChrome: true
+      })
+    ).toMatchObject({ ok: true, value: { text: "Final response is $x=1$." } });
+
+    for (const incomplete of ["Final response is $x=1$.\n\n▣ Done", "→ Read source\n\nFinal response is $x=1$."]) {
+      const snapshot = parseMatchingAnsiSnapshot(incomplete, incomplete);
+      expect(snapshot.ok).toBe(true);
+      if (!snapshot.ok) continue;
+      expect(
+        extractFinalResponse({
+          agent: "opencode",
+          answer: incomplete,
+          answerStartOffset: 0,
+          snapshot: snapshot.value,
+          requireOpenCodeChrome: true
+        })
+      ).toMatchObject({ ok: false, error: { code: "conclusion_boundary_failed" } });
+    }
+  });
+
   it("keeps synthetic fixtures free of local paths and credentials", () => {
     expect(fixtureSource).not.toMatch(/\/Users\/|\\Users\\|api[_-]?key|access[_-]?token|bearer\s+/iu);
   });

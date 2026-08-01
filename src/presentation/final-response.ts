@@ -9,6 +9,7 @@ export interface FinalResponseRequest {
   answerStartOffset: number;
   snapshot: StyledTerminalSnapshot;
   requirePiFooter?: boolean;
+  requireOpenCodeChrome?: boolean;
 }
 
 export interface FinalResponse {
@@ -33,7 +34,7 @@ export function extractFinalResponse(request: FinalResponseRequest): OperationRe
     const lines = answerLines(request);
     const selected = trimKnownTailChrome(
       request.agent,
-      selectFinalLines(request.agent, lines, request.requirePiFooter === true)
+      selectFinalLines(request.agent, lines, request.requirePiFooter === true, request.requireOpenCodeChrome === true)
     );
     const trimmed = trimBlankLines(selected);
     if (trimmed.length === 0) throw new HerdrMathError("conclusion_boundary_failed");
@@ -56,12 +57,13 @@ export function extractFinalResponse(request: FinalResponseRequest): OperationRe
 function selectFinalLines(
   agent: SupportedAgent,
   lines: readonly ResponseLine[],
-  requirePiFooter: boolean
+  requirePiFooter: boolean,
+  requireOpenCodeChrome = false
 ): ResponseLine[] {
   if (agent === "claude") return selectClaude(lines);
   if (agent === "codex") return selectCodex(lines);
   if (agent === "pi") return selectPi(lines, requirePiFooter);
-  return selectOpenCode(lines);
+  return selectOpenCode(lines, requireOpenCodeChrome);
 }
 
 function selectClaude(lines: readonly ResponseLine[]): ResponseLine[] {
@@ -105,16 +107,17 @@ function selectPi(lines: readonly ResponseLine[], requireFooter: boolean): Respo
   return lines.slice(lastChrome + 1, footer === -1 ? lines.length : footer);
 }
 
-function selectOpenCode(lines: readonly ResponseLine[]): ResponseLine[] {
+function selectOpenCode(lines: readonly ResponseLine[], requireChrome: boolean): ResponseLine[] {
   const summary = findLastIndex(lines, ({ text }) => /^\s*▣\s+\S/u.test(text));
   const hasToolChrome = lines.some(({ text }) => /^\s*→\s*/u.test(text));
   if (summary === -1) {
-    if (hasToolChrome) throw new HerdrMathError("conclusion_boundary_failed");
+    if (hasToolChrome || requireChrome) throw new HerdrMathError("conclusion_boundary_failed");
     return stripOpenCodeAnswerMarker([...lines]);
   }
   const beforeSummary = lines.slice(0, summary);
   const lastTool = findLastIndex(beforeSummary, ({ text }) => /^\s*→\s+\S/u.test(text));
   if (lastTool !== -1) return stripOpenCodeAnswerMarker(beforeSummary.slice(lastTool + 1));
+  if (requireChrome) throw new HerdrMathError("conclusion_boundary_failed");
   const lastPromptChrome = findLastIndex(beforeSummary, ({ text }) => /^\s*[┃╹]/u.test(text));
   return stripOpenCodeAnswerMarker(beforeSummary.slice(lastPromptChrome + 1));
 }
@@ -322,6 +325,7 @@ function validateRequest(request: FinalResponseRequest): void {
     !Number.isSafeInteger(request.answerStartOffset) ||
     request.answerStartOffset < 0 ||
     (request.requirePiFooter === true && request.agent !== "pi") ||
+    (request.requireOpenCodeChrome === true && request.agent !== "opencode") ||
     endOffset > request.snapshot.text.length ||
     request.snapshot.text.slice(request.answerStartOffset, endOffset) !== request.answer
   ) {

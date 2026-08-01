@@ -126,7 +126,7 @@ interface CompletionPhase {
 interface StableRead {
   snapshot: HerdrPaneReadSnapshot;
   styledSnapshot: StyledTerminalSnapshot;
-  usesAnsiSuffix: boolean;
+  snapshotMode: "strict" | "pi_suffix" | "opencode_plain";
   digest: string;
   styledDigest: string;
 }
@@ -330,10 +330,11 @@ async function processCompletion(
   const answerEndOffset = boundary.value.startOffset + boundary.value.answer.length;
   const styledStartOffset = stable.value.styledSnapshot.lines[0]?.startOffset;
   const answerStartOffset =
-    stable.value.usesAnsiSuffix && styledStartOffset !== undefined
+    stable.value.snapshotMode === "pi_suffix" && styledStartOffset !== undefined
       ? Math.max(boundary.value.startOffset, styledStartOffset)
       : boundary.value.startOffset;
-  const presentationEndOffset = stable.value.usesAnsiSuffix ? stable.value.snapshot.text.length : answerEndOffset;
+  const presentationEndOffset =
+    stable.value.snapshotMode === "pi_suffix" ? stable.value.snapshot.text.length : answerEndOffset;
   if (styledStartOffset === undefined || answerStartOffset >= answerEndOffset) {
     return safeFailure("conclusion_boundary_failed");
   }
@@ -342,7 +343,8 @@ async function processCompletion(
     answer: stable.value.snapshot.text.slice(answerStartOffset, presentationEndOffset),
     answerStartOffset,
     snapshot: stable.value.styledSnapshot,
-    ...(stable.value.usesAnsiSuffix ? { requirePiFooter: true } : {})
+    ...(stable.value.snapshotMode === "pi_suffix" ? { requirePiFooter: true } : {}),
+    ...(stable.value.snapshotMode === "opencode_plain" ? { requireOpenCodeChrome: true } : {})
   });
   if (!finalResponse.ok) return failure(finalResponse.error);
   if (
@@ -430,10 +432,14 @@ async function readStableCompletion(
       continue;
     }
     let styledSnapshot = parseMatchingAnsiSnapshot(read.value.text, ansiRead.value.text);
-    let usesAnsiSuffix = false;
+    let snapshotMode: StableRead["snapshotMode"] = "strict";
     if (!styledSnapshot.ok && resolved.agent === "pi") {
       styledSnapshot = parseMatchingAnsiSuffixSnapshot(read.value.text, ansiRead.value.text);
-      usesAnsiSuffix = styledSnapshot.ok;
+      if (styledSnapshot.ok) snapshotMode = "pi_suffix";
+    }
+    if (!styledSnapshot.ok && resolved.agent === "opencode") {
+      styledSnapshot = parseMatchingAnsiSnapshot(read.value.text, read.value.text);
+      if (styledSnapshot.ok) snapshotMode = "opencode_plain";
     }
     if (!styledSnapshot.ok) {
       snapshotMismatch = true;
@@ -444,7 +450,7 @@ async function readStableCompletion(
     const candidate: StableRead = {
       snapshot: read.value,
       styledSnapshot: styledSnapshot.value,
-      usesAnsiSuffix,
+      snapshotMode,
       digest: fingerprintDigest("stable-pane-read", read.value.text, dependencies.secret),
       styledDigest: fingerprintDigest("stable-pane-ansi", ansiRead.value.text, dependencies.secret)
     };

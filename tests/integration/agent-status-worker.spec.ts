@@ -180,6 +180,55 @@ describe("agent status worker", () => {
     expect(rig.publications).toHaveLength(0);
   });
 
+  it("recovers OpenCode final output from plain text only between textual chrome boundaries", async () => {
+    const rig = await createRig({
+      agent: "opencode",
+      agent_session: { source: "herdr:opencode", agent: "opencode", kind: "id", value: "session-opencode-plain" }
+    });
+    const baseline = "Synthetic OpenCode baseline before a plain snapshot recovery.";
+    rig.server.setPaneOutput("w1:p1", baseline);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+
+    const plain = `${baseline}\n→ Read source\n\nFinal response is $x=1$.\n\n▣ Done`;
+    const ansi = `${baseline}\n→ Read changed source\n\nFinal response is $x=1$.\n\n▣ Done`;
+    rig.server.setPaneOutput("w1:p1", plain, false, ansi);
+
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
+      ok: true,
+      value: { kind: "image_published", formulaCount: 1 }
+    });
+    expect(rig.renderedTexts).toEqual(["Final response is $x=1$."]);
+    expect(rig.renders).toEqual([[{ latex: "x=1", display: false }]]);
+  });
+
+  it("rejects OpenCode plain snapshot recovery without both textual chrome boundaries", async () => {
+    for (const testCase of [
+      { plain: "Final response is $x=1$.\n\n▣ Done", ansi: "Changed final response is $x=1$.\n\n▣ Done" },
+      { plain: "→ Read source\n\nFinal response is $x=1$.", ansi: "→ Read changed source\n\nFinal response is $x=1$." }
+    ]) {
+      const rig = await createRig({
+        agent: "opencode",
+        agent_session: {
+          source: "herdr:opencode",
+          agent: "opencode",
+          kind: "id",
+          value: "session-opencode-incomplete"
+        }
+      });
+      const baseline = "Synthetic OpenCode baseline before an incomplete plain snapshot.";
+      rig.server.setPaneOutput("w1:p1", baseline);
+      expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+      rig.server.setPaneOutput("w1:p1", `${baseline}\n${testCase.plain}`, false, `${baseline}\n${testCase.ansi}`);
+
+      expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
+        ok: false,
+        error: { code: "conclusion_boundary_failed" }
+      });
+      expect(rig.renders).toHaveLength(0);
+      expect(rig.publications).toHaveLength(0);
+    }
+  });
+
   it("publishes a completed formula through the owned graphics viewer", async () => {
     const rig = await createRig();
     const client = new HerdrSocketClient(rig.server.socketPath);
