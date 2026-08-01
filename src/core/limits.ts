@@ -8,6 +8,9 @@ export interface PolicyLimits {
   formulasPerAnswer: number;
   charactersPerFormula: number;
   aggregateFormulaCharacters: number;
+  responseDocumentBytes: number;
+  responseDocumentLines: number;
+  responseDocumentBlocks: number;
   renderDurationMs: number;
   imageWidthPx: number;
   imageHeightPx: number;
@@ -32,6 +35,9 @@ export const POLICY_LIMITS: Readonly<PolicyLimits> = Object.freeze({
   formulasPerAnswer: 20,
   charactersPerFormula: 2000,
   aggregateFormulaCharacters: 10_000,
+  responseDocumentBytes: 256 * 1024,
+  responseDocumentLines: 4000,
+  responseDocumentBlocks: 512,
   renderDurationMs: 8000,
   imageWidthPx: 4096,
   imageHeightPx: 16_384,

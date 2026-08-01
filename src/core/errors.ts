@@ -34,6 +34,9 @@ export type SafeLimitKind =
   | "formula_count"
   | "formula_characters"
   | "aggregate_formula_characters"
+  | "response_document_bytes"
+  | "response_document_lines"
+  | "response_document_blocks"
   | "render_duration_ms"
   | "image_width_px"
   | "image_height_px"
@@ -69,6 +72,9 @@ const SAFE_LIMIT_KINDS = new Set<SafeLimitKind>([
   "formula_count",
   "formula_characters",
   "aggregate_formula_characters",
+  "response_document_bytes",
+  "response_document_lines",
+  "response_document_blocks",
   "render_duration_ms",
   "image_width_px",
   "image_height_px",
