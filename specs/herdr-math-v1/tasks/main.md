@@ -39,7 +39,7 @@
   - Acceptance tests: AT-001, AT-007, AT-009, AT-706
   - Commit: `chore(repo): add package metadata and lockfile`
 
-- [ ] **T-103: Add repository quality tooling**
+- [x] **T-103: Add repository quality tooling**
   - Scope: Add `.gitignore`, `.editorconfig`, formatter, lint, type checking, test runner configuration, source/test directories, and initial `check`/`build` commands.
   - Dependencies: T-102
   - Acceptance tests: AT-008, AT-009, AT-706, AT-709
