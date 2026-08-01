@@ -28,11 +28,13 @@ Each dependency remains under its own license. Adding a production dependency re
 - include transitive production dependencies in the audit;
 - avoid dependencies whose terms conflict with the MIT-licensed distribution.
 
-The renderer candidates named in the plan are not selected dependencies. Their licenses must be checked again at the exact versions chosen by the renderer decision task.
+The v0.1 renderer decision selects KaTeX 0.18.1, Playwright 1.62.1 with its locked Chromium headless shell, and Sharp 0.35.3. A preliminary review found MIT, Apache-2.0, and BSD-style licensing with notice obligations that permit the planned distribution. [ADR 0001](decisions/0001-v1-renderer.md) records the decision and exact gate.
+
+These packages are not release-audited merely because they were selected. T-405 must lock the production tree, inspect every transitive runtime package and distributed browser asset, retain required Playwright and Chromium notices, and record the result in this document or a generated notice file.
 
 ## Fonts and Other Assets
 
-No font, browser binary, image, or other third-party asset may be bundled until its redistribution terms are verified. The release must preserve copyright notices, license files, attribution, and reserved-name conditions required by the asset license.
+No font, browser binary, image, or other third-party asset may be bundled until its redistribution terms are verified. KaTeX fonts and the Playwright-managed Chromium headless shell are selected but remain subject to the T-405 exact-version audit. The release must preserve copyright notices, license files, attribution, and reserved-name conditions required by each asset license.
 
 System fonts and assets downloaded at runtime are not an acceptable undocumented fallback. The renderer must remain offline and reproducible from the declared package and platform requirements.
 

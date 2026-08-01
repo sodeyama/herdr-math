@@ -8,6 +8,8 @@ This directory separates product intent, target design, and historical evidence 
 - [Architecture](architecture.md) defines the target v1 components, event lifecycle, state model, viewer ownership, rendering boundary, failure behavior, and packaging model.
 - [Experiment report](experiment-report.md) records what was tested on August 1, 2026, what passed, what failed, and which prototype decisions must change before release.
 - [Coding-agent lifecycle evidence](evidence/2026-08-01-agent-lifecycle.md) records redacted real-session results for Claude Code, Codex, Pi, and OpenCode.
+- [Renderer decision](decisions/0001-v1-renderer.md) selects the v0.1 local rendering backend from measured candidates and records its security, packaging, and compatibility constraints.
+- [Renderer candidate measurements](evidence/2026-08-01-renderer-candidates.md) records the fixed-corpus comparison used by the renderer decision.
 - [Licensing and notices](licensing.md) defines the project license, prototype boundary, dependency policy, and release notice gate.
 
 ## Specification

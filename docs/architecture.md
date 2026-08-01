@@ -225,10 +225,10 @@ Required properties:
 - Explicit untrusted-input mode
 - Deterministic layout for a fixed version, font set, and input
 - Hard timeout and image-size limits
-- Transparent or theme-controlled background decided before release
+- Opaque white background for deterministic v0.1 output
 - Stable error mapping
 
-The prototype used KaTeX, Playwright, and Sharp. The release plan includes a renderer gate that compares that proven path with an SVG-first path that may avoid a browser download. The selected backend must pass the same contract suite; the rest of the architecture must not depend on backend details.
+V0.1 uses KaTeX, Playwright Chromium headless shell, and Sharp. The backend remains behind this interface so event, state, and viewer modules do not depend on browser details. [ADR 0001](decisions/0001-v1-renderer.md) records the comparison, security boundary, packaging cost, and compatibility limit.
 
 ### 7. Herdr client
 
@@ -505,16 +505,16 @@ Forbidden fields include:
 - Home-directory paths
 - Tokens, credentials, or arbitrary exception objects
 
-## Renderer Selection Gate
+## Renderer Selection
 
-Before committing to a release renderer, compare at least:
+The completed selection compared:
 
 1. The proven KaTeX + browser screenshot + PNG optimization path.
 2. A browser-free SVG math renderer + local SVG-to-PNG path.
 
-Use a fixed corpus containing inline, display, aligned, matrix, integral, Unicode, invalid, large, and multiline cases. Measure correctness, install size, install time, cold render time, warm render time, image size, font consistency, macOS/Linux native dependency behavior, and security surface.
+Both candidates used a fixed corpus containing inline, display, aligned, matrix, integral, Unicode, invalid, large, and multiline cases. The experiment measured correctness, install size, install time, cold and warm latency, image size, native artifacts, cleanup, offline behavior, and security surface.
 
-Prefer the browser-free path only if it reaches behavior parity. Otherwise ship the proven renderer with explicit installation cost and revisit optimization after v0.1.
+The browser-free candidate did not reach behavior parity. V0.1 therefore selects the browser path with an explicit measured installation cost. See [ADR 0001](decisions/0001-v1-renderer.md) and the [candidate measurements](evidence/2026-08-01-renderer-candidates.md).
 
 ## Packaging and Release
 
@@ -566,12 +566,10 @@ Every acceptance-test id in the specification maps to at least one automated or 
 
 The following decisions must be closed during the implementation plan, not silently assumed:
 
-- Final renderer backend
 - Exact Node.js support range or whether to ship a standalone binary later
 - Minimum Herdr version after manifest event-hook validation
 - First-release platform list
 - First-release outer-terminal matrix
-- Theme behavior and default image background
 - Whether a manual `render-current` action belongs in v0.1
 - Whether remote attach can display the graphics layer reliably
 
