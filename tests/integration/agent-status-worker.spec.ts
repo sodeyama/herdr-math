@@ -113,6 +113,25 @@ describe("agent status worker", () => {
     expect(await loadState(rig)).toMatchObject({ viewer_pane_id: "w1:p2", processed: { pane_revision: 3 } });
   });
 
+  it("publishes a formula inserted before a stable alternate-screen gap", async () => {
+    const rig = await createRig({
+      agent: "pi",
+      agent_session: { source: "herdr:pi", agent: "pi", kind: "id", value: "alternate-screen-session" }
+    });
+    const before = "Synthetic submitted prompt anchor with unique value 1234567890";
+    const gap = "\nstable alternate-screen status\n";
+    const after = "Synthetic footer anchor with unique value abcdefghijklmnop";
+    rig.server.setPaneOutput("w1:p1", `${before}${gap}${after}`);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+
+    rig.server.setPaneOutput("w1:p1", `${before}\nanswer $$x^2+y^2=z^2$$${gap}${after}`);
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "idle"))).toMatchObject({
+      ok: true,
+      value: { kind: "image_published", formulaCount: 1 }
+    });
+    expect(rig.renders).toEqual([[{ latex: "x^2+y^2=z^2", display: true }]]);
+  });
+
   it("processes a later turn when the agent sequence advances without a pane revision change", async () => {
     const rig = await createRig({ revision: 4, state_change_seq: 10 });
     const firstBaseline = "First baseline for a stable pane metadata revision.";

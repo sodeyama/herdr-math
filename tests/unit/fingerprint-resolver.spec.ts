@@ -116,6 +116,94 @@ describe("fingerprint answer resolver", () => {
     expect(result.ok && result.value.answer).toContain("answer $x$");
   });
 
+  it("returns only a proven alternate-screen middle insertion", () => {
+    const before = "Synthetic submitted prompt anchor with unique value 1234567890";
+    const gap = "\nstable alternate-screen status\n";
+    const after = "Synthetic footer anchor with unique value abcdefghijklmnop";
+    const insertion = "\nanswer $$x^2 + y^2 = z^2$$";
+    const testCase: BoundaryCase = {
+      id: "middle-insertion",
+      agent: "pi",
+      baseline: `${before}${gap}${after}`,
+      completion: `${before}${insertion}${gap}${after}`,
+      expectedAnswer: insertion,
+      expectedStrategy: "contextual_anchor",
+      readTruncated: false
+    };
+    const result = resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.strategy).toBe("middle_insertion");
+    expect(result.value.answer).toBe(insertion);
+    expect(result.value.proof).toMatchObject({
+      kind: "middle_insertion",
+      baselineGapCharacters: gap.length,
+      insertedCharacters: insertion.length
+    });
+  });
+
+  it("does not claim a middle insertion when the baseline is unchanged", () => {
+    const before = "Synthetic submitted prompt anchor with unique value 1234567890";
+    const gap = "\nstable alternate-screen status\n";
+    const after = "Synthetic footer anchor with unique value abcdefghijklmnop";
+    const testCase: BoundaryCase = {
+      id: "unchanged-middle",
+      agent: "pi",
+      baseline: `${before}${gap}${after}`,
+      completion: `${before}${gap}${after}`,
+      expectedAnswer: "",
+      expectedStrategy: "exact_prefix",
+      readTruncated: false
+    };
+
+    expect(resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret)).toMatchObject({
+      ok: true,
+      value: { answer: "", strategy: "exact_prefix" }
+    });
+  });
+
+  it.each([
+    [
+      "missing before anchor",
+      (before: string, gap: string, after: string, insertion: string) => `${insertion}${gap}${after}`
+    ],
+    [
+      "missing after anchor",
+      (before: string, gap: string, _after: string, insertion: string) => `${before}${insertion}${gap}`
+    ],
+    [
+      "ambiguous after anchor",
+      (before: string, gap: string, after: string, insertion: string) => `${before}${insertion}${gap}${after}\n${after}`
+    ],
+    [
+      "reordered anchors",
+      (before: string, gap: string, after: string, insertion: string) => `${after}${insertion}${gap}${before}`
+    ],
+    [
+      "changed preserved gap",
+      (before: string, _gap: string, after: string, insertion: string) =>
+        `${before}${insertion}\nchanged alternate-screen status\n${after}`
+    ]
+  ])("fails closed for %s in a middle-insertion comparison", (_name, completion) => {
+    const before = "Synthetic submitted prompt anchor with unique value 1234567890";
+    const gap = "\nstable alternate-screen status\n";
+    const after = "Synthetic footer anchor with unique value abcdefghijklmnop";
+    const insertion = "\nanswer $$x^2 + y^2 = z^2$$";
+    const testCase: BoundaryCase = {
+      id: "invalid-middle-insertion",
+      agent: "opencode",
+      baseline: `${before}${gap}${after}`,
+      completion: completion(before, gap, after, insertion),
+      expectedAnswer: "",
+      expectedStrategy: "contextual_anchor",
+      readTruncated: false
+    };
+    const result = resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret);
+
+    expect(result).toEqual({ ok: false, error: { code: "boundary_failed", retryable: false } });
+  });
+
   it("bounds current input and malformed fingerprint collections", () => {
     const testCase = corpus.boundaryCases[0];
     if (testCase === undefined) throw new Error("Boundary corpus is empty.");

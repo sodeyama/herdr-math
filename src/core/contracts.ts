@@ -9,10 +9,18 @@ export interface Formula {
   end: number;
 }
 
-export type BoundaryStrategy = "exact_prefix" | "stable_prefix" | "sliding_window" | "contextual_anchor";
+export type BoundaryStrategy =
+  "exact_prefix" | "middle_insertion" | "stable_prefix" | "sliding_window" | "contextual_anchor";
 
 export type BoundaryProof =
   | { kind: "exact_prefix"; baselineCharacters: number }
+  | {
+      kind: "middle_insertion";
+      beforeMatchEndOffset: number;
+      afterMatchStartOffset: number;
+      baselineGapCharacters: number;
+      insertedCharacters: number;
+    }
   | { kind: "stable_prefix"; checkpointOffset: number }
   | { kind: "sliding_window"; windowCharacters: number; matchEndOffset: number }
   | {

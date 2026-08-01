@@ -40,6 +40,14 @@ export function resolveAnswerFromFingerprint(
       return success(result(current, exact.startOffset, exact.proof, currentDigest, readTruncated));
     }
 
+    const middle = resolveMiddleInsertion(state, current, secret, readTruncated);
+    if (middle.status === "resolved") {
+      return success(result(current, middle.startOffset, middle.proof, currentDigest, readTruncated, middle.endOffset));
+    }
+    if (middle.status === "conflict") {
+      return failure(serializeError(new HerdrMathError(readTruncated ? "answer_truncated" : "boundary_failed")));
+    }
+
     const stable = resolveStablePrefix(state, current, secret);
     if (stable !== null) {
       return success(result(current, stable.startOffset, stable.proof, currentDigest, readTruncated));
@@ -66,16 +74,133 @@ function result(
   startOffset: number,
   proof: BoundaryProof,
   currentDigest: string,
-  recoveredTruncation: boolean
+  recoveredTruncation: boolean,
+  endOffset = current.length
 ): BoundaryResult {
   return {
-    answer: current.slice(startOffset),
+    answer: current.slice(startOffset, endOffset),
     startOffset,
     strategy: proof.kind,
     recoveredTruncation,
     currentDigest,
     proof
   };
+}
+
+type MiddleInsertionResult =
+  | { status: "none" | "conflict" }
+  | {
+      status: "resolved";
+      startOffset: number;
+      endOffset: number;
+      proof: Extract<BoundaryProof, { kind: "middle_insertion" }>;
+    };
+
+function resolveMiddleInsertion(
+  state: FingerprintStateV1,
+  current: string,
+  secret: Uint8Array,
+  readTruncated: boolean
+): MiddleInsertionResult {
+  const anchors = state.baseline.tail_anchors
+    .filter((anchor): anchor is TailAnchorV1 & { end_offset: number } => anchor.end_offset !== undefined)
+    .sort((left, right) => left.end_offset - right.end_offset);
+  const lines = collectRecentLines(current, POLICY_LIMITS.boundaryCandidates);
+  let candidatesExamined = 0;
+  let conflict = false;
+
+  for (let index = 0; index < anchors.length - 1; index += 1) {
+    const before = anchors[index];
+    const after = anchors[index + 1];
+    if (before?.next_anchor_gap_digest === undefined || after === undefined) continue;
+    if (fingerprintDigestsEqual(before.line_digest, after.line_digest)) {
+      conflict = true;
+      continue;
+    }
+
+    const beforeMatches = matchingLines(before, lines, current, secret, true, () => {
+      candidatesExamined += 1;
+      return candidatesExamined <= POLICY_LIMITS.anchorOccurrences;
+    });
+    const afterMatches = matchingLines(after, lines, current, secret, false, () => {
+      candidatesExamined += 1;
+      return candidatesExamined <= POLICY_LIMITS.anchorOccurrences;
+    });
+    if (candidatesExamined > POLICY_LIMITS.anchorOccurrences) return { status: "conflict" };
+    if (beforeMatches.length !== 1 || afterMatches.length !== 1) {
+      const bothSidesPresent = beforeMatches.length > 0 && afterMatches.length > 0;
+      if (bothSidesPresent || (!readTruncated && (beforeMatches.length > 0 || afterMatches.length > 0))) {
+        conflict = true;
+      }
+      continue;
+    }
+
+    const beforeMatch = beforeMatches[0];
+    const afterMatch = afterMatches[0];
+    if (beforeMatch === undefined || afterMatch === undefined || afterMatch.start < beforeMatch.end) {
+      conflict = true;
+      continue;
+    }
+    const baselineAfterStart = after.end_offset - after.line_characters;
+    const baselineGapCharacters = baselineAfterStart - before.end_offset;
+    if (baselineGapCharacters < 0) throw new HerdrMathError("state_corrupt");
+    const currentGap = current.slice(beforeMatch.end, afterMatch.start);
+    if (currentGap.length <= baselineGapCharacters) {
+      const unchangedGap = currentGap.length === baselineGapCharacters && gapMatches(currentGap, before, secret);
+      if (!unchangedGap) conflict = true;
+      continue;
+    }
+
+    const preservedGap = currentGap.slice(currentGap.length - baselineGapCharacters);
+    if (!gapMatches(preservedGap, before, secret)) {
+      conflict = true;
+      continue;
+    }
+    const insertedCharacters = currentGap.length - baselineGapCharacters;
+    return {
+      status: "resolved",
+      startOffset: beforeMatch.end,
+      endOffset: beforeMatch.end + insertedCharacters,
+      proof: {
+        kind: "middle_insertion",
+        beforeMatchEndOffset: beforeMatch.end,
+        afterMatchStartOffset: afterMatch.start,
+        baselineGapCharacters,
+        insertedCharacters
+      }
+    };
+  }
+  return { status: conflict ? "conflict" : "none" };
+}
+
+function matchingLines(
+  anchor: TailAnchorV1,
+  lines: LineRange[],
+  current: string,
+  secret: Uint8Array,
+  requireContext: boolean,
+  consumeCandidate: () => boolean
+): LineRange[] {
+  const matches: LineRange[] = [];
+  for (const line of lines) {
+    if (line.end - line.start !== anchor.line_characters) continue;
+    if (!consumeCandidate()) break;
+    const matched = requireContext
+      ? anchorMatches(anchor, line, current, secret)
+      : fingerprintDigestsEqual(
+          fingerprintDigest("anchor-line", current.slice(line.start, line.end), secret),
+          anchor.line_digest
+        );
+    if (!matched) continue;
+    matches.push(line);
+    if (matches.length > 1) break;
+  }
+  return matches;
+}
+
+function gapMatches(gap: string, before: TailAnchorV1, secret: Uint8Array): boolean {
+  if (before.next_anchor_gap_digest === undefined) return false;
+  return fingerprintDigestsEqual(fingerprintDigest("anchor-gap", gap, secret), before.next_anchor_gap_digest);
 }
 
 function resolveExact(state: FingerprintStateV1, current: string, secret: Uint8Array) {
@@ -247,6 +372,12 @@ function assertUsableFingerprint(state: FingerprintStateV1): void {
         !isNonNegativeInteger(anchor.context_characters) ||
         anchor.context_characters > FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters ||
         !isNonNegativeInteger(anchor.line_index_from_end) ||
+        (anchor.end_offset !== undefined &&
+          (!isPositiveInteger(anchor.end_offset) ||
+            anchor.end_offset > baseline.character_count ||
+            anchor.end_offset < anchor.line_characters)) ||
+        (anchor.next_anchor_gap_digest !== undefined &&
+          (anchor.end_offset === undefined || !isFingerprintDigest(anchor.next_anchor_gap_digest))) ||
         !isFingerprintDigest(anchor.line_digest) ||
         !isFingerprintDigest(anchor.context_digest)
     );
