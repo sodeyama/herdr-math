@@ -77,7 +77,7 @@
   - Acceptance tests: AT-112, AT-203, AT-204, AT-202, AT-300 through AT-307, AT-709
   - Commit: `test(fixtures): add synthetic agent answer corpus`
 
-- [ ] **T-202: Implement the conservative LaTeX scanner**
+- [x] **T-202: Implement the conservative LaTeX scanner**
   - Scope: Port and type the stateful `$...$`/`$$...$$` scanner with code, escape, ambiguity, offset, byte, delimiter, and complexity handling.
   - Dependencies: T-201
   - Acceptance tests: AT-300 through AT-308
