@@ -179,7 +179,7 @@
   - Acceptance tests: AT-002, AT-100, AT-101, AT-113, AT-608, AT-609
   - Commit: `feat(herdr): add bounded socket client`
 
-- [ ] **T-503: Build the fake Herdr server harness**
+- [x] **T-503: Build the fake Herdr server harness**
   - Scope: Simulate pane reads, pane lifecycle, layout, metadata, plugin pane opening, graphics capability, graphics updates, errors, delays, disconnects, and request recording.
   - Dependencies: T-502
   - Acceptance tests: Supports AT-100 through AT-113 and AT-500 through AT-511
