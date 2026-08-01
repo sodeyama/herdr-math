@@ -323,7 +323,7 @@ Risks:
 5. Resolve the current pane with `pane.get`, then resolve the canonical agent id, workspace id, status, revision, and lifecycle `state_change_seq` with `agent.get`; fail closed when the methods disagree or the pane is missing, has moved workspaces, disagrees with an optional event agent hint, or has already changed status.
 6. Map Herdr timeouts and errors into stable plugin errors.
 7. Implement the `working`, `blocked`, `done`, `idle`, and `unknown` state machine.
-8. Implement stable completion reads and a bounded debounce.
+8. Capture a bounded working snapshot before secret/state I/O or authoritative lookups, discard it unless later authority checks still match, and implement stable completion reads with a bounded debounce.
 9. Add generation checks immediately before renderer and graphics commit points.
 10. Implement one-shot startup cleanup.
 11. Implement pane-closed cleanup.

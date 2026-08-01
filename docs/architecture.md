@@ -325,10 +325,10 @@ create a terminal compatibility claim or require Ghostty.
 
 ```text
 decode event
+  -> read one bounded baseline snapshot immediately
   -> resolve and cross-check pane.get with agent.get state_change_seq
-  -> confirm supported agent and source pane
+  -> confirm the same working event, supported agent, and source pane
   -> acquire per-pane lock
-  -> read bounded baseline
   -> build fingerprint generation N
   -> atomically replace source state
   -> release lock and exit

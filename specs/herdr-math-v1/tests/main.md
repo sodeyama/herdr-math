@@ -161,6 +161,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given a supported source pane in `working`
 - When the event is processed
 - Then one fingerprint generation is atomically stored for that pane and no raw pane text is written.
+- And the hook captures one bounded pane snapshot before fingerprint-secret or state I/O and before authoritative lookups, but uses it only after `pane.get` and `agent.get` still confirm the same working event.
 - And lifecycle ordering uses the authoritative `agent.get` `state_change_seq`, not the pane metadata revision.
 - And the socket request uses the protocol enum `recent_unwrapped`, not the CLI spelling `recent-unwrapped`.
 
