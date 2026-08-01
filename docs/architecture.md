@@ -273,7 +273,7 @@ Discovery order:
 3. If no valid viewer exists, open the manifest `viewer` entrypoint as a right split with focus disabled.
 4. Report plugin metadata from the viewer process so it can be recovered after worker or server restart.
 
-Validation requires the current workspace plus exact `herdr_math_owner` and session-bound `herdr_math_source` token values. More than one matching recovery candidate is an ownership failure; the manager does not choose or close a candidate. Before creation, it confirms the source pane again and sends one bounded `plugin.pane.open` request with `placement: split`, `direction: right`, and `focus: false`. The returned plugin id, entrypoint, workspace, tab, pane id, and focus state must match the request.
+Validation requires the current workspace plus exact `herdr_math_owner` and session-bound `herdr_math_source` token values. More than one matching recovery candidate is an ownership failure; the manager does not choose or close a candidate. Before creation, it confirms the source pane again and sends one bounded `plugin.pane.open` request with `target_pane_id`, `placement: split`, `direction: right`, and `focus: false`. The split request omits `workspace_id`; Herdr derives the destination from the target pane. The returned plugin id, entrypoint, workspace, tab, pane id, and focus state must match the validated source.
 
 The manager verifies ownership before updating or closing a pane. It never treats an arbitrary pane id from state as trusted, and it does not modify or close a user pane referenced by stale state.
 

@@ -476,6 +476,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given valid formulas and no owned viewer
 - When completion is processed
 - Then one right-side plugin split is opened with focus disabled and receives the image.
+- And the split request uses `target_pane_id` without `workspace_id`, then validates the workspace returned by Herdr.
 
 ### AT-501 - Viewer reuse
 
