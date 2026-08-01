@@ -247,7 +247,7 @@
   - Acceptance tests: AT-309, AT-310, AT-511, AT-608, AT-609
   - Commit: `feat(presentation): isolate coding-agent final responses`
 
-- [ ] **T-606: Render transparent response documents**
+- [x] **T-606: Render transparent response documents**
   - Scope: Replace formula-only composition with escaped prose-and-math spans in source order, preserve paragraph/list/display boundaries, use transparent screenshot output, inherit one base size across prose and KaTeX, and enforce response-document limits without adding general Markdown rendering.
   - Dependencies: T-404, T-605
   - Acceptance tests: AT-400 through AT-413, AT-608, AT-609

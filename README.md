@@ -2,7 +2,7 @@
 
 Render LaTeX from AI agent responses in a side pane.
 
-Herdr Math is a [Herdr](https://herdr.dev/) plugin. It detects `$...$` and `$$...$$` equations in completed coding-agent responses, renders them locally, and updates one reusable viewer pane without taking focus from the agent.
+Herdr Math is a [Herdr](https://herdr.dev/) plugin. It isolates the visible conclusion of a completed coding-agent response, excludes reasoning and tool output, and presents its prose and `$...$` or `$$...$$` equations in one reusable viewer pane without taking focus from the agent.
 
 ## Status
 
@@ -53,7 +53,7 @@ herdr integration install opencode
 herdr integration status
 ```
 
-Run a supported agent in Herdr and complete a response containing inline or display LaTeX. Herdr Math opens one `Math` pane to the right. Later valid answers replace the image in that pane. Answers without math and rejected updates leave the previous image unchanged.
+Run a supported agent in Herdr and complete a response containing inline or display LaTeX. Herdr Math opens one `Math` pane to the right with the final message and rendered equations on a transparent background. Later valid answers replace the image in that pane. Answers without math and rejected updates leave the previous image unchanged.
 
 Run privacy-safe diagnostics from a Herdr pane:
 

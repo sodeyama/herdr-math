@@ -78,8 +78,8 @@ whether each installed integration is current.
 2. Start or focus a supported coding agent in a Herdr pane.
 3. Ask the agent for an answer containing `$...$` or `$$...$$` LaTeX.
 4. Wait for the agent response to complete.
-5. Herdr Math opens one `Math` split to the right and keeps focus on the source agent.
-6. Complete another formula response to replace the image in the same viewer.
+5. Herdr Math opens one `Math` split to the right with the final message and rendered equations, while keeping focus on the source agent.
+6. Complete another formula response to replace the response image in the same viewer.
 
 Herdr Math processes completed responses only. It does not render partial streaming output. Closing the viewer is
 safe; the next valid formula response recreates one owned viewer.
@@ -146,6 +146,8 @@ removal and config/state retention will be finalized by the immutable-tag uninst
 ## Known limits
 
 - Only `$...$` and `$$...$$` math delimiters are parsed; this is not a general Markdown renderer.
+- Only the visible final response is presented; reasoning, tool output, progress, prompts, and terminal chrome are excluded or cause a fail-closed result when their boundary is uncertain.
+- The response background is transparent, while custom foreground colors are not configurable in v0.1.
 - Formulas in code spans, fenced code, prices, shell variables, and ambiguous delimiter runs are rejected.
 - Strict formula count, source length, image dimension, byte, and time limits apply.
 - Previous images remain on invalid input, limits, timeout, or graphics failure.

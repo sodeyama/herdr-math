@@ -39,6 +39,6 @@ command = ["node", "dist/diagnose.js"]
 [[panes]]
 id = "viewer"
 title = "Math"
-description = "Display equations detected in an AI agent response."
+description = "Display final responses with rendered equations."
 placement = "split"
 command = ["node", "dist/viewer.js"]
