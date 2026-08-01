@@ -10,7 +10,14 @@ import { ScannerLimitError } from "../../src/scanner/scan-latex.js";
 describe("shared core contracts", () => {
   it("defines formula, boundary, and rendered image shapes", () => {
     const formula: Formula = { latex: "x", display: false, start: 0, end: 3 };
-    const boundary: BoundaryResult = { answer: "$x$", strategy: "exact_prefix", recoveredTruncation: false };
+    const boundary: BoundaryResult = {
+      answer: "$x$",
+      startOffset: 10,
+      strategy: "exact_prefix",
+      recoveredTruncation: false,
+      currentDigest: "a".repeat(64),
+      proof: { kind: "exact_prefix", baselineCharacters: 10 }
+    };
     const image: RenderedImage = {
       buffer: Buffer.from([1, 2, 3]),
       width: 1,
@@ -21,6 +28,7 @@ describe("shared core contracts", () => {
 
     expect(success(formula)).toEqual({ ok: true, value: formula });
     expect(boundary.strategy).toBe("exact_prefix");
+    expect(boundary.proof.kind).toBe(boundary.strategy);
     expect(image.bytes).toBe(image.buffer.byteLength);
   });
 

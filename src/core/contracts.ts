@@ -11,10 +11,24 @@ export interface Formula {
 
 export type BoundaryStrategy = "exact_prefix" | "stable_prefix" | "sliding_window" | "contextual_anchor";
 
+export type BoundaryProof =
+  | { kind: "exact_prefix"; baselineCharacters: number }
+  | { kind: "stable_prefix"; checkpointOffset: number }
+  | { kind: "sliding_window"; windowCharacters: number; matchEndOffset: number }
+  | {
+      kind: "contextual_anchor";
+      lineCharacters: number;
+      contextCharacters: number;
+      matchEndOffset: number;
+    };
+
 export interface BoundaryResult {
   answer: string;
+  startOffset: number;
   strategy: BoundaryStrategy;
   recoveredTruncation: boolean;
+  currentDigest: string;
+  proof: BoundaryProof;
 }
 
 export interface RenderedImage {
