@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "claude-tool-footer-japanese-wrap",
+      "agent": "claude",
+      "plain": "⏺ Read(package.json)\n  package name loaded\n\n  結論は質量とエネルギーの関\n  係 $E=mc^2$ です。\n\n  $$a^2+b^2=c^2$$\n\n✻ Brewed for 1s\n────────────────────────\n❯ next prompt",
+      "ansi": "\u001b[2m⏺ Read(package.json)\u001b[0m\n  package name loaded\n\n  結論は質量とエネルギーの関\n  係 $E=mc^2$ です。\n\n  $$a^2+b^2=c^2$$\n\n\u001b[2m✻ Brewed for 1s\u001b[0m\n────────────────────────\n❯ next prompt",
+      "expected": "結論は質量とエネルギーの関係 $E=mc^2$ です。\n\n$$a^2+b^2=c^2$$",
+      "expectedFormulas": ["E=mc^2", "a^2+b^2=c^2"]
+    },
+    {
+      "id": "codex-separates-activity-and-final",
+      "agent": "codex",
+      "plain": "• Reasoning mentions $r=1$.\n\n• Explored\n  └ Read package.json\n\n────────────────────────\n\n• The package is Herdr Math and $E=mc^2$.\n\n  The display result follows.\n\n  $$a^2+b^2=c^2$$\n\n────────────────────────\n\n› next prompt",
+      "ansi": "\u001b[2m• \u001b[0mReasoning mentions $r=1$.\n\n\u001b[2m• \u001b[1mExplored\u001b[0m\n  └ Read package.json\n\n────────────────────────\n\n\u001b[2m• \u001b[0mThe package is Herdr Math and $E=mc^2$.\n\n  The display result follows.\n\n  $$a^2+b^2=c^2$$\n\n────────────────────────\n\n› next prompt",
+      "expected": "The package is Herdr Math and $E=mc^2$.\n\nThe display result follows.\n\n$$a^2+b^2=c^2$$",
+      "expectedFormulas": ["E=mc^2", "a^2+b^2=c^2"]
+    },
+    {
+      "id": "pi-excludes-italic-reasoning",
+      "agent": "pi",
+      "plain": "The user requested $r=1$.\n\nread package.json\n\nI will draft $d=2$.\n\n The package supports inline math $E=mc^2$.\n\n A display equation follows.\n $$a^2+b^2=c^2$$\n\n────────────────────────\nstatus",
+      "ansi": "\u001b[3mThe user requested $r=1$.\u001b[0m\n\n\u001b[1;48;2;40;50;40mread package.json\u001b[0m\n\n\u001b[3mI will draft $d=2$.\u001b[0m\n\n The package supports inline math $E=mc^2$.\n\n A display equation follows.\n $$a^2+b^2=c^2$$\n\n────────────────────────\nstatus",
+      "expected": "The package supports inline math $E=mc^2$.\n\nA display equation follows.\n\n$$a^2+b^2=c^2$$",
+      "expectedFormulas": ["E=mc^2", "a^2+b^2=c^2"]
+    },
+    {
+      "id": "pi-reasoning-only-formula",
+      "agent": "pi",
+      "plain": "Reasoning uses $r=1$.\n\n Final response has no equation.\n\n────────────────────────\nstatus",
+      "ansi": "\u001b[3mReasoning uses $r=1$.\u001b[0m\n\n Final response has no equation.\n\n────────────────────────\nstatus",
+      "expected": "Final response has no equation.",
+      "expectedFormulas": []
+    },
+    {
+      "id": "opencode-tool-summary-footer",
+      "agent": "opencode",
+      "plain": "  ┃ prompt includes $p=0$\n  ┃\n\n     → Read package.json\n\n     The package is Herdr Math and $E=mc^2$.\n     A display equation follows.\n\n     $$a^2+b^2=c^2$$\n\n     ▣ Build · Model · 1.0s\n\n  ┃\n  ╹────────\n  status",
+      "ansi": "\u001b[38;2;92;156;245m  ┃\u001b[0m prompt includes $p=0$\n\u001b[38;2;92;156;245m  ┃\u001b[0m\n\n\u001b[2m     → Read package.json\u001b[0m\n\n     The package is Herdr Math and $E=mc^2$.\n     A display equation follows.\n\n     $$a^2+b^2=c^2$$\n\n\u001b[38;2;92;156;245m     ▣\u001b[0m Build · Model · 1.0s\n\n  ┃\n  ╹────────\n  status",
+      "expected": "The package is Herdr Math and $E=mc^2$. A display equation follows.\n\n$$a^2+b^2=c^2$$",
+      "expectedFormulas": ["E=mc^2", "a^2+b^2=c^2"]
+    }
+  ]
+}
