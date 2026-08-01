@@ -78,7 +78,7 @@ whether each installed integration is current.
 2. Start or focus a supported coding agent in a Herdr pane.
 3. Ask the agent for an answer containing `$...$` or `$$...$$` LaTeX.
 4. Wait for the agent response to complete.
-5. Herdr Math opens one `Math` split to the right with the final message and rendered equations, while keeping focus on the source agent.
+5. Herdr Math opens one `Math` split to the right with the final message and rendered equations, while keeping focus on the source agent. A long response scrolls automatically and stops at the bottom.
 6. Complete another formula response to replace the response image in the same viewer.
 
 Herdr Math processes completed responses only. It does not render partial streaming output. Closing the viewer is

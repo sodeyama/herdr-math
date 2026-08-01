@@ -53,7 +53,7 @@ herdr integration install opencode
 herdr integration status
 ```
 
-Run a supported agent in Herdr and complete a response containing inline or display LaTeX. Herdr Math opens one `Math` pane to the right with the final message and rendered equations on a transparent background. Later valid answers replace the image in that pane. Answers without math and rejected updates leave the previous image unchanged.
+Run a supported agent in Herdr and complete a response containing inline or display LaTeX. Herdr Math opens one `Math` pane to the right with the final message and rendered equations on a transparent background. Long responses scroll automatically to the bottom. Later valid answers replace the image in that pane. Answers without math and rejected updates leave the previous image unchanged.
 
 Run privacy-safe diagnostics from a Herdr pane:
 

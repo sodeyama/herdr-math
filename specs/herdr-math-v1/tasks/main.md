@@ -253,7 +253,7 @@
   - Acceptance tests: AT-400 through AT-413, AT-608, AT-609
   - Commit: `feat(renderer): render transparent response documents`
 
-- [ ] **T-607: Add bounded managed-viewer scrolling**
+- [x] **T-607: Add bounded managed-viewer scrolling**
   - Scope: Add an authenticated user-only local viewer socket, transfer only bounded rendered pixels in memory, derive the current pixel viewport, prebuild overlapping monotonic crop frames, animate without clear, retain the previous final frame only in viewer memory for rollback, and clean sockets on closure or restart.
   - Dependencies: T-601, T-602, T-603, T-606
   - Acceptance tests: AT-503, AT-504, AT-509, AT-512, AT-513, AT-600 through AT-609

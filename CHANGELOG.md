@@ -15,6 +15,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Conservative `$...$` and `$$...$$` scanning.
 - Local KaTeX, Chromium, and Sharp PNG rendering with network denial and strict limits.
 - Clean final-response presentation with escaped prose, rendered math, transparent output, and matched text sizing.
+- Bounded automatic scrolling through a private user-only viewer socket with in-memory rollback.
 - One reusable Herdr-owned viewer per source pane with focus preservation.
 - Session-scoped atomic state, stale-lock cleanup, diagnostics, and pane-close recovery.
 - Automated unit, contract, integration, rendering, performance, privacy, security, and manifest gates.

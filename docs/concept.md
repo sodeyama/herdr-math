@@ -132,6 +132,7 @@ The viewer belongs to one source pane.
 
 - First valid math answer: open one split to the right without changing focus.
 - Later valid math answer: replace the image in that same viewer.
+- Long valid response: scroll automatically from the top to the bottom, then keep the bottom visible.
 - Answer without math: leave the viewer unchanged.
 - Invalid or oversized math: leave the previous valid image unchanged.
 - Viewer closed by the user: recreate one viewer on the next valid math answer.
@@ -185,7 +186,7 @@ The renderer must:
 - Avoid shell interpolation, dynamic code evaluation, and subprocess execution
 - Return stable error codes without exposing input text
 
-The graphics update is transactional from the user's perspective: the new image is validated before `pane.graphics.set` replaces the existing image.
+The graphics update is transactional from the user's perspective: every frame is validated before animation starts. A failed later frame restores the previous in-memory final frame when available.
 
 ## Error Philosophy
 

@@ -40,10 +40,13 @@ Herdr Math event worker
     |-- composes escaped prose and rendered math from the proven response
     |-- invokes the local renderer
     |-- opens or finds the owned viewer pane
-    `-- sends a validated PNG through pane.graphics.set
+    `-- sends bounded PNG pixels through a private local socket
             |
             v
-      Herdr viewer pane
+      Herdr viewer process
+            |-- prebuilds bounded viewport frames
+            |-- animates long responses and retains the final frame in memory
+            `-- sends validated frames through pane.graphics.set
             |
             v
   attached graphics-capable terminal
@@ -287,7 +290,9 @@ remote errors remain protocol failures and do not authorize state deletion or vi
 
 The viewer manager owns the one-to-one mapping between a source pane and a viewer pane.
 
-The source token is a domain-separated SHA-256 digest of the Herdr session identity and source pane id. The raw source pane id is not copied into presentation metadata. The managed viewer validates `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ENTRYPOINT_ID`, its pane and workspace ids, and the 64-character source token before reporting the English `Herdr Math` title and the `herdr_math_owner` and `herdr_math_source` tokens. Herdr acknowledges `pane.report_metadata` with `ok`; the client then reads the pane and validates the reported ownership metadata and workspace. Metadata registration and verification each have a two-second timeout. After registration, the viewer does not poll; it remains attached to its Herdr pane until stdin closes or Herdr sends `SIGHUP`, `SIGINT`, or `SIGTERM`.
+The source token is a domain-separated SHA-256 digest of the Herdr session identity and source pane id. The raw source pane id is not copied into presentation metadata. The managed viewer validates `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ENTRYPOINT_ID`, its pane and workspace ids, and the 64-character source token before reporting the English `Herdr Math` title and the `herdr_math_owner` and `herdr_math_source` tokens. Herdr acknowledges `pane.report_metadata` with `ok`; the client then reads the pane and validates the reported ownership metadata and workspace. Metadata registration and verification each have a two-second timeout.
+
+After registration, the viewer creates one source-token-scoped Unix socket under `HERDR_PLUGIN_STATE_DIR`, sets mode `0600`, and accepts only one bounded newline-framed pixel request at a time. Each request must repeat the exact source token, viewer pane id, workspace id, and bounded generation. The protocol carries PNG pixels and dimensions, never response text or LaTeX. The socket path is removed on normal viewer termination; an existing non-socket path is never replaced. The viewer otherwise does not poll and remains attached to its Herdr pane until stdin closes or Herdr sends `SIGHUP`, `SIGINT`, or `SIGTERM`.
 
 Discovery order:
 
@@ -300,17 +305,18 @@ Validation requires the current workspace plus exact `herdr_math_owner` and sess
 
 The manager verifies ownership before updating or closing a pane. It never treats an arbitrary pane id from state as trusted, and it does not modify or close a user pane referenced by stale state.
 
-### 9. Graphics placer
+### 9. Managed graphics presenter
 
 Before updating the viewer, the placer:
 
 1. Revalidates PNG signature, declared dimensions, pixel count, raw bytes, and base64 expansion independently of the renderer.
 2. Calls `pane.graphics.info` on the source before viewer discovery, so disabled graphics or unavailable client dimensions cannot create a useless viewer.
-3. Resolves the owned viewer, calls `pane.graphics.info` again for that pane, and reads its current `pane.layout` rectangle.
-4. Converts image pixels to natural cell columns and rows, then scales both dimensions by one bounded factor so the placement remains within the current viewer rectangle.
-5. Calls `pane.graphics.set` once with the complete PNG and placement. Graphics and layout calls have two-second timeouts.
+3. Resolves the owned viewer and transfers the bounded PNG to that viewer's authenticated local socket.
+4. The viewer calls `pane.graphics.info`, reads its current `pane.layout` rectangle, and derives the visible pixel viewport.
+5. A response that fits uses one immediate frame. A taller response is cropped into a fully prevalidated, bounded sequence with monotonically increasing overlapping offsets.
+6. The viewer calls `pane.graphics.set` without a preceding clear, waits a bounded interval between long-response frames, and leaves the bottom frame visible.
 
-The existing graphics layer is not cleared first. Invalid or oversized images, missing cell dimensions, stale ownership, and graphics API failure leave the last valid image intact. A successful completion records the viewer id only after `pane.graphics.set` succeeds.
+The existing graphics layer is not cleared first. Invalid or oversized images, missing cell dimensions, stale ownership, and preflight failure leave the last valid image intact. The viewer retains only the previous final frame in process memory; if a later animation fails after starting, it attempts to restore that frame. No response pixels are written to durable state or logs. A successful completion records the viewer id only after the final frame succeeds.
 
 ### 10. Diagnostics
 
@@ -373,8 +379,8 @@ decode event
   -> validate limits
   -> render complete image
   -> find or create owned viewer
-  -> validate graphics capability and placement
-  -> set new image
+  -> transfer bounded pixels to the owned viewer
+  -> prebuild and set one frame or a bounded scroll sequence
   -> atomically record processed digest and viewer id
   -> release lock and exit
 ```
@@ -615,7 +621,8 @@ and unverified combinations.
 - Renderer tests use a fixed formula corpus and image assertions.
 - `npm run security:check`, included in `npm run check`, scans runtime source and release files for environment dumps,
   external network APIs, dynamic execution, input-controlled executable paths, credential formats, private home paths,
-  symbolic links, and local runtime artifacts. The only runtime socket connection must remain the path-based Herdr client.
+  symbolic links, and local runtime artifacts. Runtime sockets are limited to the path-based Herdr client and the
+  `0600` source-token-scoped viewer transport; TCP host or port listeners remain forbidden.
 - Runtime smoke tests use real Herdr panes and a supported terminal.
 - Install tests use a clean managed install from a tag, not only `plugin link`.
 
