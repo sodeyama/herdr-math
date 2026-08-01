@@ -281,13 +281,13 @@
   - Acceptance tests: AT-002, AT-006, AT-010
   - Commit: `docs(test): record clean local-link verification`
 
-- [ ] **T-802: Run the Ghostty runtime matrix**
+- [x] **T-802: Run the Ghostty runtime matrix**
   - Scope: In real Herdr and Ghostty, run Claude Code, Codex, Pi, and OpenCode separately; record each canonical agent id, lifecycle authority, installed integration version, status sequence, and valid-math render; then test first render, same-viewer update, no formula, focus, resize, invalid preservation, limit rejection, timeout recovery, viewer closure, and recreation.
   - Dependencies: T-801
   - Acceptance tests: AT-100, AT-107, AT-108, AT-112, AT-500 through AT-509, AT-511, AT-703
   - Commit: `docs(test): record Ghostty runtime evidence`
 
-- [ ] **T-803: Verify default and named session isolation**
+- [x] **T-803: Verify default and named session isolation**
   - Scope: Use an isolated named session for stale lock and server restart tests while confirming the default session is unaffected.
   - Dependencies: T-802
   - Acceptance tests: AT-600, AT-602, AT-606, AT-607
@@ -380,4 +380,5 @@
 
 ## Current Next Task
 
-Start with **T-101**. License selection must precede dependency and public distribution decisions.
+Continue with **T-805**. T-804 remains an optional P1 compatibility expansion and does not block the initial
+Ghostty-only release scope.
