@@ -263,7 +263,7 @@
 
 ## Phase 8 - Real Herdr and Terminal Verification
 
-- [ ] **T-801: Verify clean local-link development flow**
+- [x] **T-801: Verify clean local-link development flow**
   - Scope: Build from a clean clone, link the checkout, inspect warnings/actions/events/panes, invoke diagnostics, and unlink without affecting unrelated plugins.
   - Dependencies: T-705
   - Acceptance tests: AT-002, AT-006, AT-010
