@@ -103,7 +103,7 @@
   - Acceptance tests: AT-200 through AT-208, AT-207 in particular
   - Commit: `feat(boundary): define fingerprint baseline schema`
 
-- [ ] **T-302: Implement keyed fingerprint creation**
+- [x] **T-302: Implement keyed fingerprint creation**
   - Scope: Create the local secret, restrictive permissions, bounded fingerprint builder, safe pane/session encoding, and immediate raw-text discard.
   - Dependencies: T-301
   - Acceptance tests: AT-103, AT-207, AT-208, AT-605, AT-608
