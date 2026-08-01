@@ -444,6 +444,7 @@ Prototype values provide the initial defaults, subject to release validation:
 | State file | 64 KiB | State store |
 | Socket response | 2 MiB | Herdr client |
 | Stale lock age | 120 seconds | State store |
+| Fingerprint expiry | 24 hours | State store |
 
 These initial values remain release-gated. Lower them if renderer or protocol evidence requires a stricter bound; do not raise them without updating the threat model and acceptance tests.
 

@@ -18,6 +18,7 @@ export interface PolicyLimits {
   stateFileBytes: number;
   socketResponseBytes: number;
   staleLockAgeMs: number;
+  fingerprintExpiryMs: number;
 }
 
 export const POLICY_LIMITS: Readonly<PolicyLimits> = Object.freeze({
@@ -39,5 +40,6 @@ export const POLICY_LIMITS: Readonly<PolicyLimits> = Object.freeze({
   anchorOccurrences: 256,
   stateFileBytes: 64 * 1024,
   socketResponseBytes: 2 * 1024 * 1024,
-  staleLockAgeMs: 120_000
+  staleLockAgeMs: 120_000,
+  fingerprintExpiryMs: 24 * 60 * 60 * 1000
 });
