@@ -44,9 +44,13 @@
     "postinstall": "npm run install:browser",
     "security:check": "node scripts/security-check.mjs",
     "test": "vitest run",
+    "test:contract": "vitest run tests/integration/herdr-contract.spec.ts tests/integration/fake-herdr-server.spec.ts",
+    "test:integration": "vitest run tests/integration",
     "test:performance": "vitest run tests/integration/performance.spec.ts --reporter=verbose",
+    "test:unit": "vitest run tests/unit",
     "typecheck": "tsc --noEmit",
-    "validate:manifest": "npm run build --silent && node dist/manifest/validate-cli.js"
+    "validate:manifest": "npm run build --silent && node dist/manifest/validate-cli.js",
+    "smoke:render": "vitest run tests/integration/renderer.spec.ts --reporter=verbose"
   },
   "prettier": {
     "printWidth": 120,
