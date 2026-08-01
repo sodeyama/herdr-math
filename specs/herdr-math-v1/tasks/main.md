@@ -167,7 +167,7 @@
 
 ## Phase 5 - Herdr Protocol and One-Shot Workers
 
-- [ ] **T-501: Implement strict Herdr event decoding**
+- [x] **T-501: Implement strict Herdr event decoding**
   - Scope: Parse bounded `HERDR_PLUGIN_EVENT_JSON`, accept only the schema-compatible event name, workspace id, pane id, status, and optional agent hint, reject malformed ids and oversized payloads, and avoid logging full events. Agent allowlisting occurs only after an authoritative pane lookup.
   - Dependencies: T-104, T-107, T-204
   - Acceptance tests: AT-100 through AT-102, AT-112, AT-609
