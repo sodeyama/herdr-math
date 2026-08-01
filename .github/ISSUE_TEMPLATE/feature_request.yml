@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a focused Herdr Math capability or compatibility change.
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem before proposing an implementation. Changes to execution, network access, persistent state, renderer trust, or compatibility claims require specification and threat-model review.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What workflow is blocked or unsafe today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe observable behavior, not only an implementation choice.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance evidence
+      description: List deterministic tests and any real Herdr, terminal, agent, or platform evidence required.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundary review
+      options:
+        - label: I considered privacy, local-only processing, answer-boundary safety, and viewer ownership.
+          required: true
+        - label: I identified any new executable, network, dependency, platform, or persistent-state requirement.
+          required: true

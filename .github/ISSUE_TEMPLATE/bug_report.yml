@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a reproducible Herdr Math defect with sanitized evidence.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include pane output, private prompts or answers, LaTeX from private work, credentials, agent session values, state files, full logs, home paths, or unredacted screenshots. Use a private security advisory for security or privacy vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: Herdr Math version or commit
+      placeholder: v0.1.0 or a commit id
+    validations:
+      required: true
+  - type: input
+    id: herdr
+    attributes:
+      label: Herdr version
+      placeholder: 0.7.5, protocol 17
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS x64 (unverified)
+        - Linux (unsupported)
+        - Windows (unsupported)
+        - Other or unknown
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Outer terminal and version
+      placeholder: Ghostty 1.3.1
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Coding agent
+      options:
+        - Claude Code
+        - Codex CLI
+        - Pi
+        - OpenCode
+        - Not agent-specific
+        - Unsupported agent
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Synthetic reproduction and behavior
+      description: Describe sanitized steps, expected behavior, actual behavior, and stable error codes.
+      placeholder: Use synthetic formulas and identifiers only.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Allowlisted diagnose result
+      description: Paste only the output of the Herdr Math diagnose action after reviewing it.
+      render: json
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checklist
+      options:
+        - label: I searched existing issues for this defect.
+          required: true
+        - label: I used synthetic data and removed local paths and session values.
+          required: true
+        - label: This report does not disclose a security or privacy vulnerability.
+          required: true
