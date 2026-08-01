@@ -325,9 +325,9 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Priority: P0
 - Evidence: Unit, Integration, Runtime
 - Given a working baseline whose prompt is followed by a stable alternate-screen footer, and the completed answer is inserted between them
-- When a context-qualified anchor before the answer and a distinct unique anchor after the answer retain their baseline order with a larger current offset gap
+- When a context-qualified anchor before the answer and a distinct unique anchor after the answer retain their baseline order with a larger current offset gap, and the stored baseline gap digest matches the suffix of the current gap
 - Then the resolver returns the inserted region with strategy `middle_insertion`.
-- And it fails closed when either side is absent, ambiguous, reordered, or does not prove a positive insertion.
+- And it fails closed when either side is absent, ambiguous, reordered, the preserved gap differs, or the comparison does not prove a positive insertion.
 
 ## D. LaTeX Scanner
 

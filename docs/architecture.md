@@ -161,7 +161,7 @@ A v1 fingerprint contains:
 - Several bounded suffix-window lengths and digests
 - Hashes and lengths for eligible tail-anchor lines
 - Baseline end offsets for eligible tail-anchor lines
-- Context digests for each tail anchor
+- Context digests for each tail anchor and HMAC digests for eligible adjacent-anchor gaps
 - Creation time, event sequence, and expiry time
 
 The implementation secret used for keyed fingerprints is created locally with restrictive file permissions. Fingerprints are not logged.
@@ -173,7 +173,7 @@ The builder discards the pane text before the process exits.
 At completion, the resolver receives the stored fingerprint and a current bounded pane read. It attempts these strategies in order:
 
 1. **Exact prefix**: hash the current prefix at the stored baseline length and compare it with the full baseline digest.
-2. **Middle insertion**: prove a context-qualified anchor before an alternate-screen insertion and a distinct unique anchor after it, then return the bounded inserted region.
+2. **Middle insertion**: prove a context-qualified anchor before an alternate-screen insertion, a distinct unique anchor after it, and an unchanged baseline gap suffix, then return only the bounded inserted prefix.
 3. **Stable prefix checkpoint**: find the longest stored prefix checkpoint that still matches and meets the configured stability threshold.
 4. **Sliding window**: locate a matching stored suffix-window digest inside the current read, then begin after the verified window.
 5. **Contextual tail anchor**: hash candidate lines in the current read and select only an occurrence whose preceding-context digest matches the stored context.
