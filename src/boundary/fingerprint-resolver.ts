@@ -530,6 +530,9 @@ function assertUsableFingerprint(state: FingerprintStateV1): void {
           (anchor.next_anchor_gap_digest === undefined ||
             anchor.next_anchor_gap_formula_digests.length > FINGERPRINT_SCHEMA_LIMITS.maxGapFormulaDigests ||
             anchor.next_anchor_gap_formula_digests.some((digest) => !isFingerprintDigest(digest)))) ||
+        (anchor.prefix_formula_digests !== undefined &&
+          (anchor.prefix_formula_digests.length > FINGERPRINT_SCHEMA_LIMITS.maxGapFormulaDigests ||
+            anchor.prefix_formula_digests.some((digest) => !isFingerprintDigest(digest)))) ||
         !isFingerprintDigest(anchor.line_digest) ||
         !isFingerprintDigest(anchor.context_digest)
     );

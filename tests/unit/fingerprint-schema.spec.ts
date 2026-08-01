@@ -42,6 +42,7 @@ function sampleState(): FingerprintStateV1 {
           forward_context_digest: digest,
           next_anchor_gap_digest: digest,
           next_anchor_gap_formula_digests: [digest],
+          prefix_formula_digests: [digest],
           line_characters: 40,
           line_digest: digest,
           context_characters: 256,

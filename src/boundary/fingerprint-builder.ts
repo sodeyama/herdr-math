@@ -115,6 +115,7 @@ function buildSuffixWindows(input: string, secret: Uint8Array) {
 
 function buildTailAnchors(input: string, secret: Uint8Array) {
   const anchors: FingerprintStateV1["baseline"]["tail_anchors"] = [];
+  const baselineFormulas = fingerprintBaselineFormulas(input, secret);
   let lineEnd = input.length;
   let lineIndex = 0;
 
@@ -127,6 +128,10 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
       const contextStart = Math.max(previousNewline + 1, lineStart - FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters);
       const context = input.slice(contextStart, lineStart);
       const forwardContext = buildForwardContext(input, lineEnd);
+      const prefixFormulaDigests =
+        baselineFormulas === undefined
+          ? undefined
+          : [...new Set(baselineFormulas.filter(({ end }) => end <= lineStart).map(({ digest }) => digest))];
       anchors.push({
         end_offset: lineEnd,
         forward_context_characters: forwardContext.length,
@@ -135,7 +140,8 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
         line_digest: fingerprintDigest("anchor-line", line, secret),
         context_characters: context.length,
         context_digest: fingerprintDigest("anchor-context", context, secret),
-        line_index_from_end: lineIndex
+        line_index_from_end: lineIndex,
+        ...(prefixFormulaDigests === undefined ? {} : { prefix_formula_digests: prefixFormulaDigests })
       });
     }
     if (newline === -1) {
@@ -166,6 +172,17 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
     }
   }
   return anchors;
+}
+
+function fingerprintBaselineFormulas(input: string, secret: Uint8Array) {
+  try {
+    return scanLatex(input).map((formula) => ({
+      end: formula.end,
+      digest: formulaFingerprintDigest(formula, secret)
+    }));
+  } catch {
+    return undefined;
+  }
 }
 
 function buildForwardContext(input: string, lineEnd: number): string {
