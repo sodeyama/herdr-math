@@ -151,7 +151,7 @@ type HerdrRequest =
   | {
       id: string;
       method: "pane.read";
-      params: { pane_id: string; source: "recent-unwrapped"; format: "text"; lines: number; strip_ansi: true };
+      params: { pane_id: string; source: "recent_unwrapped"; format: "text"; lines: number; strip_ansi: true };
     }
   | { id: string; method: "pane.report_metadata"; params: { pane_id: string } & HerdrPaneMetadataReport }
   | {
@@ -251,7 +251,7 @@ export class HerdrSocketClient {
       params: { pane_id: paneId }
     };
     return this.#request(outbound, this.#paneGetTimeoutMs, parsePaneGetResult, (remote) => {
-      if (remote.code === "not_found") return null;
+      if (remote.code === "not_found" || remote.code === "pane_not_found") return null;
       throw new HerdrMathError("herdr_protocol_error");
     });
   }
@@ -301,7 +301,7 @@ export class HerdrSocketClient {
       method: "pane.read",
       params: {
         pane_id: paneId,
-        source: "recent-unwrapped",
+        source: "recent_unwrapped",
         format: "text",
         lines: POLICY_LIMITS.paneReadLines,
         strip_ansi: true
@@ -651,7 +651,7 @@ function parsePaneReadResult(value: unknown): HerdrPaneReadSnapshot {
     !isIdentifier(read.pane_id) ||
     !isIdentifier(read.workspace_id) ||
     !isIdentifier(read.tab_id) ||
-    read.source !== "recent-unwrapped" ||
+    read.source !== "recent_unwrapped" ||
     read.format !== "text" ||
     typeof read.text !== "string" ||
     !Number.isSafeInteger(read.revision) ||

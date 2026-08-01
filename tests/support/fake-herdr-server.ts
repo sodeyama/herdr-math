@@ -21,6 +21,7 @@ import type {
 
 const REQUEST_BYTES = 4 * 1024 * 1024;
 const DEFAULT_AREA: FakeLayoutRect = { x: 0, y: 0, width: 120, height: 40 };
+const READ_SOURCES = new Set(["visible", "recent", "recent_unwrapped", "detection"]);
 
 interface PendingDelay {
   timer: ReturnType<typeof setTimeout>;
@@ -265,6 +266,9 @@ export class FakeHerdrServer {
       case "pane.read": {
         const pane = paneId === null ? undefined : this.#panes.get(paneId);
         if (pane === undefined) return this.#sendError(socket, request.id, "not_found", "pane not found");
+        if (!READ_SOURCES.has(String(request.params.source))) {
+          return this.#sendError(socket, request.id, "invalid_params", "invalid pane read source");
+        }
         const output = this.#outputs.get(pane.pane_id) ?? { text: "", truncated: false };
         return this.#sendResult(socket, request.id, {
           type: "pane_read",

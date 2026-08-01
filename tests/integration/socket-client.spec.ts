@@ -137,7 +137,7 @@ describe("HerdrSocketClient", () => {
               pane_id: "w1:p1",
               workspace_id: "w1",
               tab_id: "w1:t1",
-              source: "recent-unwrapped",
+              source: "recent_unwrapped",
               format: "text",
               text: "answer $x$",
               revision: 9,
@@ -154,8 +154,16 @@ describe("HerdrSocketClient", () => {
     });
     expect(captured).toMatchObject({
       method: "pane.read",
-      params: { pane_id: "w1:p1", source: "recent-unwrapped", format: "text", lines: 1000, strip_ansi: true }
+      params: { pane_id: "w1:p1", source: "recent_unwrapped", format: "text", lines: 1000, strip_ansi: true }
     });
+  });
+
+  it.each(["not_found", "pane_not_found"])("maps %s to an absent optional pane", async (code) => {
+    const server = await startServer((socket, request) => {
+      socket.end(`${JSON.stringify({ id: request.id, error: { code, message: "pane absent" } })}\n`);
+    });
+
+    expect(await new HerdrSocketClient(server.path).paneGetIfPresent("w1:p9")).toEqual({ ok: true, value: null });
   });
 
   it("maps malformed frames and server errors without exposing their contents", async () => {
