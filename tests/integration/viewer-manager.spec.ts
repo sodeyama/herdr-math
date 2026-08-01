@@ -61,7 +61,6 @@ describe("viewer manager", () => {
     expect(openRequest?.params).toEqual({
       plugin_id: VIEWER_IDENTITY.pluginId,
       entrypoint: VIEWER_IDENTITY.entrypointId,
-      workspace_id: "w1",
       target_pane_id: "w1:p1",
       placement: "split",
       direction: "right",

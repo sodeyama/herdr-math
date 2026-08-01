@@ -346,7 +346,7 @@ export class FakeHerdrServer {
     }
     next.revision += 1;
     this.#panes.set(next.pane_id, next);
-    this.#sendResult(socket, request.id, { type: "pane_info", pane: clonePane(next) });
+    this.#sendResult(socket, request.id, { type: "ok" });
   }
 
   #openPluginPane(socket: Socket, request: RecordedHerdrRequest): void {
@@ -355,7 +355,7 @@ export class FakeHerdrServer {
     const targetId = optionalStringParam(request.params, "target_pane_id");
     const target =
       targetId === null ? [...this.#panes.values()].find(({ focused }) => focused) : this.#panes.get(targetId);
-    if (pluginId === null || entrypoint === null || target === undefined) {
+    if (pluginId === null || entrypoint === null || target === undefined || "workspace_id" in request.params) {
       return this.#sendError(socket, request.id, "invalid_params", "invalid plugin pane request");
     }
 

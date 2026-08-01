@@ -65,7 +65,6 @@ export async function resolveViewer(
     const opened = await client.pluginPaneOpen({
       pluginId: VIEWER_IDENTITY.pluginId,
       entrypointId: VIEWER_IDENTITY.entrypointId,
-      workspaceId: request.workspaceId,
       targetPaneId: request.sourcePaneId,
       placement: "split",
       direction: "right",

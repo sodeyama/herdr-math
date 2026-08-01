@@ -79,7 +79,6 @@ export interface HerdrPaneMetadataReport {
 export interface HerdrPluginPaneOpenRequest {
   pluginId: string;
   entrypointId: string;
-  workspaceId: string;
   targetPaneId: string;
   placement: "split";
   direction: "right" | "down";
@@ -161,7 +160,6 @@ type HerdrRequest =
       params: {
         plugin_id: string;
         entrypoint: string;
-        workspace_id: string;
         target_pane_id: string;
         placement: "split";
         direction: "right" | "down";
@@ -329,9 +327,9 @@ export class HerdrSocketClient {
         tokens: { ...report.tokens }
       }
     };
-    const response = await this.#request(outbound, this.#paneMetadataTimeoutMs, parsePaneGetResult);
-    if (!response.ok || response.value.paneId === paneId) return response;
-    return protocolFailure();
+    const response = await this.#request(outbound, this.#paneMetadataTimeoutMs, parseOkResult);
+    if (!response.ok) return failure(response.error);
+    return this.paneGet(paneId);
   }
 
   pluginPaneOpen(request: HerdrPluginPaneOpenRequest): Promise<OperationResult<HerdrPluginPaneSnapshot>> {
@@ -344,7 +342,6 @@ export class HerdrSocketClient {
       params: {
         plugin_id: request.pluginId,
         entrypoint: request.entrypointId,
-        workspace_id: request.workspaceId,
         target_pane_id: request.targetPaneId,
         placement: request.placement,
         direction: request.direction,
@@ -786,7 +783,6 @@ function isPluginPaneOpenRequest(value: unknown): value is HerdrPluginPaneOpenRe
     !isRecord(value) ||
     !isIdentifier(value.pluginId) ||
     !isIdentifier(value.entrypointId) ||
-    !isIdentifier(value.workspaceId) ||
     !isIdentifier(value.targetPaneId) ||
     value.placement !== "split" ||
     (value.direction !== "right" && value.direction !== "down") ||

@@ -33,7 +33,7 @@ describe("viewer entrypoint", () => {
         herdr_math_source: sourceToken
       }
     });
-    expect(server.requests).toHaveLength(1);
+    expect(server.requests).toHaveLength(2);
     expect(server.requests[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(server.requests[0]).toMatchObject({
       method: "pane.report_metadata",
@@ -47,6 +47,7 @@ describe("viewer entrypoint", () => {
         }
       }
     });
+    expect(server.requests[1]).toMatchObject({ method: "pane.get", params: { pane_id: "w1:p2" } });
   });
 
   it.each([

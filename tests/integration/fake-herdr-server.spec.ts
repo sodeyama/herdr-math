@@ -97,7 +97,6 @@ describe("FakeHerdrServer", () => {
     const opened = await client.pluginPaneOpen({
       pluginId: "io.github.sodeyama.herdr-math",
       entrypointId: "viewer",
-      workspaceId: "w1",
       targetPaneId: "w1:p1",
       placement: "split",
       direction: "right",
