@@ -4,6 +4,7 @@ export const ERROR_CODES = [
   "baseline_missing",
   "boundary_failed",
   "answer_truncated",
+  "conclusion_boundary_failed",
   "formula_not_found",
   "scanner_input_limit",
   "invalid_latex",
