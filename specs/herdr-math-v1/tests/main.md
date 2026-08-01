@@ -343,7 +343,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Priority: P0
 - Evidence: Unit, Integration, Runtime
 - Given an alternate-screen agent replaces a working progress region with its completed answer instead of preserving the baseline gap
-- When a unique context-qualified anchor before the region and a unique forward-context-qualified anchor after it retain their order
+- When a unique context-qualified anchor before the region and a unique anchor after it retain their order, using following context to disambiguate repeated after-anchor lines
 - Then the resolver returns only the bounded replacement region with strategy `middle_replacement`.
 - And each formula already present in the baseline gap is excluded by a keyed formula digest before rendering.
 - And absent, ambiguous, reordered, oversized, or unscannable evidence fails closed without rendering.
