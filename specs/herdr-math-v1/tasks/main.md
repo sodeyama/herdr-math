@@ -33,7 +33,7 @@
   - Acceptance tests: AT-708
   - Commit: `docs(legal): add project license and notice policy`
 
-- [ ] **T-102: Add package metadata and locked dependencies**
+- [x] **T-102: Add package metadata and locked dependencies**
   - Scope: Add `package.json`, lockfile, supported Node.js range, module/type strategy, scripts, package metadata, and repository URLs without adding the renderer backend prematurely.
   - Dependencies: T-101
   - Acceptance tests: AT-001, AT-007, AT-009, AT-706
