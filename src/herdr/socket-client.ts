@@ -14,30 +14,52 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 export const HERDR_CLIENT_LIMITS = Object.freeze({
   socketPathBytes: 4096,
-  paneGetTimeoutMs: 2000
+  paneGetTimeoutMs: 2000,
+  paneReadTimeoutMs: 2000,
+  agentSessionValueBytes: 4096
 });
+
+export interface HerdrAgentSessionRef {
+  source: string;
+  agent: string;
+  kind: "id" | "path";
+  value: string;
+}
 
 export interface HerdrPaneSnapshot {
   paneId: string;
   workspaceId: string;
   agent: string | null;
+  agentSession: HerdrAgentSessionRef | null;
   status: AgentStatus;
   revision: number;
 }
 
+export interface HerdrPaneReadSnapshot {
+  paneId: string;
+  workspaceId: string;
+  text: string;
+  revision: number;
+  truncated: boolean;
+}
+
 export interface HerdrSocketClientOptions {
   paneGetTimeoutMs?: number;
+  paneReadTimeoutMs?: number;
   responseBytes?: number;
 }
 
-interface HerdrRequest {
-  id: string;
-  method: "pane.get";
-  params: { pane_id: string };
-}
+type HerdrRequest =
+  | { id: string; method: "pane.get"; params: { pane_id: string } }
+  | {
+      id: string;
+      method: "pane.read";
+      params: { pane_id: string; source: "recent-unwrapped"; format: "text"; lines: number; strip_ansi: true };
+    };
 
 export class HerdrSocketClient {
   readonly #paneGetTimeoutMs: number;
+  readonly #paneReadTimeoutMs: number;
   readonly #responseBytes: number;
 
   constructor(
@@ -48,6 +70,11 @@ export class HerdrSocketClient {
       options.paneGetTimeoutMs,
       HERDR_CLIENT_LIMITS.paneGetTimeoutMs,
       "paneGetTimeoutMs"
+    );
+    this.#paneReadTimeoutMs = boundedOverride(
+      options.paneReadTimeoutMs,
+      HERDR_CLIENT_LIMITS.paneReadTimeoutMs,
+      "paneReadTimeoutMs"
     );
     this.#responseBytes = boundedOverride(options.responseBytes, POLICY_LIMITS.socketResponseBytes, "responseBytes");
   }
@@ -63,6 +90,24 @@ export class HerdrSocketClient {
       params: { pane_id: paneId }
     };
     return this.#request(outbound, this.#paneGetTimeoutMs, parsePaneGetResult);
+  }
+
+  paneRead(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(paneId)) {
+      return Promise.resolve(protocolFailure());
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "pane.read",
+      params: {
+        pane_id: paneId,
+        source: "recent-unwrapped",
+        format: "text",
+        lines: POLICY_LIMITS.paneReadLines,
+        strip_ansi: true
+      }
+    };
+    return this.#request(outbound, this.#paneReadTimeoutMs, parsePaneReadResult);
   }
 
   #request<T>(
@@ -176,6 +221,7 @@ function parsePaneGetResult(value: unknown): HerdrPaneSnapshot {
     throw new HerdrMathError("herdr_protocol_error");
   }
   const pane = value.pane;
+  const agentSession = parseAgentSession(pane.agent_session);
   if (
     !isIdentifier(pane.pane_id) ||
     !isIdentifier(pane.terminal_id) ||
@@ -184,6 +230,7 @@ function parsePaneGetResult(value: unknown): HerdrPaneSnapshot {
     typeof pane.focused !== "boolean" ||
     !isAgentStatus(pane.agent_status) ||
     (pane.agent !== undefined && pane.agent !== null && !isIdentifier(pane.agent)) ||
+    agentSession === undefined ||
     !Number.isSafeInteger(pane.revision) ||
     (pane.revision as number) < 0
   ) {
@@ -194,9 +241,62 @@ function parsePaneGetResult(value: unknown): HerdrPaneSnapshot {
     paneId: pane.pane_id,
     workspaceId: pane.workspace_id,
     agent: typeof pane.agent === "string" ? pane.agent : null,
+    agentSession,
     status: pane.agent_status,
     revision: pane.revision as number
   });
+}
+
+function parsePaneReadResult(value: unknown): HerdrPaneReadSnapshot {
+  if (!isRecord(value) || value.type !== "pane_read" || !isRecord(value.read)) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  const read = value.read;
+  if (
+    !isIdentifier(read.pane_id) ||
+    !isIdentifier(read.workspace_id) ||
+    !isIdentifier(read.tab_id) ||
+    read.source !== "recent-unwrapped" ||
+    read.format !== "text" ||
+    typeof read.text !== "string" ||
+    !Number.isSafeInteger(read.revision) ||
+    (read.revision as number) < 0 ||
+    typeof read.truncated !== "boolean"
+  ) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  const bytes = Buffer.byteLength(read.text, "utf8");
+  if (bytes > POLICY_LIMITS.paneReadBytes) {
+    throw new HerdrMathError("scanner_input_limit", {
+      limit_kind: "pane_read_bytes",
+      limit: POLICY_LIMITS.paneReadBytes,
+      actual: bytes
+    });
+  }
+  return Object.freeze({
+    paneId: read.pane_id,
+    workspaceId: read.workspace_id,
+    text: read.text,
+    revision: read.revision as number,
+    truncated: read.truncated
+  });
+}
+
+function parseAgentSession(value: unknown): HerdrAgentSessionRef | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (
+    !isRecord(value) ||
+    !isIdentifier(value.source) ||
+    !isIdentifier(value.agent) ||
+    (value.kind !== "id" && value.kind !== "path") ||
+    typeof value.value !== "string" ||
+    value.value.length === 0 ||
+    value.value.includes("\0") ||
+    Buffer.byteLength(value.value, "utf8") > HERDR_CLIENT_LIMITS.agentSessionValueBytes
+  ) {
+    return undefined;
+  }
+  return Object.freeze({ source: value.source, agent: value.agent, kind: value.kind, value: value.value });
 }
 
 function protocolFailure<T>(retryable = false, details: SafeErrorDetails = {}): OperationResult<T> {

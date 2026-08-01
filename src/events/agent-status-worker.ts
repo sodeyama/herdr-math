@@ -1,0 +1,497 @@
+import { buildBaselineFingerprint, deriveStateKey } from "../boundary/fingerprint-builder.js";
+import { fingerprintDigest } from "../boundary/fingerprint-digest.js";
+import type { FingerprintStateV1, LifecycleAuthority, SupportedAgent } from "../boundary/fingerprint-schema.js";
+import { resolveAnswerFromFingerprint } from "../boundary/fingerprint-resolver.js";
+import { failure, success, type OperationResult, type RenderedImage } from "../core/contracts.js";
+import { HerdrMathError, serializeError } from "../core/errors.js";
+import {
+  commitCompletion,
+  transitionLifecycle,
+  type CompletionAuthorization,
+  type LifecycleEvent
+} from "./lifecycle.js";
+import { decodeAgentStatusEvent, type DecodedAgentStatusEvent } from "../herdr/event-decoder.js";
+import type { HerdrPaneReadSnapshot, HerdrPaneSnapshot } from "../herdr/socket-client.js";
+import type { RendererFormula } from "../renderer/render.js";
+import { scanLatex } from "../scanner/scan-latex.js";
+import { acquirePaneLock } from "../state/pane-lock.js";
+import { createPaneStatePaths, type PaneStatePaths } from "../state/paths.js";
+import { isCurrentGeneration, loadPaneState, writePaneState } from "../state/store.js";
+
+export const AGENT_STATUS_TIMING = Object.freeze({
+  completionDebounceMs: 500,
+  stableReadIntervalMs: 100,
+  stableReadAttempts: 3
+});
+
+const AGENT_AUTHORITIES: Readonly<Record<SupportedAgent, LifecycleAuthority>> = Object.freeze({
+  claude: "screen_detection",
+  codex: "screen_detection",
+  pi: "integration_hook",
+  opencode: "integration_hook"
+});
+
+export interface AgentStatusHerdrClient {
+  paneGet(paneId: string): Promise<OperationResult<HerdrPaneSnapshot>>;
+  paneRead(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>>;
+}
+
+export interface ImagePublishRequest {
+  sourcePaneId: string;
+  workspaceId: string;
+  generation: number;
+  existingViewerPaneId?: string;
+  image: RenderedImage;
+}
+
+export interface ImagePublishResult {
+  viewerPaneId: string;
+}
+
+export interface AgentStatusWorkerTiming {
+  completionDebounceMs?: number;
+  stableReadIntervalMs?: number;
+}
+
+export interface AgentStatusWorkerDependencies {
+  client: AgentStatusHerdrClient;
+  stateDirectory: string;
+  sessionIdentity: string;
+  secret: Uint8Array;
+  render(formulas: readonly RendererFormula[]): Promise<OperationResult<RenderedImage>>;
+  publish(request: ImagePublishRequest): Promise<OperationResult<ImagePublishResult>>;
+  now?: () => Date;
+  sleep?: (milliseconds: number) => Promise<void>;
+  timing?: AgentStatusWorkerTiming;
+}
+
+export type AgentStatusWorkerOutcome =
+  | { kind: "baseline_stored"; status: "working"; agent: SupportedAgent; generation: number }
+  | {
+      kind: "preserved";
+      status: DecodedAgentStatusEvent["status"];
+      agent: SupportedAgent;
+      reason: string;
+      generation?: number;
+    }
+  | {
+      kind: "completion_recorded";
+      status: "done" | "idle";
+      agent: SupportedAgent;
+      generation: number;
+      formulaCount: 0;
+    }
+  | {
+      kind: "image_published";
+      status: "done" | "idle";
+      agent: SupportedAgent;
+      generation: number;
+      formulaCount: number;
+      viewerPaneId: string;
+    };
+
+interface ResolvedEvent {
+  decoded: DecodedAgentStatusEvent;
+  pane: HerdrPaneSnapshot;
+  agent: SupportedAgent;
+  authority: LifecycleAuthority;
+  occupantIdentity: string;
+  lifecycle: LifecycleEvent;
+}
+
+interface CompletionPhase {
+  authorization: CompletionAuthorization;
+  state: FingerprintStateV1;
+}
+
+interface StableRead {
+  snapshot: HerdrPaneReadSnapshot;
+  digest: string;
+}
+
+export async function processAgentStatusEvent(
+  source: string,
+  dependencies: AgentStatusWorkerDependencies
+): Promise<OperationResult<AgentStatusWorkerOutcome>> {
+  const decoded = decodeAgentStatusEvent(source);
+  if (!decoded.ok) return failure(decoded.error);
+  return processDecodedAgentStatusEvent(decoded.value, dependencies);
+}
+
+export async function processDecodedAgentStatusEvent(
+  decoded: DecodedAgentStatusEvent,
+  dependencies: AgentStatusWorkerDependencies
+): Promise<OperationResult<AgentStatusWorkerOutcome>> {
+  try {
+    const timing = resolveTiming(dependencies.timing);
+    const resolved = await resolveEvent(decoded, dependencies);
+    if (!resolved.ok) return failure(resolved.error);
+    const sessionKey = deriveStateKey("session", dependencies.sessionIdentity, dependencies.secret);
+    const paths = createPaneStatePaths(
+      dependencies.stateDirectory,
+      sessionKey,
+      decoded.sourcePaneId,
+      dependencies.secret
+    );
+    if (decoded.status === "working") return await processWorking(resolved.value, paths, dependencies);
+
+    const phase = await authorizeNonWorking(resolved.value, paths, dependencies);
+    if (!phase.ok) return failure(phase.error);
+    if ("kind" in phase.value) return success(phase.value);
+    return await processCompletion(resolved.value, phase.value, paths, dependencies, timing);
+  } catch (error) {
+    return failure(serializeError(error));
+  }
+}
+
+async function resolveEvent(
+  decoded: DecodedAgentStatusEvent,
+  dependencies: AgentStatusWorkerDependencies
+): Promise<OperationResult<ResolvedEvent>> {
+  const result = await dependencies.client.paneGet(decoded.sourcePaneId);
+  if (!result.ok) return failure(result.error);
+  const pane = result.value;
+  if (
+    pane.paneId !== decoded.sourcePaneId ||
+    pane.workspaceId !== decoded.workspaceId ||
+    pane.status !== decoded.status ||
+    pane.agent === null ||
+    (decoded.agentHint !== undefined && decoded.agentHint !== pane.agent)
+  ) {
+    return safeFailure("event_invalid");
+  }
+  if (!isSupportedAgent(pane.agent)) return safeFailure("agent_unsupported");
+  if (pane.agentSession !== null && pane.agentSession.agent !== pane.agent) return safeFailure("event_invalid");
+
+  const authority = AGENT_AUTHORITIES[pane.agent];
+  const occupantIdentity =
+    pane.agentSession === null
+      ? `pane-agent\0${pane.paneId}\0${pane.agent}\0${authority}`
+      : `agent-session\0${pane.agentSession.source}\0${pane.agentSession.agent}\0${pane.agentSession.kind}\0${pane.agentSession.value}`;
+  const occupantKey = deriveStateKey("occupant", occupantIdentity, dependencies.secret);
+  const sessionKey = deriveStateKey("session", dependencies.sessionIdentity, dependencies.secret);
+  return success({
+    decoded,
+    pane,
+    agent: pane.agent,
+    authority,
+    occupantIdentity,
+    lifecycle: {
+      status: decoded.status,
+      sessionKey,
+      workspaceId: decoded.workspaceId,
+      sourcePaneId: decoded.sourcePaneId,
+      agent: pane.agent,
+      lifecycleAuthority: authority,
+      occupantKey,
+      paneRevision: pane.revision,
+      eventSequence: pane.revision
+    }
+  });
+}
+
+async function processWorking(
+  resolved: ResolvedEvent,
+  paths: PaneStatePaths,
+  dependencies: AgentStatusWorkerDependencies
+): Promise<OperationResult<AgentStatusWorkerOutcome>> {
+  const lock = await acquirePaneLock(paths, { eventType: "working", now: currentTime(dependencies) });
+  try {
+    const now = currentTime(dependencies);
+    const current = await loadPaneState(paths, now);
+    const read = await dependencies.client.paneRead(resolved.decoded.sourcePaneId);
+    if (!read.ok) return failure(read.error);
+    if (!readMatchesEvent(read.value, resolved)) return safeFailure("event_invalid");
+    const confirmed = await resolveEvent(resolved.decoded, dependencies);
+    if (!confirmed.ok) return failure(confirmed.error);
+    if (!sameResolvedEvent(resolved, confirmed.value)) return safeFailure("event_invalid");
+
+    const candidate = buildBaselineFingerprint(
+      read.value.text,
+      {
+        sessionIdentity: dependencies.sessionIdentity,
+        occupantIdentity: resolved.occupantIdentity,
+        workspaceId: resolved.decoded.workspaceId,
+        sourcePaneId: resolved.decoded.sourcePaneId,
+        agent: resolved.agent,
+        lifecycleAuthority: resolved.authority,
+        paneRevision: resolved.pane.revision,
+        eventSequence: resolved.pane.revision,
+        generation: current?.generation ?? 0,
+        createdAt: now
+      },
+      dependencies.secret
+    );
+    const decision = transitionLifecycle(current, resolved.lifecycle, candidate);
+    if (decision.kind === "reject") return safeFailure(decision.code);
+    if (decision.kind === "preserve") {
+      return success({
+        kind: "preserved",
+        status: "working",
+        agent: resolved.agent,
+        reason: decision.reason,
+        ...(current === undefined ? {} : { generation: current.generation })
+      });
+    }
+    if (decision.kind !== "store_baseline") return safeFailure("event_invalid");
+    const stored = await writePaneState(paths, decision.state, current?.generation ?? null, now);
+    if (!stored) return safeFailure("state_locked", true);
+    return success({
+      kind: "baseline_stored",
+      status: "working",
+      agent: resolved.agent,
+      generation: decision.state.generation
+    });
+  } finally {
+    await lock.release();
+  }
+}
+
+async function authorizeNonWorking(
+  resolved: ResolvedEvent,
+  paths: PaneStatePaths,
+  dependencies: AgentStatusWorkerDependencies
+): Promise<OperationResult<CompletionPhase | AgentStatusWorkerOutcome>> {
+  const lock = await acquirePaneLock(paths, { eventType: resolved.decoded.status, now: currentTime(dependencies) });
+  try {
+    const state = await loadPaneState(paths, currentTime(dependencies));
+    const decision = transitionLifecycle(state, resolved.lifecycle);
+    if (decision.kind === "reject") return safeFailure(decision.code);
+    if (decision.kind === "preserve") {
+      return success({
+        kind: "preserved",
+        status: resolved.decoded.status,
+        agent: resolved.agent,
+        reason: decision.reason,
+        ...(state === undefined ? {} : { generation: state.generation })
+      });
+    }
+    if (decision.kind !== "process_completion" || state === undefined) return safeFailure("event_invalid");
+    return success({ authorization: decision.authorization, state });
+  } finally {
+    await lock.release();
+  }
+}
+
+async function processCompletion(
+  resolved: ResolvedEvent,
+  phase: CompletionPhase,
+  paths: PaneStatePaths,
+  dependencies: AgentStatusWorkerDependencies,
+  timing: Required<AgentStatusWorkerTiming>
+): Promise<OperationResult<AgentStatusWorkerOutcome>> {
+  const sleep = dependencies.sleep ?? defaultSleep;
+  await sleep(timing.completionDebounceMs);
+  const stable = await readStableCompletion(resolved, dependencies, sleep, timing.stableReadIntervalMs);
+  if (!stable.ok) return failure(stable.error);
+  const confirmed = await resolveEvent(resolved.decoded, dependencies);
+  if (!confirmed.ok) return failure(confirmed.error);
+  if (!sameResolvedEvent(resolved, confirmed.value)) return safeFailure("event_invalid");
+
+  const boundary = resolveAnswerFromFingerprint(phase.state, stable.value.snapshot.text, dependencies.secret, {
+    readTruncated: stable.value.snapshot.truncated
+  });
+  if (!boundary.ok) return failure(boundary.error);
+
+  let formulas: ReturnType<typeof scanLatex>;
+  try {
+    formulas = scanLatex(boundary.value.answer);
+  } catch (error) {
+    return failure(serializeError(error));
+  }
+
+  const current = await loadPaneState(paths, currentTime(dependencies));
+  if (current?.processed?.content_digest === boundary.value.currentDigest) {
+    return preservedCompletion(resolved, phase.authorization.generation, "duplicate_completion");
+  }
+  if (
+    !(await isCurrentGeneration(
+      paths,
+      phase.authorization.generation,
+      phase.authorization.occupantKey,
+      currentTime(dependencies)
+    ))
+  ) {
+    return preservedCompletion(resolved, phase.authorization.generation, "stale_completion");
+  }
+
+  if (formulas.length === 0) {
+    return commitFinal(resolved, phase.authorization, boundary.value.currentDigest, paths, dependencies);
+  }
+
+  if (
+    !(await isCurrentGeneration(
+      paths,
+      phase.authorization.generation,
+      phase.authorization.occupantKey,
+      currentTime(dependencies)
+    ))
+  ) {
+    return preservedCompletion(resolved, phase.authorization.generation, "stale_completion");
+  }
+  const rendered = await dependencies.render(formulas.map(({ latex, display }) => ({ latex, display })));
+  if (!rendered.ok) return failure(rendered.error);
+  return commitFinal(
+    resolved,
+    phase.authorization,
+    boundary.value.currentDigest,
+    paths,
+    dependencies,
+    rendered.value,
+    formulas.length
+  );
+}
+
+async function readStableCompletion(
+  resolved: ResolvedEvent,
+  dependencies: AgentStatusWorkerDependencies,
+  sleep: (milliseconds: number) => Promise<void>,
+  intervalMs: number
+): Promise<OperationResult<StableRead>> {
+  let previous: StableRead | undefined;
+  for (let attempt = 0; attempt < AGENT_STATUS_TIMING.stableReadAttempts; attempt += 1) {
+    const read = await dependencies.client.paneRead(resolved.decoded.sourcePaneId);
+    if (!read.ok) return failure(read.error);
+    if (!readMatchesEvent(read.value, resolved)) return safeFailure("event_invalid");
+    const candidate: StableRead = {
+      snapshot: read.value,
+      digest: fingerprintDigest("stable-pane-read", read.value.text, dependencies.secret)
+    };
+    if (
+      previous !== undefined &&
+      previous.digest === candidate.digest &&
+      previous.snapshot.truncated === candidate.snapshot.truncated
+    ) {
+      return success(candidate);
+    }
+    previous = candidate;
+    if (attempt + 1 < AGENT_STATUS_TIMING.stableReadAttempts) await sleep(intervalMs);
+  }
+  return safeFailure("herdr_timeout", true);
+}
+
+async function commitFinal(
+  resolved: ResolvedEvent,
+  authorization: CompletionAuthorization,
+  contentDigest: string,
+  paths: PaneStatePaths,
+  dependencies: AgentStatusWorkerDependencies,
+  image?: RenderedImage,
+  formulaCount = 0
+): Promise<OperationResult<AgentStatusWorkerOutcome>> {
+  const lock = await acquirePaneLock(paths, { eventType: authorization.status, now: currentTime(dependencies) });
+  try {
+    const now = currentTime(dependencies);
+    const current = await loadPaneState(paths, now);
+    const confirmed = await resolveEvent(resolved.decoded, dependencies);
+    if (!confirmed.ok) return failure(confirmed.error);
+    if (!sameResolvedEvent(resolved, confirmed.value)) return safeFailure("event_invalid");
+    const commit = { ...authorization, contentDigest, processedAt: now };
+    const preliminary = commitCompletion(current, commit);
+    if (preliminary.kind === "reject") return safeFailure(preliminary.code);
+    if (preliminary.kind === "preserve") {
+      return preservedCompletion(resolved, authorization.generation, preliminary.reason);
+    }
+
+    let viewerPaneId: string | undefined;
+    if (image !== undefined) {
+      const published = await dependencies.publish({
+        sourcePaneId: resolved.decoded.sourcePaneId,
+        workspaceId: resolved.decoded.workspaceId,
+        generation: authorization.generation,
+        ...(current?.viewer_pane_id === undefined ? {} : { existingViewerPaneId: current.viewer_pane_id }),
+        image
+      });
+      if (!published.ok) return failure(published.error);
+      viewerPaneId = published.value.viewerPaneId;
+    }
+
+    const final = viewerPaneId === undefined ? preliminary : commitCompletion(current, { ...commit, viewerPaneId });
+    if (final.kind !== "commit_completion") return safeFailure("event_invalid");
+    const stored = await writePaneState(paths, final.state, current?.generation ?? null, now);
+    if (!stored) return safeFailure("state_locked", true);
+    if (viewerPaneId === undefined) {
+      return success({
+        kind: "completion_recorded",
+        status: authorization.status,
+        agent: resolved.agent,
+        generation: authorization.generation,
+        formulaCount: 0
+      });
+    }
+    return success({
+      kind: "image_published",
+      status: authorization.status,
+      agent: resolved.agent,
+      generation: authorization.generation,
+      formulaCount,
+      viewerPaneId
+    });
+  } finally {
+    await lock.release();
+  }
+}
+
+function preservedCompletion(
+  resolved: ResolvedEvent,
+  generation: number,
+  reason: string
+): OperationResult<AgentStatusWorkerOutcome> {
+  return success({
+    kind: "preserved",
+    status: resolved.decoded.status,
+    agent: resolved.agent,
+    reason,
+    generation
+  });
+}
+
+function readMatchesEvent(read: HerdrPaneReadSnapshot, resolved: ResolvedEvent): boolean {
+  return read.paneId === resolved.decoded.sourcePaneId && read.workspaceId === resolved.decoded.workspaceId;
+}
+
+function sameResolvedEvent(left: ResolvedEvent, right: ResolvedEvent): boolean {
+  return (
+    left.agent === right.agent &&
+    left.authority === right.authority &&
+    left.occupantIdentity === right.occupantIdentity &&
+    left.pane.revision === right.pane.revision &&
+    left.pane.status === right.pane.status
+  );
+}
+
+function resolveTiming(overrides: AgentStatusWorkerTiming | undefined): Required<AgentStatusWorkerTiming> {
+  const timing = {
+    completionDebounceMs: overrides?.completionDebounceMs ?? AGENT_STATUS_TIMING.completionDebounceMs,
+    stableReadIntervalMs: overrides?.stableReadIntervalMs ?? AGENT_STATUS_TIMING.stableReadIntervalMs
+  };
+  if (
+    !isBoundedDuration(timing.completionDebounceMs, AGENT_STATUS_TIMING.completionDebounceMs) ||
+    !isBoundedDuration(timing.stableReadIntervalMs, AGENT_STATUS_TIMING.stableReadIntervalMs)
+  ) {
+    throw new TypeError("Worker timing overrides must not exceed production policy");
+  }
+  return timing;
+}
+
+function isBoundedDuration(value: number, maximum: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && value <= maximum;
+}
+
+function currentTime(dependencies: AgentStatusWorkerDependencies): Date {
+  const value = dependencies.now?.() ?? new Date();
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) throw new HerdrMathError("event_invalid");
+  return new Date(value.getTime());
+}
+
+function isSupportedAgent(value: string): value is SupportedAgent {
+  return Object.hasOwn(AGENT_AUTHORITIES, value);
+}
+
+function safeFailure<T>(code: HerdrMathError["code"], retryable = false): OperationResult<T> {
+  return failure(serializeError(new HerdrMathError(code, {}, retryable)));
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

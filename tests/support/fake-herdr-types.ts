@@ -11,6 +11,12 @@ export interface FakePaneState {
   agent_status: FakeAgentStatus;
   revision: number;
   agent?: string | null;
+  agent_session?: {
+    source: string;
+    agent: string;
+    kind: "id" | "path";
+    value: string;
+  } | null;
   title?: string | null;
   display_agent?: string | null;
   state_labels?: Record<string, string>;

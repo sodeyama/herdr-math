@@ -69,7 +69,14 @@ describe("FakeHerdrServer", () => {
     const clientResult = await new HerdrSocketClient(server.socketPath).paneGet("w1:p1");
     expect(clientResult).toEqual({
       ok: true,
-      value: { paneId: "w1:p1", workspaceId: "w1", agent: "claude", status: "done", revision: 2 }
+      value: {
+        paneId: "w1:p1",
+        workspaceId: "w1",
+        agent: "claude",
+        agentSession: null,
+        status: "done",
+        revision: 2
+      }
     });
     expect(server.requests.map(({ method }) => method)).toEqual([
       "pane.get",

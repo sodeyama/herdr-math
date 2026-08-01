@@ -64,6 +64,7 @@ describe("HerdrSocketClient", () => {
           paneId: result.pane.pane_id,
           workspaceId: result.pane.workspace_id,
           agent: result.pane.agent ?? null,
+          agentSession: null,
           status: result.pane.agent_status,
           revision: result.pane.revision
         } satisfies HerdrPaneSnapshot
@@ -94,6 +95,40 @@ describe("HerdrSocketClient", () => {
     expect((await client.paneGet("w1:p1")).ok).toBe(true);
     expect((await client.paneGet("w1:p1")).ok).toBe(true);
     expect(connections).toBe(2);
+  });
+
+  it("requests one bounded recent-unwrapped pane read", async () => {
+    let captured: WireRequest | undefined;
+    const server = await startServer((socket, request) => {
+      captured = request;
+      socket.end(
+        `${JSON.stringify({
+          id: request.id,
+          result: {
+            type: "pane_read",
+            read: {
+              pane_id: "w1:p1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              source: "recent-unwrapped",
+              format: "text",
+              text: "answer $x$",
+              revision: 9,
+              truncated: false
+            }
+          }
+        })}\n`
+      );
+    });
+
+    expect(await new HerdrSocketClient(server.path).paneRead("w1:p1")).toEqual({
+      ok: true,
+      value: { paneId: "w1:p1", workspaceId: "w1", text: "answer $x$", revision: 9, truncated: false }
+    });
+    expect(captured).toMatchObject({
+      method: "pane.read",
+      params: { pane_id: "w1:p1", source: "recent-unwrapped", format: "text", lines: 1000, strip_ansi: true }
+    });
   });
 
   it("maps malformed frames and server errors without exposing their contents", async () => {
@@ -198,6 +233,9 @@ describe("HerdrSocketClient", () => {
   it("rejects test overrides that weaken production policy", () => {
     expect(
       () => new HerdrSocketClient("socket", { paneGetTimeoutMs: HERDR_CLIENT_LIMITS.paneGetTimeoutMs + 1 })
+    ).toThrow(TypeError);
+    expect(
+      () => new HerdrSocketClient("socket", { paneReadTimeoutMs: HERDR_CLIENT_LIMITS.paneReadTimeoutMs + 1 })
     ).toThrow(TypeError);
     expect(() => new HerdrSocketClient("socket", { responseBytes: POLICY_LIMITS.socketResponseBytes + 1 })).toThrow(
       TypeError
