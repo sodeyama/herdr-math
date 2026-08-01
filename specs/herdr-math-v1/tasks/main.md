@@ -332,7 +332,7 @@
   - Acceptance tests: AT-709
   - Commit: `docs(media): add sanitized runtime screenshots`
 
-- [ ] **T-904: Add continuous integration and release checks**
+- [x] **T-904: Add continuous integration and release checks**
   - Scope: Run clean dependency install, checks, unit/contract/integration/render tests, build, version agreement, secret scan, license audit, and release-tree validation on supported CI platforms.
   - Dependencies: T-705, T-806
   - Acceptance tests: AT-009, AT-011, AT-700, AT-708, AT-709
@@ -380,7 +380,7 @@
 
 ## Current Next Task
 
-Continue with **T-904**. T-903 remains open because the current Computer Use safety policy blocks direct Ghostty
+Resolve the Phase 9 dependency mapping next. T-903 remains open because the current Computer Use safety policy blocks direct Ghostty
 capture; do not substitute an unverified or unredacted screenshot. T-901 documentation is implemented, but its
 checkbox remains open until tagged install, same-tag reinstall, and managed uninstall evidence close AT-004,
 AT-005, and AT-010. T-804 remains an optional P1 compatibility expansion.

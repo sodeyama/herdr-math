@@ -17,6 +17,7 @@ This directory separates product intent, target design, and historical evidence 
 - [Ghostty runtime evidence](evidence/2026-08-01-ghostty-runtime.md) records the four-agent, viewer, resize, failure, and graphics-capability matrix.
 - [Named-session restart evidence](evidence/2026-08-01-session-restart.md) records state isolation, stale-lock cleanup, and restart recovery.
 - [macOS arm64 evidence](evidence/2026-08-01-platform-macos-arm64.md) records fresh installation and native artifact verification.
+- [GitHub Actions evidence](evidence/2026-08-01-github-actions.md) records the pinned macOS arm64 workflow and its first passing run.
 - [Licensing and notices](licensing.md) defines the project license, prototype boundary, dependency policy, and release notice gate.
 - [Privacy](../PRIVACY.md), [security](../SECURITY.md), [support](../SUPPORT.md), [contributing](../CONTRIBUTING.md), and the [changelog](../CHANGELOG.md) define the public maintenance policies.
 

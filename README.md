@@ -6,7 +6,7 @@ Herdr Math is a [Herdr](https://herdr.dev/) plugin. It detects `$...$` and `$$..
 
 ## Status
 
-Version 0.1.0 is a development build, not a published release. The implementation and automated suite are complete through the real Herdr runtime and compatibility gates. Public maintenance files, CI, screenshots, and immutable-tag installation remain release work.
+Version 0.1.0 is a development build, not a published release. The implementation, automated suite, real Herdr runtime, compatibility gates, public maintenance files, and CI are complete. Sanitized screenshots and immutable-tag installation remain release work.
 
 Verified release-candidate environment:
 
