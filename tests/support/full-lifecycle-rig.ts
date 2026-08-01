@@ -116,6 +116,21 @@ export class FullLifecycleRig {
     return { working, completion };
   }
 
+  async runStyledOutputs(
+    baseline: string,
+    completionOutput: string,
+    ansiCompletionOutput: string
+  ): Promise<{
+    working: OperationResult<AgentStatusWorkerOutcome>;
+    completion: OperationResult<AgentStatusWorkerOutcome>;
+  }> {
+    this.server.setPaneOutput("w1:p1", baseline);
+    const working = await this.process(this.server.transitionPane("w1:p1", "working"));
+    this.server.setPaneOutput("w1:p1", completionOutput, false, ansiCompletionOutput);
+    const completion = await this.process(this.server.transitionPane("w1:p1", "done"));
+    return { working, completion };
+  }
+
   process(event: FakeStatusEvent): Promise<OperationResult<AgentStatusWorkerOutcome>> {
     return this.processRaw(JSON.stringify(event));
   }
