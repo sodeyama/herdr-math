@@ -56,13 +56,13 @@ export function resolveAnswerFromFingerprint(
         result(current, replacement.startOffset, replacement.proof, currentDigest, readTruncated, replacement.endOffset)
       );
     }
-    if (middle.status === "conflict" || replacement.status === "conflict") {
-      return failure(serializeError(new HerdrMathError(readTruncated ? "answer_truncated" : "boundary_failed")));
-    }
-
     const stable = resolveStablePrefix(state, current, secret);
     if (stable !== null) {
       return success(result(current, stable.startOffset, stable.proof, currentDigest, readTruncated));
+    }
+
+    if (middle.status === "conflict" || replacement.status === "conflict") {
+      return failure(serializeError(new HerdrMathError(readTruncated ? "answer_truncated" : "boundary_failed")));
     }
 
     const sliding = resolveSlidingWindow(state, current, secret);

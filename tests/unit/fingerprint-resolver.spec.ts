@@ -244,6 +244,33 @@ describe("fingerprint answer resolver", () => {
     });
   });
 
+  it("uses a proven stable prefix before rejecting conflicting tail anchors", () => {
+    const stablePrefix = Array.from(
+      { length: 24 },
+      (_, index) =>
+        `Stable history line ${index.toString().padStart(2, "0")} with unique context abcdefghijklmnopqrstuvwxyz.`
+    ).join("\n");
+    const repeatedAnchor = "Repeated terminal separator anchor with enough characters 1234567890";
+    const baselineTail = `\n${repeatedAnchor}\nworking status\n${repeatedAnchor}\nfooter`;
+    const completionTail = `\n${repeatedAnchor}\ncompleted $$x^2$$\n${repeatedAnchor}\nfooter\n${repeatedAnchor}`;
+    const testCase: BoundaryCase = {
+      id: "stable-prefix-before-tail-conflict",
+      agent: "pi",
+      baseline: stablePrefix + baselineTail,
+      completion: stablePrefix + completionTail,
+      expectedAnswer: "",
+      expectedStrategy: "stable_prefix",
+      readTruncated: false
+    };
+
+    const result = resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.strategy).toBe("stable_prefix");
+    expect(result.value.startOffset).toBeGreaterThan(stablePrefix.length * 0.9);
+  });
+
   it.each([
     [
       "missing before anchor",
