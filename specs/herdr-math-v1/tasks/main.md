@@ -71,7 +71,7 @@
 
 ## Phase 2 - Scanner and Reference Boundary Logic
 
-- [ ] **T-201: Create a synthetic public answer corpus**
+- [x] **T-201: Create a synthetic public answer corpus**
   - Scope: Add synthetic Claude Code, Codex, Pi, and OpenCode answer fixtures covering valid math, code, prices, shell variables, escapes, repeated prompts, repaint changes, alternate-screen patterns, and truncated windows. Do not copy private transcripts.
   - Dependencies: T-103, T-107
   - Acceptance tests: AT-112, AT-203, AT-204, AT-202, AT-300 through AT-307, AT-709
