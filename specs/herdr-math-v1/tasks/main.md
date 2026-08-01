@@ -197,7 +197,7 @@
   - Acceptance tests: AT-602, AT-603, AT-606, AT-610
   - Commit: `feat(state): clean expired plugin state at startup`
 
-- [ ] **T-506: Implement pane-close cleanup**
+- [x] **T-506: Implement pane-close cleanup**
   - Scope: Distinguish source and viewer closure, remove only owned mappings, and prevent pane-id reuse from inheriting stale state.
   - Dependencies: T-304, T-501, T-503
   - Acceptance tests: AT-111, AT-505, AT-510

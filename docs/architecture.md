@@ -352,8 +352,10 @@ V0.1 waits 500 ms before completion reads, then performs at most three `recent-u
 
 ### Pane closed event
 
-- If a source pane closes, remove its fingerprint and viewer mapping state.
-- If a viewer closes, clear only the viewer id while retaining the source generation when still relevant.
+- Resolve the closed pane id through `pane.get`; mutate state only when Herdr returns `not_found`, except that a reused source id may remove an old occupant's state.
+- Scan only the current session namespace, with a hard limit of 4096 pane-state entries, and take each source-pane lock before changing its state.
+- If a source pane closes, remove its fingerprint and viewer mapping state. A matching native agent-session identity protects state from a delayed close event; fallback pane identities do not.
+- If a viewer closes, clear only the viewer id while retaining the source fingerprint, processed digest, and generation.
 - Do not automatically close another pane unless ownership is verified.
 
 ## Concurrency and Atomicity
