@@ -4,7 +4,7 @@
 
 - Specification state: Planned
 - Target release: `0.1.0`
-- Last updated: August 1, 2026
+- Last updated: August 2, 2026
 - Canonical plan: `../plans/main.md`
 - Executable tasks: `../tasks/main.md`
 
@@ -235,7 +235,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Evidence: Contract, Integration, Runtime
 - Given a Herdr pane detected as Claude Code (`claude`), Codex (`codex`), Pi (`pi`), or OpenCode (`opencode`), using the lifecycle authority supported by the minimum Herdr version
 - When that coding agent completes a response containing valid `$...$` or `$$...$$` LaTeX
-- Then Herdr Math accepts the authoritative lifecycle event, proves the current-answer boundary, renders the detected formulas locally, and creates or updates exactly one owned viewer without changing source focus.
+- Then Herdr Math accepts the authoritative lifecycle event, proves the current-answer boundary, isolates the visible final answer from reasoning and terminal chrome, renders its prose and formulas locally in source order, and creates or updates exactly one owned viewer without changing source focus.
 - And release evidence records the detected agent id, lifecycle authority, integration version when installed, observed status sequence, and render result separately for all four agents.
 
 ### AT-113 - Stale or unresolved event pane
@@ -414,15 +414,35 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given answer text above the scanner byte limit or excessive delimiter runs
 - Then processing is rejected with a stable bounded error and does not allocate unbounded memory.
 
+### AT-309 - Final-answer presentation boundary
+
+- Priority: P0
+- Evidence: Unit, Integration, Runtime
+- Given a proven current-answer delta and matching plain-text and ANSI terminal snapshots from Claude Code, Codex, Pi, or OpenCode
+- When presentation extraction runs
+- Then only the visible final response is returned, with prose and math delimiters in their original order.
+- And user prompts, visible reasoning, tool activity, progress rows, completion summaries, status bars, input areas, and terminal chrome are excluded.
+- And formulas that occur only in a prompt, reasoning section, or tool output do not cause a viewer update.
+- And when the ANSI snapshot cannot be normalized to the same bounded plain snapshot, or the agent-specific final-answer boundary cannot be proved, extraction returns `conclusion_boundary_failed` and leaves the viewer unchanged.
+
+### AT-310 - Clean paragraph normalization
+
+- Priority: P0
+- Evidence: Unit, Render
+- Given a final response whose terminal cells wrap English, Japanese, or mixed Unicode prose
+- When presentation normalization runs
+- Then soft wraps are joined without inserting spaces inside Japanese text, paragraph breaks and list boundaries remain, display equations remain block boundaries, and formula offsets stay correct.
+- And the result is plain prose with math, not a general Markdown or HTML rendering path.
+
 ## E. Rendering and Image Safety
 
 ### AT-400 - Representative formula corpus
 
 - Priority: P0
 - Evidence: Render
-- Given the fixed release corpus containing powers, fractions, roots, sums, integrals, aligned equations, matrices, Greek letters, and Unicode
+- Given the fixed release corpus containing prose plus powers, fractions, roots, sums, integrals, aligned equations, matrices, Greek letters, and Unicode
 - When rendered
-- Then every valid case produces a non-empty PNG with expected visual content and bounded dimensions.
+- Then every valid case produces a non-empty transparent PNG with expected prose and math in source order and bounded dimensions.
 
 ### AT-401 - Invalid LaTeX
 
@@ -499,6 +519,32 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - When both are measured against the same corpus
 - Then the selected backend has a recorded correctness, install-size, cold/warm latency, image-size, native-dependency, and security comparison.
 
+### AT-411 - Ordered response document
+
+- Priority: P0
+- Evidence: Unit, Render, Integration
+- Given a final response with prose before, between, and after inline and display math
+- When the response document is composed
+- Then prose and formulas appear once in source order, delimiter text is not displayed, HTML-significant input is escaped, and no Markdown, script, remote resource, or user HTML is executed.
+
+### AT-412 - Transparent terminal background and matched type size
+
+- Priority: P0
+- Evidence: Render, Runtime
+- Given a response document containing prose, inline math, and display math
+- When it is rendered and displayed in the verified terminal
+- Then uncovered pixels are transparent so the terminal background remains visible.
+- And prose and KaTeX inherit the same base font size, inline math aligns with the text baseline, and display math is not enlarged independently.
+- And no opaque white page or formula card is introduced by the browser screenshot or PNG optimizer.
+
+### AT-413 - Response document limits
+
+- Priority: P0
+- Evidence: Unit, Render, Integration
+- Given a final response above the document byte, line, block, dimension, render-duration, raw-PNG, or encoded-payload limit
+- When composition or rendering runs
+- Then it returns a stable bounded error before graphics commit, logs no response content, and preserves the previous valid viewer image.
+
 ## F. Viewer and Graphics Lifecycle
 
 ### AT-500 - First viewer creation
@@ -533,7 +579,8 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Evidence: Integration
 - Given a previous valid image and a new valid image
 - When replacement occurs
-- Then one `pane.graphics.set` request is issued without a preceding clear, and the new layer replaces the old layer.
+- Then a short document issues one `pane.graphics.set` request without a preceding clear, while a long document issues only its fully prevalidated bounded scroll-frame sequence without a preceding clear.
+- And the final accepted frame remains visible at the bottom of the final response.
 
 ### AT-504 - Invalid update preserves previous image
 
@@ -542,6 +589,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given a valid viewer image
 - When the next answer has invalid LaTeX, exceeds a limit, times out, or fails graphics validation
 - Then the existing image remains visible.
+- And if a scroll-frame commit fails after animation starts, the managed viewer restores its previous in-memory final frame when one exists and never persists that frame to disk.
 
 ### AT-505 - Closed viewer recreation
 
@@ -596,9 +644,29 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 
 - Priority: P0
 - Evidence: Integration, Runtime
-- Given a proven answer delta with no formulas
+- Given a proven final response with no formulas, including a turn whose prompt, reasoning, or tool output contains formulas
 - When completion is processed
 - Then no viewer is created, an existing viewer is unchanged, and the final digest is recorded to suppress duplicates.
+
+### AT-512 - Bounded automatic scrolling
+
+- Priority: P0
+- Evidence: Unit, Integration, Runtime
+- Given a rendered final response taller than the current viewer viewport
+- When the managed viewer presents it
+- Then it begins at the top, advances through monotonic overlapping crop offsets at a bounded interval, and stops with the bottom of the response visible.
+- And frame count, frame interval, total animation duration, crop dimensions, memory, socket request size, and graphics payload size remain within policy limits.
+- And a document that fits the viewport uses one frame without delay.
+- And viewer reuse, resize recomputation, source focus preservation, and closed-viewer recreation continue to hold during later updates.
+
+### AT-513 - Private viewer transport
+
+- Priority: P0
+- Evidence: Unit, Integration, Static
+- Given a Herdr-managed viewer process and a short-lived completion worker
+- When a rendered document is transferred for presentation
+- Then the transfer uses a plugin-owned user-only local socket, authenticates the expected source token, enforces request and timeout limits, and keeps response pixels only in process memory.
+- And no answer text, LaTeX source, rendered PNG, transport payload, or previous frame is written to durable state or logs.
 
 ## G. State, Concurrency, Privacy, and Recovery
 

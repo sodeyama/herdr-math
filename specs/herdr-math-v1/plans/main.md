@@ -4,13 +4,13 @@
 
 - Plan state: Ready for implementation
 - Target release: `0.1.0`
-- Last updated: August 1, 2026
+- Last updated: August 2, 2026
 - Acceptance contract: `../tests/main.md`
 - Task checklist: `../tasks/main.md`
 
 ## Objective
 
-Build a self-contained, publicly installable Herdr plugin that renders LaTeX equations from the current completed response of Claude Code, Codex, Pi, or OpenCode in a reusable side pane.
+Build a self-contained, publicly installable Herdr plugin that presents the visible final response of Claude Code, Codex, Pi, or OpenCode as clean prose and rendered LaTeX in a reusable side pane.
 
 The release must preserve the successful behavior of the August 1 prototype while replacing its local-only packaging, hard-coded paths, external dependency imports, long-running startup controller, and in-memory-only cross-event state assumptions.
 
@@ -22,7 +22,7 @@ A user with a supported Herdr, operating system, architecture, Node.js runtime, 
 herdr plugin install sodeyama/herdr-math --ref v0.1.0
 ```
 
-After enabling Herdr's experimental Kitty graphics setting, valid math in a supported agent's completed response appears automatically in one right-side viewer. Later answers reuse that viewer. No pane or equation content leaves the machine or appears in logs.
+After enabling Herdr's experimental Kitty graphics setting, the final prose and valid math in a supported agent's completed response appear automatically in one right-side viewer. Reasoning, tool activity, and terminal chrome are excluded. Long responses scroll smoothly from top to bottom, transparent pixels retain the terminal background, and later answers reuse the viewer. No pane, response, equation, image, or transport content leaves the machine or appears in durable state or logs.
 
 ## Input Evidence
 
@@ -49,11 +49,15 @@ The prototype did not establish clean installation, self-contained dependencies,
 6. Event model: manifest event hooks with bounded one-shot workers.
 7. Startup model: cleanup/restore work that exits; no daemon launcher.
 8. State model: cryptographic fingerprints and metadata only; no durable raw transcript.
-9. Update model: validate completely, then call `pane.graphics.set` without clearing first.
-10. Error model: fail closed and preserve the previous valid image.
-11. Network model: no runtime network access or telemetry.
-12. Compatibility model: declare only tested platforms and terminals.
-13. Public language: English.
+9. Presentation model: prove an agent-specific visible final-answer boundary before scanning math; do not display prompts, reasoning, tools, progress, or terminal chrome.
+10. Document model: render escaped plain prose and `$...$`/`$$...$$` math in source order; do not become a general Markdown renderer.
+11. Theme model: emit transparent PNG pixels so the terminal supplies the background, and use one inherited base size for prose and KaTeX.
+12. Update model: fully validate a short image or bounded scroll-frame sequence, then call `pane.graphics.set` without clearing first.
+13. Scroll model: the Herdr-managed viewer owns bounded animation and retains only its previous final frame in memory for rollback.
+14. Error model: fail closed and preserve the previous valid image.
+15. Network model: no runtime network access or telemetry.
+16. Compatibility model: declare only tested platforms and terminals.
+17. Public language: English.
 
 ## Supported Coding Agents
 
@@ -78,8 +82,10 @@ The table reflects the current official Herdr [Agents](https://herdr.dev/docs/ag
 - Strict Herdr event and socket protocol handling
 - Claude Code, Codex, Pi, and OpenCode lifecycle compatibility
 - Fingerprint-based answer boundary detection
+- Agent-aware final-answer presentation extraction using matching plain and ANSI snapshots
 - Conservative LaTeX scanner
-- Locally rendered PNG output
+- Locally rendered transparent prose-and-math PNG output
+- Bounded automatic scrolling through a private viewer transport
 - Viewer ownership, recovery, and focus preservation
 - Diagnostics action
 - Unit, contract, integration, rendering, install, and runtime tests
@@ -109,10 +115,12 @@ pane.agent_status_changed event
   -> per-pane atomic state machine
   -> working: store boundary fingerprint
   -> done/idle: prove answer delta
-  -> conservative LaTeX scanner
-  -> bounded local renderer
-  -> validate viewer ownership and graphics capability
-  -> pane.graphics.set
+  -> verify matching text and ANSI snapshots
+  -> agent-aware final-answer extractor
+  -> conservative LaTeX scanner and response document composer
+  -> bounded local transparent renderer
+  -> validate viewer ownership and private transport
+  -> managed viewer crops and publishes bounded scroll frames
   -> record processed digest
 ```
 
@@ -291,8 +299,10 @@ Risks:
 ### Implementation work
 
 - Implement a backend-neutral renderer interface.
+- Accept an escaped response document containing prose and formula spans in source order.
 - Add explicit trust and remote-resource denial.
-- Enforce count, length, aggregate, timeout, dimension, raw-byte, and encoded-byte limits.
+- Use a transparent page, a terminal-readable foreground, and one inherited base font size for prose and KaTeX.
+- Enforce response-byte, line, block, formula-count, formula-length, aggregate, timeout, dimension, raw-byte, and encoded-byte limits.
 - Normalize backend errors into stable codes.
 - Ensure every success, invalid-input, and timeout path releases resources.
 
@@ -346,12 +356,14 @@ The v1 allowlist starts from the already evidenced Claude Code and Codex paths. 
 - Duplicate and reordered event suites produce at most one render.
 - Malformed protocol input cannot cause unbounded reads or state writes.
 
-## Phase 6 - Viewer Ownership and Graphics Placement
+## Phase 6 - Final Presentation, Viewer Ownership, and Graphics Placement
 
 ### Goals
 
 - Open, recover, update, and recreate exactly one viewer per source pane.
 - Preserve focus and the previous valid image.
+- Display only the visible final answer, with prose and math composed cleanly.
+- Scroll long documents smoothly without persisting response pixels.
 
 ### Work
 
@@ -359,23 +371,27 @@ The v1 allowlist starts from the already evidenced Claude Code and Codex paths. 
 2. Validate stored pane ids against current plugin ownership before use.
 3. Recover viewer ownership from metadata when state is missing or stale.
 4. Open the viewer through the manifest entrypoint as a right split with focus disabled.
-5. Implement graphics capability diagnostics.
-6. Compute placement from current cell and viewer layout dimensions.
-7. Validate raw bytes, encoded bytes, width, height, pixel count, columns, and rows.
-8. Call `pane.graphics.set` only after complete validation.
-9. Implement no-formula, invalid-render, closed-viewer, source-close, and resize behavior.
-10. Add the `diagnose` action with allowlisted output.
+5. Read bounded matching text and ANSI snapshots, normalize only safe SGR state, and isolate the final visible answer using recorded Claude Code, Codex, Pi, and OpenCode structures.
+6. Normalize terminal soft wraps into plain paragraphs while retaining lists, display-math boundaries, Unicode, and formula offsets.
+7. Implement graphics capability diagnostics.
+8. Compute the current viewer pixel viewport from cell and layout dimensions.
+9. Build all overlapping monotonic scroll frames in memory and validate raw bytes, encoded bytes, dimensions, pixel count, frame count, interval, duration, columns, and rows before the first update.
+10. Transfer rendered documents to the managed viewer over an authenticated user-only local socket with bounded framing and timeouts.
+11. Call `pane.graphics.set` without clear for each accepted frame, keep only the final frame in viewer memory, and restore the previous in-memory frame after an animation failure when possible.
+12. Implement no-formula, invalid-render, closed-viewer, source-close, resize, transport cleanup, and stale-socket behavior.
+13. Add the `diagnose` action with allowlisted output.
 
 ### Tests
 
-- AT-500 through AT-511
+- AT-309, AT-310, AT-411 through AT-413
+- AT-500 through AT-513
 - AT-600
 - AT-607
 
 ### Exit gate
 
 - Fake-socket integration tests prove request order and ownership checks.
-- A real Herdr smoke proves first render, same-pane update, focus preservation, resize, invalid preservation, closure, and recreation.
+- A real Herdr smoke for all four coding agents proves conclusion-only extraction, prose/math layout, transparent background, matched type size, top-to-bottom automatic scrolling, same-pane update, focus preservation, resize, invalid preservation, closure, and recreation.
 
 ## Phase 7 - Integrated Hardening and Security
 
@@ -388,7 +404,7 @@ The v1 allowlist starts from the already evidenced Claude Code and Codex paths. 
 
 1. Join event, fingerprint, scanner, renderer, viewer, and state modules in a full integration harness.
 2. Add synthetic Claude Code, Codex, Pi, and OpenCode lifecycle fixtures.
-3. Test invalid LaTeX, formula count, length, timeout, image size, dimensions, no formula, price, shell variable, code, repeated prompt, truncation, and viewer closure in sequence.
+3. Test prompt/reasoning/tool formula exclusion, mismatched ANSI snapshots, terminal soft wraps, invalid LaTeX, response and formula limits, timeout, image size, dimensions, no formula, price, shell variable, code, repeated prompt, truncation, scroll failure rollback, and viewer closure in sequence.
 4. Add malformed socket responses, slow socket, disconnect, viewer ownership spoof, state corruption, lock contention, and out-of-order events.
 5. Run network-deny, filesystem-boundary, secret, environment-dump, dependency, license, and static executable-path checks.
 6. Measure idle resource use and per-completion latency.
@@ -420,7 +436,7 @@ The v1 allowlist starts from the already evidenced Claude Code and Codex paths. 
 4. Test at least one additional terminal when practical, but do not block a truthful macOS/Ghostty-only `0.1.0` on P1 expansion.
 5. Test graphics disabled, unavailable cell size, fresh client attach, resize, and server restart.
 6. Test default and named sessions.
-7. Run the full formula lifecycle for Claude Code, Codex, Pi, and OpenCode, recording the canonical agent id, lifecycle authority, integration version when installed, status sequence, and render result for each.
+7. Run the full response lifecycle for Claude Code, Codex, Pi, and OpenCode, recording the canonical agent id, lifecycle authority, integration version when installed, status sequence, final-answer extraction result, prose/math render result, background result, and scrolling result for each.
 8. Run remote attach only as an explicit experiment; document unsupported status if it is not proven.
 9. Set manifest platforms and minimum Herdr version from the results.
 
@@ -516,6 +532,13 @@ Each task remains one logical commit, with progress/spec updates as separate doc
 17. `docs(release): add public setup and support policy`
 18. `chore(release): prepare v0.1.0`
 
+The August 2 presentation correction adds these reviewable commits before release preparation:
+
+1. `feat(presentation): isolate coding-agent final responses`
+2. `feat(renderer): render transparent response documents`
+3. `feat(viewer): add bounded automatic scrolling`
+4. `docs(test): record final-response runtime evidence`
+
 Do not combine these into one large implementation commit.
 
 ## Risk Register
@@ -531,6 +554,9 @@ Do not combine these into one large implementation commit.
 | User closes or reuses a pane id | Wrong-pane update | Metadata ownership validation | P0 blocker |
 | Pane read behavior changes across Herdr versions | Boundary regression | Contract fixtures plus minimum-version runtime tests | Pin minimum or adapt |
 | Coding agents use different lifecycle authorities or alternate-screen behavior | Missed completion or incomplete answer boundary | Per-agent contract fixtures and real runtime matrix for Claude Code, Codex, Pi, and OpenCode | P0 blocker for the affected agent |
+| Visible reasoning or terminal chrome is mistaken for the final response | Private or irrelevant content appears in the viewer | Match text and ANSI snapshots, use agent-specific proven boundaries, and fail closed on ambiguity | P0 blocker |
+| Long-response animation fails after replacing a prior frame | Viewer stops on a partial update | Prevalidate all frames and retain the previous final frame only in managed-viewer memory for rollback | P0 blocker |
+| Herdr does not expose terminal theme colors | Opaque or mismatched cards remain visible | Use transparent PNG backgrounds and verify the declared terminal matrix; keep custom foreground themes deferred | Documented limitation |
 | Logs expose terminal content | Privacy failure | Allowlisted structured logs and sentinel tests | P0 blocker |
 | Outer terminal supports Kitty generally but not this Herdr path | False compatibility claim | Real matrix through Herdr | Do not claim support |
 | No repository license | Cannot safely reuse or distribute | Explicit license selection in Phase 1 | P0 blocker |
@@ -553,7 +579,10 @@ V1 is done only when:
 - Event hooks are bounded and startup cleanup exits.
 - State and logs contain no raw transcript or formula text.
 - Current-answer boundaries fail closed.
+- Final-answer presentation boundaries exclude prompts, reasoning, tools, progress, and terminal chrome or fail closed.
 - One viewer is reused without focus loss or duplicate panes.
+- Prose and math render in source order on a transparent background with matched text and TeX sizing.
+- Long final responses scroll automatically within bounded time and memory, then remain at the bottom.
 - Invalid input, timeouts, and payload failures preserve the last valid image.
 - Every declared platform and terminal has real evidence.
 - Claude Code, Codex, Pi, and OpenCode each have real lifecycle and formula-render evidence.

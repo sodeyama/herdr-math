@@ -3,7 +3,7 @@
 ## Status
 
 - Target release: `0.1.0`
-- Last updated: August 1, 2026
+- Last updated: August 2, 2026
 - Acceptance contract: `../tests/main.md`
 - Implementation plan: `../plans/main.md`
 
@@ -241,6 +241,24 @@
   - Acceptance tests: AT-507, AT-508, AT-608, AT-609, AT-705
   - Commit: `feat(diagnostics): explain local capability failures`
 
+- [ ] **T-605: Isolate visible final responses**
+  - Scope: Read bounded matching plain-text and ANSI completion snapshots, parse only safe terminal style state, add synthetic Claude Code, Codex, Pi, and OpenCode presentation fixtures derived from redacted runtime structure, exclude prompts/reasoning/tools/progress/footer chrome, normalize terminal soft wraps, and fail closed when the final-response boundary or snapshot equivalence is unprovable.
+  - Dependencies: T-504, T-701
+  - Acceptance tests: AT-309, AT-310, AT-511, AT-608, AT-609
+  - Commit: `feat(presentation): isolate coding-agent final responses`
+
+- [ ] **T-606: Render transparent response documents**
+  - Scope: Replace formula-only composition with escaped prose-and-math spans in source order, preserve paragraph/list/display boundaries, use transparent screenshot output, inherit one base size across prose and KaTeX, and enforce response-document limits without adding general Markdown rendering.
+  - Dependencies: T-404, T-605
+  - Acceptance tests: AT-400 through AT-413, AT-608, AT-609
+  - Commit: `feat(renderer): render transparent response documents`
+
+- [ ] **T-607: Add bounded managed-viewer scrolling**
+  - Scope: Add an authenticated user-only local viewer socket, transfer only bounded rendered pixels in memory, derive the current pixel viewport, prebuild overlapping monotonic crop frames, animate without clear, retain the previous final frame only in viewer memory for rollback, and clean sockets on closure or restart.
+  - Dependencies: T-601, T-602, T-603, T-606
+  - Acceptance tests: AT-503, AT-504, AT-509, AT-512, AT-513, AT-600 through AT-609
+  - Commit: `feat(viewer): add bounded automatic scrolling`
+
 ## Phase 7 - Integrated Hardening
 
 - [x] **T-701: Add the full lifecycle integration matrix**
@@ -272,6 +290,18 @@
   - Dependencies: T-702, T-703, T-704
   - Acceptance tests: Every automated P0 case
   - Commit: `docs(test): record automated release evidence`
+
+- [ ] **T-706: Extend the integrated presentation matrix**
+  - Scope: Run all four agent structures through conclusion-only extraction, prompt/reasoning/tool formula exclusion, prose/math ordering, Unicode soft-wrap normalization, transparent output, matched typography, single-frame display, multi-frame scrolling, resize, rollback, duplicate delivery, and viewer recreation in the fake server.
+  - Dependencies: T-605, T-606, T-607
+  - Acceptance tests: AT-309, AT-310, AT-411 through AT-413, AT-503, AT-504, AT-509, AT-511 through AT-513
+  - Commit: `test(integration): cover final response presentation`
+
+- [ ] **T-707: Re-run the automated release suite**
+  - Scope: Execute the complete clean automated release suite after the presentation architecture change, refresh bounded performance/security evidence, and require a no-retry pass.
+  - Dependencies: T-706
+  - Acceptance tests: Every automated P0 case
+  - Commit: `docs(test): refresh automated release evidence`
 
 ## Phase 8 - Real Herdr and Terminal Verification
 
@@ -312,6 +342,12 @@
   - Acceptance tests: AT-002, AT-003, AT-700 through AT-705
   - Commit: `chore(plugin): finalize v1 compatibility metadata`
 
+- [ ] **T-807: Verify final-response presentation in Ghostty**
+  - Scope: In isolated real Herdr and Ghostty panes, run Claude Code, Codex, Pi, and OpenCode with synthetic prompts that exercise reasoning and tool display; verify conclusion-only prose/math output, transparent background, matched text/TeX size, single-frame and long-response scrolling, bottom resting position, reuse, focus, resize, rollback, closure, and recreation without committing raw transcripts.
+  - Dependencies: T-707
+  - Acceptance tests: AT-112, AT-309, AT-310, AT-400, AT-412, AT-500 through AT-513, AT-703
+  - Commit: `docs(test): record final-response runtime evidence`
+
 ## Phase 9 - Public Documentation and Release
 
 - [x] **T-901: Write tested installation and usage documentation**
@@ -328,7 +364,7 @@
 
 - [ ] **T-903: Add sanitized public screenshots and evidence index**
   - Scope: Generate new screenshots from the public implementation, redact local labels/paths, compress assets, and link them without importing private prototype screens by default.
-  - Dependencies: T-802
+  - Dependencies: T-807
   - Acceptance tests: AT-709
   - Commit: `docs(media): add sanitized runtime screenshots`
 
@@ -380,7 +416,7 @@
 
 ## Current Next Task
 
-Continue with **T-903**. The current Computer Use safety policy blocks direct Ghostty capture; do not substitute an
-unverified or unredacted screenshot. T-905 remains dependency-blocked by T-903. Tagged install, same-tag reinstall,
-and managed uninstall are assigned to T-906 without creating a dependency cycle. T-804 remains an optional P1
-compatibility expansion.
+Continue with **T-605** after the August 2 screenshot-driven presentation correction. Complete T-605 through T-607,
+T-706, T-707, and T-807 before resuming T-903. Do not use the attached problem screenshot as public media; capture a
+new sanitized result only after the corrected runtime passes. T-905 remains dependency-blocked by T-903. Tagged install,
+same-tag reinstall, and managed uninstall remain assigned to T-906. T-804 remains an optional P1 compatibility expansion.
