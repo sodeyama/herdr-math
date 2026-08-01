@@ -34,6 +34,14 @@
       "expectedFormulas": []
     },
     {
+      "id": "pi-tool-after-reasoning",
+      "agent": "pi",
+      "plain": "Reasoning uses $r=1$.\n\nread package.json\n\n Final response is $E=mc^2$.\n\n────────────────────────\nstatus",
+      "ansi": "\u001b[3mReasoning uses $r=1$.\u001b[0m\n\n\u001b[1;48;2;40;50;40mread package.json\u001b[0m\n\n Final response is $E=mc^2$.\n\n────────────────────────\nstatus",
+      "expected": "Final response is $E=mc^2$.",
+      "expectedFormulas": ["E=mc^2"]
+    },
+    {
       "id": "opencode-tool-summary-footer",
       "agent": "opencode",
       "plain": "  ┃ prompt includes $p=0$\n  ┃\n\n     → Read package.json\n\n     The package is Herdr Math and $E=mc^2$.\n     A display equation follows.\n\n     $$a^2+b^2=c^2$$\n\n     ▣ Build · Model · 1.0s\n\n  ┃\n  ╹────────\n  status",

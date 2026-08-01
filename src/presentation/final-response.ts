@@ -85,12 +85,14 @@ function selectPi(lines: readonly ResponseLine[]): ResponseLine[] {
     if (line.nonWhitespaceCharacters === 0) return false;
     return line.italicCharacters / line.nonWhitespaceCharacters >= 0.8;
   });
-  if (lastReasoning === -1) {
+  const lastTool = findLastIndex(lines, (line) => line.nonWhitespaceCharacters > 0 && line.hasBackground);
+  const lastChrome = Math.max(lastReasoning, lastTool);
+  if (lastChrome === -1) {
     if (lines.some(({ text }) => SEPARATOR.test(text))) throw new HerdrMathError("conclusion_boundary_failed");
     return [...lines];
   }
-  const footer = lines.findIndex(({ text }, index) => index > lastReasoning && SEPARATOR.test(text));
-  return lines.slice(lastReasoning + 1, footer === -1 ? lines.length : footer);
+  const footer = lines.findIndex(({ text }, index) => index > lastChrome && SEPARATOR.test(text));
+  return lines.slice(lastChrome + 1, footer === -1 ? lines.length : footer);
 }
 
 function selectOpenCode(lines: readonly ResponseLine[]): ResponseLine[] {
