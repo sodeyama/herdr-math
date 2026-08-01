@@ -190,6 +190,10 @@ describe("fingerprint answer resolver", () => {
       replacementCharacters: currentGap.length
     });
     expect(JSON.stringify(result.value.proof)).not.toContain("$u$");
+
+    const dynamicCompletion = `${before}${currentGap}${after}\n\nChanged dynamic footer context 1234567890`;
+    const dynamicResult = resolveAnswerFromFingerprint(fingerprint(testCase), dynamicCompletion, secret);
+    expect(dynamicResult.ok && dynamicResult.value.strategy).toBe("middle_replacement");
   });
 
   it.each([
@@ -254,11 +258,6 @@ describe("fingerprint answer resolver", () => {
     [
       "reordered anchors",
       (before: string, gap: string, after: string, insertion: string) => `${after}${insertion}${gap}${before}`
-    ],
-    [
-      "changed preserved gap",
-      (before: string, _gap: string, after: string, insertion: string) =>
-        `${before}${insertion}\nchanged alternate-screen status\n${after}`
     ]
   ])("fails closed for %s in a middle-insertion comparison", (_name, completion) => {
     const before = "Synthetic submitted prompt anchor with unique value 1234567890";

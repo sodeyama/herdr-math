@@ -212,9 +212,7 @@ function resolveMiddleReplacement(
     if (
       before?.next_anchor_gap_digest === undefined ||
       before.next_anchor_gap_formula_digests === undefined ||
-      after?.forward_context_characters === undefined ||
-      after.forward_context_characters === 0 ||
-      after.forward_context_digest === undefined
+      after === undefined
     ) {
       continue;
     }
@@ -227,7 +225,7 @@ function resolveMiddleReplacement(
       candidatesExamined += 1;
       return candidatesExamined <= POLICY_LIMITS.anchorOccurrences;
     });
-    const afterMatches = matchingLines(after, lines, current, secret, "following", () => {
+    const afterMatches = matchingInsertionAfterLines(after, lines, current, secret, () => {
       candidatesExamined += 1;
       return candidatesExamined <= POLICY_LIMITS.anchorOccurrences;
     });
