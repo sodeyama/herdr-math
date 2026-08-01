@@ -1,6 +1,6 @@
 # ADR 0001: V1 Renderer Backend
 
-- Status: Accepted for implementation
+- Status: Accepted and implemented
 - Date: August 1, 2026
 - Decision owners: Herdr Math maintainers
 - Acceptance tests: AT-410, AT-708
@@ -70,20 +70,24 @@ The selected backend has a larger process and executable surface, so the followi
 - Errors expose only stable codes and bounded metadata. Formula source, generated HTML, page content, and arbitrary backend exceptions are not logged or persisted.
 - The previous viewer image is retained until the new PNG passes every renderer and graphics check.
 
-The T-404 contract tests must prove these controls. Failure of any control reopens this decision.
+The T-404 contract tests prove these controls against the fixed corpus and a forced timeout. Failure of any control reopens this decision.
 
 ## Packaging and License Consequences
 
 The selected backend adds approximately 249.0 MiB in the measured macOS arm64 installation and requires a Playwright-managed Chromium headless shell download during plugin installation. The manifest build must install the exact browser revision from the lockfile-compatible Playwright package; runtime rendering must not download anything.
 
-The preliminary license review found:
+The locked dependency and asset audit found:
 
 - KaTeX is MIT licensed and distributes its fonts in the same package;
 - Playwright and Playwright Core are Apache-2.0 licensed and include `NOTICE` files;
 - Sharp is Apache-2.0 licensed and has transitive production dependencies;
+- the Sharp libvips artifact is LGPL-3.0-or-later and records its bundled component licenses;
 - the Chromium headless shell includes a BSD license and bundled third-party license text.
+- Playwright also installs an FFmpeg artifact with its LGPL-2.1 license text.
 
-These licenses permit the planned distribution subject to retaining their required notices. T-405 must audit the exact locked transitive tree, preserve Playwright notices and the complete Chromium license file, verify KaTeX font provenance, generate `THIRD_PARTY_NOTICES` if required, and prove a clean installation without undeclared repositories. The backend is not release-ready until that gate passes.
+The exact lock has no Git, file, URL, or external repository dependency specifier. `THIRD_PARTY_NOTICES.md` records the package and asset inventory, while complete upstream license files remain in installed packages and browser artifacts. The browser is installed under the plugin's `node_modules` and launched through a fixed revision path; user input and arbitrary environment paths do not select the executable.
+
+T-405 passed on macOS arm64. The release gate must repeat the clean install and native smoke test on every declared architecture; this decision alone is not a release-readiness claim.
 
 ## Architecture Support
 

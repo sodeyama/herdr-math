@@ -65,6 +65,12 @@ platforms = ["<release-gated platforms>"]
 command = ["npm", "ci"]
 
 [[build]]
+command = ["npm", "run", "install:browser"]
+
+[[build]]
+command = ["npm", "run", "audit:browser"]
+
+[[build]]
 command = ["npm", "run", "build"]
 
 [[startup]]
@@ -93,7 +99,7 @@ command = ["node", "dist/viewer.js"]
 
 The exact minimum Herdr version and platform list remain release-gated values. They must not be copied from the prototype without validation.
 
-Build commands run for GitHub installation, while local `plugin link` development requires an explicit local build. The README must state both flows.
+Build commands run for GitHub installation. `npm ci` installs the exact Playwright browser revision through its postinstall step, the explicit browser command makes that contract visible and idempotent, and the audit rejects a missing executable, native addon, or license inventory before compilation. Browser assets remain under the plugin's `node_modules`, not a user-global cache. Local `plugin link` development requires the same dependency installation and an explicit local build. The README must state both flows before release.
 
 ## Runtime Environment
 

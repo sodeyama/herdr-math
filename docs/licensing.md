@@ -28,16 +28,28 @@ Each dependency remains under its own license. Adding a production dependency re
 - include transitive production dependencies in the audit;
 - avoid dependencies whose terms conflict with the MIT-licensed distribution.
 
-The v0.1 renderer decision selects KaTeX 0.18.1, Playwright 1.62.1 with its locked Chromium headless shell, and Sharp 0.35.3. A preliminary review found MIT, Apache-2.0, and BSD-style licensing with notice obligations that permit the planned distribution. [ADR 0001](decisions/0001-v1-renderer.md) records the decision and exact gate.
+The v0.1 renderer uses KaTeX 0.18.1, Playwright 1.62.1 with Chromium headless shell 151.0.7922.34, and Sharp 0.35.3 with libvips 8.18.3. [ADR 0001](decisions/0001-v1-renderer.md) records the backend decision.
 
-These packages are not release-audited merely because they were selected. T-405 must lock the production tree, inspect every transitive runtime package and distributed browser asset, retain required Playwright and Chromium notices, and record the result in this document or a generated notice file.
+The T-405 exact-version audit is recorded in [Third-Party Notices](../THIRD_PARTY_NOTICES.md). It verifies:
+
+- exact direct versions and lockfile integrity;
+- npm-registry-only package artifacts with no Git, file, URL, or external repository dependency specifier;
+- license metadata for every non-development lock entry;
+- retained package license and Playwright notice files;
+- both macOS arm64 and x64 Sharp and libvips lock entries;
+- the installed macOS arm64 Sharp/libvips runtime versions;
+- the plugin-local Chromium executable and complete `LICENSE.headless_shell` inventory;
+- the companion FFmpeg executable and LGPL-2.1 license installed by Playwright;
+- all 60 KaTeX font files referenced by the locked CSS.
+
+The production license set includes MIT, Apache-2.0, ISC, 0BSD, LGPL, MPL-2.0, BSD-style, and other permissive component licenses recorded by the installed libvips and Chromium inventories. The installation retains those upstream files rather than replacing them with a summary.
 
 ## Fonts and Other Assets
 
-No font, browser binary, image, or other third-party asset may be bundled until its redistribution terms are verified. KaTeX fonts and the Playwright-managed Chromium headless shell are selected but remain subject to the T-405 exact-version audit. The release must preserve copyright notices, license files, attribution, and reserved-name conditions required by each asset license.
+KaTeX packages its CSS and fonts together under its root MIT license; the audit confirms that the CSS references exactly the 60 installed font files. The browser and FFmpeg artifacts retain their upstream license files next to their executables. The Sharp native package retains its Apache license, while the libvips package retains a component-level licensing inventory and source-project link.
 
 System fonts and assets downloaded at runtime are not an acceptable undocumented fallback. The renderer must remain offline and reproducible from the declared package and platform requirements.
 
 ## Release Notice Gate
 
-Before a release, the dependency and asset audit must decide whether a `THIRD_PARTY_NOTICES` file is required. Package metadata, the release archive, the repository license, and any generated notices must describe the same license set.
+`THIRD_PARTY_NOTICES.md` is required and included in the package file list. The release gate must rerun `npm run audit:runtime` and `npm run audit:browser` from a clean install. Any dependency, browser revision, font inventory, native artifact, or license change must update the notice and audit expectations in the same change.

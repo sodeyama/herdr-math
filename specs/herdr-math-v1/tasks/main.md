@@ -159,7 +159,7 @@
   - Acceptance tests: AT-400 through AT-409
   - Commit: `feat(renderer): render bounded local PNG output`
 
-- [ ] **T-405: Add renderer dependency and license audit**
+- [x] **T-405: Add renderer dependency and license audit**
   - Scope: Lock production dependencies, verify supported native artifacts, record licenses and fonts, remove unused packages, and prove the build has no external repository dependency.
   - Dependencies: T-404
   - Acceptance tests: AT-007, AT-405, AT-406, AT-708
