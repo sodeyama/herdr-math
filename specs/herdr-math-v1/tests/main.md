@@ -423,7 +423,9 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Then only the visible final response is returned, with prose and math delimiters in their original order.
 - And user prompts, visible reasoning, tool activity, progress rows, completion summaries, status bars, input areas, and terminal chrome are excluded.
 - And formulas that occur only in a prompt, reasoning section, or tool output do not cause a viewer update.
-- And when the ANSI snapshot cannot be normalized to the same bounded plain snapshot, or the agent-specific final-answer boundary cannot be proved, extraction returns `conclusion_boundary_failed` and leaves the viewer unchanged.
+- And Pi may use only the longest line-aligned plain/ANSI suffix after an earlier Herdr unwrapping mismatch when that suffix contains a styled reasoning or tool boundary, the complete final response, and the Pi footer separator.
+- And a suffix that starts inside the final response, lacks the preceding styled boundary, changes line positions, or does not match exactly returns `conclusion_boundary_failed` and leaves the viewer unchanged.
+- And all other ANSI normalization failures, or any agent-specific final-answer boundary that cannot be proved, return `conclusion_boundary_failed` and leave the viewer unchanged.
 
 ### AT-310 - Clean paragraph normalization
 
