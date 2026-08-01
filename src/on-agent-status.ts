@@ -44,7 +44,7 @@ export async function runAgentStatusHook(
       sessionIdentity: socketPath,
       secret,
       ...(workingRead?.ok === true ? { workingSnapshot: workingRead.value } : {}),
-      render: ({ text, formulas }) => renderResponse(text, formulas),
+      render: ({ text, formulas, layout }) => renderResponse(text, formulas, { layout }),
       publish: (request) => publishImage(request, { client, sessionIdentity: socketPath, stateDirectory })
     });
   } catch (error) {

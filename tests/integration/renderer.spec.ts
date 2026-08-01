@@ -44,7 +44,7 @@ describe("bounded local renderer", () => {
     expect(html).toContain("Before &lt;unsafe&gt;");
     expect(html).not.toContain("Before <unsafe>");
     expect(html).toContain("background:transparent");
-    expect(html).toContain("font-size:20px");
+    expect(html).toContain("font-size:12px");
     expect(html).toContain(".katex{font-size:1em}");
 
     const result = await renderResponse(text, formulas);
@@ -93,7 +93,7 @@ describe("bounded local renderer", () => {
     const metadata = await sharp(result.value.buffer).metadata();
     const alpha = (await sharp(result.value.buffer).ensureAlpha().stats()).channels[3];
     expect(metadata.isPalette).toBe(true);
-    expect(result.value.height).toBeGreaterThan(2_000);
+    expect(result.value.height).toBeGreaterThan(1_500);
     expect(result.value.bytes).toBeLessThanOrEqual(POLICY_LIMITS.rawPngBytes);
     expect(alpha?.min).toBe(0);
     expect(alpha?.max).toBe(255);

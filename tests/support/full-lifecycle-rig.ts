@@ -3,6 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import sharp from "sharp";
+
 import { deriveStateKey } from "../../src/boundary/fingerprint-builder.js";
 import type { SupportedAgent } from "../../src/boundary/fingerprint-schema.js";
 import type { OperationResult, RenderedImage } from "../../src/core/contracts.js";
@@ -30,7 +32,6 @@ import { createFakePane, type FakeStatusEvent } from "./fake-herdr-types.js";
 
 const NOW = new Date("2026-08-01T00:00:00.000Z");
 const SECRET = Buffer.alloc(32, 29);
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export type LifecycleRenderer = (request: ResponseRenderRequest) => Promise<OperationResult<RenderedImage>>;
 
@@ -179,13 +180,22 @@ export function timeoutRenderer(durationMs = 10): LifecycleRenderer {
     renderResponseWithBackend(text, formulas, new BlockingBackend(), { limits: { renderDurationMs: durationMs } });
 }
 
-export function renderStatic({ text, formulas }: ResponseRenderRequest): Promise<OperationResult<RenderedImage>> {
-  return renderResponseWithBackend(text, formulas, new StaticBackend(image()));
+export function renderStatic({
+  text,
+  formulas,
+  layout
+}: ResponseRenderRequest): Promise<OperationResult<RenderedImage>> {
+  return image().then((renderedImage) =>
+    renderResponseWithBackend(text, formulas, new StaticBackend(renderedImage), { layout })
+  );
 }
 
-function image(): RenderedImage {
-  const buffer = Buffer.alloc(16);
-  PNG_SIGNATURE.copy(buffer);
+async function image(): Promise<RenderedImage> {
+  const buffer = await sharp({
+    create: { width: 640, height: 320, channels: 4, background: { r: 20, g: 40, b: 80, alpha: 0.8 } }
+  })
+    .png()
+    .toBuffer();
   return { buffer, width: 640, height: 320, bytes: buffer.byteLength, renderer: "lifecycle-test" };
 }
 

@@ -49,4 +49,16 @@ describe("bounded viewer scroll planning", () => {
       error: { code: "image_too_large", details: { limit_kind: "scroll_frame_count" } }
     });
   });
+
+  it("continues from a prior resting offset when appending more content", () => {
+    const result = planScrollFrames(
+      { width: 480, height: 1800 },
+      { widthPx: 480, heightPx: 400 },
+      { startOffsetPx: 1400 }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.offsetsPx).toEqual([1400]);
+    expect(result.value.totalDurationMs).toBe(0);
+  });
 });

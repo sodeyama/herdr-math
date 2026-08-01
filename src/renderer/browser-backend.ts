@@ -11,6 +11,7 @@ import type { RenderedImage } from "../core/contracts.js";
 import { HerdrMathError } from "../core/errors.js";
 import { assertImageDimensions, type RendererBackend, type RendererBackendContext } from "./render.js";
 import type { RendererDocument, RendererDocumentSegment } from "./document.js";
+import { resolveRendererLayout, type RendererLayout } from "./layout.js";
 
 const require = createRequire(import.meta.url);
 const KATEX_CSS_PATH = require.resolve("katex/dist/katex.min.css");
@@ -49,7 +50,7 @@ export class BrowserRendererBackend implements RendererBackend {
     renderContext.signal.addEventListener("abort", abort, { once: true });
     try {
       const css = await readFile(KATEX_CSS_PATH, "utf8");
-      const html = buildRendererHtml(document, css);
+      const html = buildRendererHtml(document, css, renderContext.layout);
       if (BROWSER_EXECUTABLE_PATH === undefined) throw new HerdrMathError("renderer_failed", {}, true);
       await this.assertActive(renderContext);
       this.browser = await chromium.launch({
@@ -197,9 +198,13 @@ function buildMarkup(segments: readonly RendererDocumentSegment[]): string {
   }
 }
 
-export function buildRendererHtml(document: RendererDocument, css: string): string {
+export function buildRendererHtml(
+  document: RendererDocument,
+  css: string,
+  layout: Readonly<RendererLayout> = resolveRendererLayout()
+): string {
   const markup = buildMarkup(document.segments);
-  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${css}\nhtml,body{margin:0;background:transparent}#render{box-sizing:border-box;width:480px;min-height:1px;padding:20px;color:#e6edf3;background:transparent;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:20px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.katex{font-size:1em}.math-inline{display:inline;white-space:nowrap}.math-display{display:block;margin:.8em 0;text-align:center;white-space:normal}.katex-display{margin:0}</style></head><body><div id="render">${markup}</div></body></html>`;
+  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${css}\nhtml,body{margin:0;background:transparent}#render{box-sizing:border-box;width:${layout.contentWidthPx}px;min-height:1px;padding:${layout.paddingPx}px;color:#e6edf3;background:transparent;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:${layout.fontSizePx}px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.katex{font-size:1em}.math-inline{display:inline;white-space:nowrap}.math-display{display:block;margin:.8em 0;text-align:center;white-space:normal}.katex-display{margin:0}</style></head><body><div id="render">${markup}</div></body></html>`;
 }
 
 function escapeHtml(value: string): string {

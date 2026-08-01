@@ -6,6 +6,7 @@ import { computeGraphicsPlacement, encodeValidatedPng, type EncodedPng } from ".
 import type { HerdrGraphicsInfo, HerdrGraphicsSetRequest, HerdrPaneLayoutSnapshot } from "../herdr/socket-client.js";
 import sharp from "sharp";
 import { planScrollFrames } from "./scroll-frames.js";
+import { stackRenderedImages } from "./stack-images.js";
 
 export interface ViewerPresenterClient {
   paneGraphicsInfo(paneId: string): Promise<OperationResult<HerdrGraphicsInfo>>;
@@ -24,8 +25,16 @@ interface PreparedFrame {
   placement: HerdrGraphicsSetRequest["placement"];
 }
 
+interface PreparedPresentation {
+  frames: readonly PreparedFrame[];
+  scrollEndOffsetPx: number;
+}
+
 export class ViewerPresenter {
+  #accumulatedImage: RenderedImage | undefined;
   #previousFinalFrame: PreparedFrame | undefined;
+  #previousScrollOffsetPx = 0;
+  #lastViewerPaneId: string | undefined;
 
   constructor(
     private readonly client: ViewerPresenterClient,
@@ -34,26 +43,39 @@ export class ViewerPresenter {
 
   async present(request: ViewerPresentationRequest): Promise<OperationResult<void>> {
     try {
-      const prepared = await this.#prepare(request);
+      if (this.#lastViewerPaneId !== undefined && this.#lastViewerPaneId !== request.viewerPaneId) {
+        this.#accumulatedImage = undefined;
+        this.#previousFinalFrame = undefined;
+        this.#previousScrollOffsetPx = 0;
+      }
+      this.#lastViewerPaneId = request.viewerPaneId;
+
+      const stacked = await stackRenderedImages(this.#accumulatedImage, request.image);
+      const prepared = await this.#prepare({ ...request, image: stacked }, this.#previousScrollOffsetPx);
       if (!prepared.ok) return failure(prepared.error);
-      for (let index = 0; index < prepared.value.length; index += 1) {
-        const frame = prepared.value[index];
+      for (let index = 0; index < prepared.value.frames.length; index += 1) {
+        const frame = prepared.value.frames[index];
         if (frame === undefined) throw new HerdrMathError("renderer_failed", {}, true);
         const updated = await this.client.paneGraphicsSet(toGraphicsRequest(request.viewerPaneId, frame));
         if (!updated.ok) {
           await this.#restorePrevious(request.viewerPaneId);
           return failure(updated.error);
         }
-        if (index + 1 < prepared.value.length) await this.sleep(POLICY_LIMITS.scrollFrameIntervalMs);
+        if (index + 1 < prepared.value.frames.length) await this.sleep(POLICY_LIMITS.scrollFrameIntervalMs);
       }
-      this.#previousFinalFrame = prepared.value.at(-1);
+      this.#accumulatedImage = stacked;
+      this.#previousFinalFrame = prepared.value.frames.at(-1);
+      this.#previousScrollOffsetPx = prepared.value.scrollEndOffsetPx;
       return success(undefined);
     } catch (error) {
       return failure(serializeError(error));
     }
   }
 
-  async #prepare(request: ViewerPresentationRequest): Promise<OperationResult<readonly PreparedFrame[]>> {
+  async #prepare(
+    request: ViewerPresentationRequest,
+    startOffsetPx: number
+  ): Promise<OperationResult<PreparedPresentation>> {
     const encoded = encodeValidatedPng(request.image);
     if (!encoded.ok) return failure(encoded.error);
     const info = await this.client.paneGraphicsInfo(request.viewerPaneId);
@@ -67,17 +89,16 @@ export class ViewerPresenter {
 
     const plan = planScrollFrames(
       { width: encoded.value.width, height: encoded.value.height },
-      { widthPx: pane.rect.width * info.value.cellWidthPx, heightPx: pane.rect.height * info.value.cellHeightPx }
+      { widthPx: pane.rect.width * info.value.cellWidthPx, heightPx: pane.rect.height * info.value.cellHeightPx },
+      { startOffsetPx }
     );
     if (!plan.ok) return failure(plan.error);
 
     const frames: PreparedFrame[] = [];
     let aggregateBytes = 0;
     for (const offset of plan.value.offsetsPx) {
-      const frameImage =
-        plan.value.offsetsPx.length === 1
-          ? request.image
-          : await cropFrame(request.image, offset, plan.value.frameHeightPx);
+      const needsCrop = offset > 0 || request.image.height > plan.value.frameHeightPx;
+      const frameImage = needsCrop ? await cropFrame(request.image, offset, plan.value.frameHeightPx) : request.image;
       aggregateBytes += frameImage.bytes;
       if (aggregateBytes > POLICY_LIMITS.scrollFrameAggregateBytes) {
         return failure(
@@ -96,7 +117,8 @@ export class ViewerPresenter {
       if (!placement.ok) return failure(placement.error);
       frames.push({ encoded: frameEncoded.value, placement: placement.value });
     }
-    return success(Object.freeze(frames));
+    const scrollEndOffsetPx = plan.value.offsetsPx.at(-1) ?? 0;
+    return success(Object.freeze({ frames: Object.freeze(frames), scrollEndOffsetPx }));
   }
 
   async #restorePrevious(viewerPaneId: string): Promise<void> {

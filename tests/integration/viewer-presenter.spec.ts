@@ -82,6 +82,33 @@ describe("managed viewer presentation", () => {
     expect(failed.ok).toBe(false);
     expect(server.getGraphics("w1:p2")).toEqual(previous);
   });
+
+  it("appends later responses instead of replacing earlier history", async () => {
+    const server = await start();
+    server.setPaneRect("w1:p2", { x: 60, y: 0, width: 60, height: 10 });
+    const presenter = new ViewerPresenter(new HerdrSocketClient(server.socketPath), () => Promise.resolve());
+    expect(
+      (
+        await presenter.present({
+          viewerPaneId: "w1:p2",
+          workspaceId: "w1",
+          image: await png(480, 200, "first")
+        })
+      ).ok
+    ).toBe(true);
+    const updatesAfterFirst = server.graphicsUpdates.length;
+    expect(
+      (
+        await presenter.present({
+          viewerPaneId: "w1:p2",
+          workspaceId: "w1",
+          image: await png(480, 200, "second")
+        })
+      ).ok
+    ).toBe(true);
+    expect(server.graphicsUpdates.length).toBeGreaterThan(updatesAfterFirst);
+    expect(server.requests.some(({ method }) => method === "pane.graphics.clear")).toBe(false);
+  });
 });
 
 async function start(): Promise<FakeHerdrServer> {

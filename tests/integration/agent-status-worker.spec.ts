@@ -454,6 +454,10 @@ describe("agent status worker", () => {
         calls += 1;
         return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
       },
+      paneGetIfPresent: () => {
+        calls += 1;
+        return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
+      },
       agentGet: () => {
         calls += 1;
         return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
@@ -463,6 +467,14 @@ describe("agent status worker", () => {
         return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
       },
       paneReadAnsi: () => {
+        calls += 1;
+        return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
+      },
+      paneLayout: () => {
+        calls += 1;
+        return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
+      },
+      paneGraphicsInfo: () => {
         calls += 1;
         return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
       }
@@ -509,8 +521,11 @@ describe("agent status worker", () => {
         ...rig.dependencies,
         client: {
           paneGet: (paneId) => baseClient.paneGet(paneId),
+          paneGetIfPresent: (paneId) => baseClient.paneGetIfPresent(paneId),
           paneRead: (paneId) => baseClient.paneRead(paneId),
           paneReadAnsi: (paneId) => baseClient.paneReadAnsi(paneId),
+          paneLayout: (paneId) => baseClient.paneLayout(paneId),
+          paneGraphicsInfo: (paneId) => baseClient.paneGraphicsInfo(paneId),
           agentGet: async (paneId) => {
             const resolved = await baseClient.agentGet(paneId);
             return resolved.ok ? success({ ...resolved.value, status: "done" }) : resolved;
@@ -600,8 +615,11 @@ describe("agent status worker", () => {
     let readNumber = 0;
     rig.dependencies.client = {
       paneGet: (paneId) => baseClient.paneGet(paneId),
+      paneGetIfPresent: (paneId) => baseClient.paneGetIfPresent(paneId),
       agentGet: (paneId) => baseClient.agentGet(paneId),
       paneReadAnsi: (paneId) => baseClient.paneReadAnsi(paneId),
+      paneLayout: (paneId) => baseClient.paneLayout(paneId),
+      paneGraphicsInfo: (paneId) => baseClient.paneGraphicsInfo(paneId),
       paneRead: (paneId) => {
         readNumber += 1;
         rig.server.setPaneOutput(paneId, `${baseline}\nChanging answer ${readNumber}: $x_${readNumber}$.`);

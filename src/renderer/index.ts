@@ -18,3 +18,10 @@ export type {
   RendererOptions
 } from "./render.js";
 export type { RendererDocument, RendererDocumentSegment } from "./document.js";
+export {
+  DEFAULT_RENDERER_CONTENT_PADDING_PX,
+  DEFAULT_RENDERER_CONTENT_WIDTH_PX,
+  DEFAULT_RENDERER_FONT_SIZE_PX,
+  resolveRendererLayout,
+  type RendererLayout
+} from "./layout.js";

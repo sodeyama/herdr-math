@@ -15,7 +15,13 @@ import {
   type LifecycleEvent
 } from "./lifecycle.js";
 import { decodeAgentStatusEvent, type DecodedAgentStatusEvent } from "../herdr/event-decoder.js";
-import type { HerdrAgentSnapshot, HerdrPaneReadSnapshot, HerdrPaneSnapshot } from "../herdr/socket-client.js";
+import type {
+  HerdrAgentSnapshot,
+  HerdrGraphicsInfo,
+  HerdrPaneLayoutSnapshot,
+  HerdrPaneReadSnapshot,
+  HerdrPaneSnapshot
+} from "../herdr/socket-client.js";
 import {
   parseMatchingAnsiSnapshot,
   parseMatchingAnsiSuffixSnapshot,
@@ -27,6 +33,8 @@ import { acquirePaneLock } from "../state/pane-lock.js";
 import { createPaneStatePaths, type PaneStatePaths } from "../state/paths.js";
 import { isCurrentGeneration, loadPaneState, writePaneState } from "../state/store.js";
 import { AGENT_AUTHORITIES, buildOccupantIdentity, isSupportedAgent } from "./agent-identity.js";
+import { resolveRenderLayout } from "../viewer/render-layout.js";
+import type { RendererLayout } from "../renderer/layout.js";
 
 export const AGENT_STATUS_TIMING = Object.freeze({
   completionDebounceMs: 500,
@@ -36,9 +44,12 @@ export const AGENT_STATUS_TIMING = Object.freeze({
 
 export interface AgentStatusHerdrClient {
   paneGet(paneId: string): Promise<OperationResult<HerdrPaneSnapshot>>;
+  paneGetIfPresent(paneId: string): Promise<OperationResult<HerdrPaneSnapshot | null>>;
   agentGet(paneId: string): Promise<OperationResult<HerdrAgentSnapshot>>;
   paneRead(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>>;
   paneReadAnsi(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>>;
+  paneLayout(paneId: string): Promise<OperationResult<HerdrPaneLayoutSnapshot>>;
+  paneGraphicsInfo(paneId: string): Promise<OperationResult<HerdrGraphicsInfo>>;
 }
 
 export interface ImagePublishRequest {
@@ -61,6 +72,7 @@ export interface AgentStatusWorkerTiming {
 export interface ResponseRenderRequest {
   text: string;
   formulas: readonly Formula[];
+  layout: Readonly<RendererLayout>;
 }
 
 export interface AgentStatusWorkerDependencies {
@@ -405,7 +417,15 @@ async function processCompletion(
   ) {
     return preservedCompletion(resolved, phase.authorization.generation, "stale_completion");
   }
-  const rendered = await dependencies.render({ text: finalResponse.value.text, formulas });
+  const layout = await resolveRenderLayout(
+    {
+      sourcePaneId: resolved.decoded.sourcePaneId,
+      ...(current?.viewer_pane_id === undefined ? {} : { existingViewerPaneId: current.viewer_pane_id })
+    },
+    dependencies.client
+  );
+  if (!layout.ok) return failure(layout.error);
+  const rendered = await dependencies.render({ text: finalResponse.value.text, formulas, layout: layout.value });
   if (!rendered.ok) return failure(rendered.error);
   return commitFinal(
     resolved,

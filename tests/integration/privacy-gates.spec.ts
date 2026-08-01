@@ -44,7 +44,7 @@ describe("privacy gates across state, output, and request logs", () => {
     const invalidSentinel = "PRIVATE_INVALID_FORMULA_Q7Z9";
     const timeoutSentinel = "PRIVATE_TIMEOUT_FORMULA_Q7Z9";
     try {
-      rig.renderer = ({ text, formulas }) => renderResponse(text, formulas);
+      rig.renderer = ({ text, formulas, layout }) => renderResponse(text, formulas, { layout });
       const invalid = await rig.runCycle(
         "Invalid privacy baseline.\n",
         `Invalid $\\notARealCommand{${invalidSentinel}}$.`

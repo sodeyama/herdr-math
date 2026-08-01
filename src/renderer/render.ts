@@ -9,6 +9,7 @@ import {
   type RendererDocumentLimits,
   type RendererDocumentSegment
 } from "./document.js";
+import { resolveRendererLayout, type RendererLayout } from "./layout.js";
 
 export type RendererFormula = Readonly<Pick<Formula, "latex" | "display">>;
 
@@ -30,6 +31,7 @@ export interface RendererLimits {
 export interface RendererBackendContext {
   signal: AbortSignal;
   limits: Readonly<RendererLimits>;
+  layout: Readonly<RendererLayout>;
   deadlineMs: number;
 }
 
@@ -40,6 +42,7 @@ export interface RendererBackend {
 
 export interface RendererOptions {
   limits?: Partial<RendererLimits>;
+  layout?: Partial<RendererLayout>;
 }
 
 const DEFAULT_RENDERER_LIMITS: Readonly<RendererLimits> = Object.freeze({
@@ -86,6 +89,7 @@ async function renderPreparedWithBackend(
   options: RendererOptions
 ): Promise<OperationResult<RenderedImage>> {
   const limits = resolveLimits(options.limits);
+  const layout = resolveRendererLayout(options.layout);
   const abortController = new AbortController();
   const startedAt = Date.now();
   let timedOut = false;
@@ -112,6 +116,7 @@ async function renderPreparedWithBackend(
       backend.render(prepared.value, {
         signal: abortController.signal,
         limits,
+        layout,
         deadlineMs: startedAt + limits.renderDurationMs
       }),
       timeout

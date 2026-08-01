@@ -16,9 +16,14 @@ export interface ScrollViewport {
   heightPx: number;
 }
 
+export interface ScrollFrameOptions {
+  startOffsetPx?: number;
+}
+
 export function planScrollFrames(
   image: { width: number; height: number },
-  viewport: ScrollViewport
+  viewport: ScrollViewport,
+  options: ScrollFrameOptions = {}
 ): OperationResult<ScrollFramePlan> {
   try {
     assertDimension(image.width, POLICY_LIMITS.imageWidthPx);
@@ -29,15 +34,18 @@ export function planScrollFrames(
     const scale = Math.min(1, viewport.widthPx / image.width);
     const frameHeightPx = Math.min(image.height, Math.max(1, Math.floor(viewport.heightPx / scale)));
     const maximumOffset = image.height - frameHeightPx;
+    const startOffset = Math.min(maximumOffset, Math.max(0, options.startOffsetPx ?? 0));
     const maximumAdvance = Math.max(1, Math.floor(frameHeightPx * 0.75));
-    const frameCount = maximumOffset === 0 ? 1 : Math.ceil(maximumOffset / maximumAdvance) + 1;
+    const remainingOffset = maximumOffset - startOffset;
+    const frameCount = remainingOffset === 0 ? 1 : Math.ceil(remainingOffset / maximumAdvance) + 1;
     if (frameCount > POLICY_LIMITS.scrollFrameCount) {
       throw limitError("scroll_frame_count", POLICY_LIMITS.scrollFrameCount, frameCount);
     }
 
-    const offsets = Array.from({ length: frameCount }, (_, index) =>
-      index === frameCount - 1 ? maximumOffset : Math.min(maximumOffset, index * maximumAdvance)
-    );
+    const offsets = Array.from({ length: frameCount }, (_, index) => {
+      if (index === frameCount - 1) return maximumOffset;
+      return Math.min(maximumOffset, startOffset + index * maximumAdvance);
+    });
     const totalDurationMs = (frameCount - 1) * POLICY_LIMITS.scrollFrameIntervalMs;
     if (totalDurationMs > POLICY_LIMITS.scrollAnimationDurationMs) {
       throw limitError("scroll_animation_duration_ms", POLICY_LIMITS.scrollAnimationDurationMs, totalDurationMs);

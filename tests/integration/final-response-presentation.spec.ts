@@ -27,7 +27,7 @@ describe("integrated final response presentation", () => {
     "presents only the final response for $id",
     async (testCase) => {
       const rig = await FullLifecycleRig.start(testCase.agent);
-      rig.renderer = ({ text, formulas }) => renderResponse(text, formulas);
+      rig.renderer = ({ text, formulas, layout }) => renderResponse(text, formulas, { layout });
       try {
         const baseline = `Synthetic ${testCase.agent} presentation baseline.\n`;
         const result = await rig.runStyledOutputs(
