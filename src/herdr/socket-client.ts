@@ -16,6 +16,7 @@ export const HERDR_CLIENT_LIMITS = Object.freeze({
   socketPathBytes: 4096,
   paneGetTimeoutMs: 2000,
   paneReadTimeoutMs: 2000,
+  paneMetadataTimeoutMs: 2000,
   agentSessionValueBytes: 4096
 });
 
@@ -46,7 +47,14 @@ export interface HerdrPaneReadSnapshot {
 export interface HerdrSocketClientOptions {
   paneGetTimeoutMs?: number;
   paneReadTimeoutMs?: number;
+  paneMetadataTimeoutMs?: number;
   responseBytes?: number;
+}
+
+export interface HerdrPaneMetadataReport {
+  source: string;
+  title: string;
+  tokens: Readonly<Record<string, string>>;
 }
 
 type HerdrRequest =
@@ -55,11 +63,13 @@ type HerdrRequest =
       id: string;
       method: "pane.read";
       params: { pane_id: string; source: "recent-unwrapped"; format: "text"; lines: number; strip_ansi: true };
-    };
+    }
+  | { id: string; method: "pane.report_metadata"; params: { pane_id: string } & HerdrPaneMetadataReport };
 
 export class HerdrSocketClient {
   readonly #paneGetTimeoutMs: number;
   readonly #paneReadTimeoutMs: number;
+  readonly #paneMetadataTimeoutMs: number;
   readonly #responseBytes: number;
 
   constructor(
@@ -75,6 +85,11 @@ export class HerdrSocketClient {
       options.paneReadTimeoutMs,
       HERDR_CLIENT_LIMITS.paneReadTimeoutMs,
       "paneReadTimeoutMs"
+    );
+    this.#paneMetadataTimeoutMs = boundedOverride(
+      options.paneMetadataTimeoutMs,
+      HERDR_CLIENT_LIMITS.paneMetadataTimeoutMs,
+      "paneMetadataTimeoutMs"
     );
     this.#responseBytes = boundedOverride(options.responseBytes, POLICY_LIMITS.socketResponseBytes, "responseBytes");
   }
@@ -123,6 +138,28 @@ export class HerdrSocketClient {
       }
     };
     return this.#request(outbound, this.#paneReadTimeoutMs, parsePaneReadResult);
+  }
+
+  async paneReportMetadata(
+    paneId: string,
+    report: HerdrPaneMetadataReport
+  ): Promise<OperationResult<HerdrPaneSnapshot>> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(paneId) || !isMetadataReport(report)) {
+      return protocolFailure();
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "pane.report_metadata",
+      params: {
+        pane_id: paneId,
+        source: report.source,
+        title: report.title,
+        tokens: { ...report.tokens }
+      }
+    };
+    const response = await this.#request(outbound, this.#paneMetadataTimeoutMs, parsePaneGetResult);
+    if (!response.ok || response.value.paneId === paneId) return response;
+    return protocolFailure();
   }
 
   #request<T>(
@@ -361,4 +398,38 @@ function isAgentStatus(value: unknown): value is AgentStatus {
 
 function isHerdrError(value: unknown): value is HerdrWireError {
   return isRecord(value) && isIdentifier(value.code) && typeof value.message === "string";
+}
+
+function isMetadataReport(value: unknown): value is HerdrPaneMetadataReport {
+  if (
+    !isRecord(value) ||
+    typeof value.source !== "string" ||
+    !/^[A-Za-z0-9:._-]{1,80}$/.test(value.source) ||
+    typeof value.title !== "string" ||
+    value.title.length === 0 ||
+    [...value.title].length > 80 ||
+    containsMetadataControl(value.title) ||
+    !isRecord(value.tokens)
+  ) {
+    return false;
+  }
+  const entries = Object.entries(value.tokens);
+  return (
+    entries.length <= 16 &&
+    entries.every(
+      ([key, token]) =>
+        /^[A-Za-z0-9_-]{1,32}$/.test(key) &&
+        typeof token === "string" &&
+        token.length > 0 &&
+        [...token].length <= 80 &&
+        !containsMetadataControl(token)
+    )
+  );
+}
+
+function containsMetadataControl(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
 }

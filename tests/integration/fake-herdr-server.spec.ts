@@ -7,6 +7,7 @@ import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { HerdrSocketClient } from "../../src/herdr/socket-client.js";
+import { createViewerMetadata, deriveViewerSourceToken, VIEWER_IDENTITY } from "../../src/viewer/ownership.js";
 import { FakeHerdrServer } from "../support/fake-herdr-server.js";
 import { createFakePane, type FakeHerdrServerOptions } from "../support/fake-herdr-types.js";
 
@@ -104,16 +105,18 @@ describe("FakeHerdrServer", () => {
     expect(server.getPane("w1:p1")?.focused).toBe(true);
     expect(server.getPane(viewerId)?.focused).toBe(false);
 
-    const annotated = await call(server, "pane.report_metadata", {
-      pane_id: viewerId,
-      source: "plugin:io.github.sodeyama.herdr-math",
-      title: "Herdr Math",
-      tokens: { herdr_math_source: "w1:p1", herdr_math_owner: "v1" }
-    });
-    expect(validateSuccess(annotated), JSON.stringify(validateSuccess.errors)).toBe(true);
+    const sourceToken = deriveViewerSourceToken(server.socketPath, "w1:p1");
+    const annotated = await new HerdrSocketClient(server.socketPath).paneReportMetadata(
+      viewerId,
+      createViewerMetadata(sourceToken)
+    );
+    expect(annotated.ok).toBe(true);
     expect(server.getPane(viewerId)).toMatchObject({
       title: "Herdr Math",
-      tokens: { herdr_math_source: "w1:p1", herdr_math_owner: "v1" }
+      tokens: {
+        herdr_math_source: sourceToken,
+        herdr_math_owner: VIEWER_IDENTITY.ownerToken
+      }
     });
 
     const listed = await call(server, "pane.list", { workspace_id: "w1" });
