@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { renderFormulas } from "../../src/renderer/index.js";
+import { renderResponse } from "../../src/renderer/index.js";
 import { FullLifecycleRig, timeoutRenderer } from "../support/full-lifecycle-rig.js";
 
 describe("privacy gates across state, output, and request logs", () => {
@@ -44,7 +44,7 @@ describe("privacy gates across state, output, and request logs", () => {
     const invalidSentinel = "PRIVATE_INVALID_FORMULA_Q7Z9";
     const timeoutSentinel = "PRIVATE_TIMEOUT_FORMULA_Q7Z9";
     try {
-      rig.renderer = renderFormulas;
+      rig.renderer = ({ text, formulas }) => renderResponse(text, formulas);
       const invalid = await rig.runCycle(
         "Invalid privacy baseline.\n",
         `Invalid $\\notARealCommand{${invalidSentinel}}$.`

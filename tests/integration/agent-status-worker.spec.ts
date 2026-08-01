@@ -34,6 +34,7 @@ interface TestRig {
   server: FakeHerdrServer;
   directory: string;
   renders: Array<readonly { latex: string; display: boolean }[]>;
+  renderedTexts: string[];
   publications: ImagePublishRequest[];
   dependencies: AgentStatusWorkerDependencies;
 }
@@ -73,6 +74,7 @@ describe("agent status worker", () => {
         }
       });
       expect(rig.renders).toEqual([[{ latex: "E=mc^2", display: false }]]);
+      expect(rig.renderedTexts).toEqual(["The relation is $E=mc^2$."]);
       expect(rig.publications).toHaveLength(1);
       expect(rig.server.requests.filter(({ method }) => method === "pane.read")).toHaveLength(5);
 
@@ -109,6 +111,29 @@ describe("agent status worker", () => {
     });
     expect(rig.renders).toHaveLength(0);
     expect(rig.publications).toHaveLength(0);
+  });
+
+  it("renders Pi final prose and math without reasoning or tool output", async () => {
+    const rig = await createRig({
+      agent: "pi",
+      agent_session: { source: "herdr:pi", agent: "pi", kind: "id", value: "session-pi-final" }
+    });
+    const baseline = "Synthetic Pi baseline before a styled response.";
+    rig.server.setPaneOutput("w1:p1", baseline);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+
+    const plain =
+      "Reasoning uses $r=1$.\n\nread package.json\n\nFinal answer is $E=mc^2$.\n\n────────────────────────\nstatus";
+    const ansi =
+      "\u001b[3mReasoning uses $r=1$.\u001b[0m\n\n\u001b[1;48;2;40;50;40mread package.json\u001b[0m\n\nFinal answer is $E=mc^2$.\n\n────────────────────────\nstatus";
+    rig.server.setPaneOutput("w1:p1", `${baseline}\n${plain}`, false, `${baseline}\n${ansi}`);
+
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
+      ok: true,
+      value: { kind: "image_published", formulaCount: 1 }
+    });
+    expect(rig.renderedTexts).toEqual(["Final answer is $E=mc^2$."]);
+    expect(rig.renders).toEqual([[{ latex: "E=mc^2", display: false }]]);
   });
 
   it("publishes a completed formula through the owned graphics viewer", async () => {
@@ -502,6 +527,7 @@ async function createRig(overrides: Partial<FakePaneState> = {}): Promise<TestRi
   const directory = await mkdtemp(join(tmpdir(), "herdr-math-worker-"));
   temporaryDirectories.push(directory);
   const renders: TestRig["renders"] = [];
+  const renderedTexts: string[] = [];
   const publications: ImagePublishRequest[] = [];
   const dependencies: AgentStatusWorkerDependencies = {
     client: new HerdrSocketClient(server.socketPath),
@@ -511,7 +537,8 @@ async function createRig(overrides: Partial<FakePaneState> = {}): Promise<TestRi
     now: () => NOW,
     sleep: () => Promise.resolve(),
     timing: { completionDebounceMs: 0, stableReadIntervalMs: 0 },
-    render: (formulas) => {
+    render: ({ text, formulas }) => {
+      renderedTexts.push(text);
       renders.push(formulas.map(({ latex, display }) => ({ latex, display })));
       return Promise.resolve(success(image()));
     },
@@ -520,7 +547,7 @@ async function createRig(overrides: Partial<FakePaneState> = {}): Promise<TestRi
       return Promise.resolve(success({ viewerPaneId: "w1:p9" }));
     }
   };
-  return { server, directory, renders, publications, dependencies };
+  return { server, directory, renders, renderedTexts, publications, dependencies };
 }
 
 function process(rig: TestRig, event: FakeStatusEvent): Promise<OperationResult<AgentStatusWorkerOutcome>> {

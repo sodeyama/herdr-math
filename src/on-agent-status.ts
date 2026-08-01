@@ -6,7 +6,7 @@ import { processDecodedAgentStatusEvent, type AgentStatusWorkerOutcome } from ".
 import { decodeAgentStatusEvent } from "./herdr/event-decoder.js";
 import { HerdrSocketClient } from "./herdr/socket-client.js";
 import { publishImage } from "./graphics/publisher.js";
-import { renderFormulas } from "./renderer/index.js";
+import { renderResponse } from "./renderer/index.js";
 import { loadOrCreateFingerprintSecret } from "./boundary/fingerprint-secret.js";
 
 export interface AgentStatusHookEnvironment {
@@ -44,7 +44,7 @@ export async function runAgentStatusHook(
       sessionIdentity: socketPath,
       secret,
       ...(workingRead?.ok === true ? { workingSnapshot: workingRead.value } : {}),
-      render: renderFormulas,
+      render: ({ text, formulas }) => renderResponse(text, formulas),
       publish: (request) => publishImage(request, { client, sessionIdentity: socketPath })
     });
   } catch (error) {

@@ -6,7 +6,7 @@ import {
 } from "../boundary/fingerprint-digest.js";
 import type { FingerprintStateV1, LifecycleAuthority, SupportedAgent } from "../boundary/fingerprint-schema.js";
 import { resolveAnswerFromFingerprint } from "../boundary/fingerprint-resolver.js";
-import { failure, success, type OperationResult, type RenderedImage } from "../core/contracts.js";
+import { failure, success, type Formula, type OperationResult, type RenderedImage } from "../core/contracts.js";
 import { HerdrMathError, serializeError } from "../core/errors.js";
 import {
   commitCompletion,
@@ -18,7 +18,6 @@ import { decodeAgentStatusEvent, type DecodedAgentStatusEvent } from "../herdr/e
 import type { HerdrAgentSnapshot, HerdrPaneReadSnapshot, HerdrPaneSnapshot } from "../herdr/socket-client.js";
 import { parseMatchingAnsiSnapshot, type StyledTerminalSnapshot } from "../presentation/ansi-snapshot.js";
 import { extractFinalResponse } from "../presentation/final-response.js";
-import type { RendererFormula } from "../renderer/render.js";
 import { scanLatex } from "../scanner/scan-latex.js";
 import { acquirePaneLock } from "../state/pane-lock.js";
 import { createPaneStatePaths, type PaneStatePaths } from "../state/paths.js";
@@ -55,12 +54,17 @@ export interface AgentStatusWorkerTiming {
   stableReadIntervalMs?: number;
 }
 
+export interface ResponseRenderRequest {
+  text: string;
+  formulas: readonly Formula[];
+}
+
 export interface AgentStatusWorkerDependencies {
   client: AgentStatusHerdrClient;
   stateDirectory: string;
   sessionIdentity: string;
   secret: Uint8Array;
-  render(formulas: readonly RendererFormula[]): Promise<OperationResult<RenderedImage>>;
+  render(request: ResponseRenderRequest): Promise<OperationResult<RenderedImage>>;
   publish(request: ImagePublishRequest): Promise<OperationResult<ImagePublishResult>>;
   workingSnapshot?: HerdrPaneReadSnapshot;
   now?: () => Date;
@@ -369,7 +373,7 @@ async function processCompletion(
   ) {
     return preservedCompletion(resolved, phase.authorization.generation, "stale_completion");
   }
-  const rendered = await dependencies.render(formulas.map(({ latex, display }) => ({ latex, display })));
+  const rendered = await dependencies.render({ text: finalResponse.value.text, formulas });
   if (!rendered.ok) return failure(rendered.error);
   return commitFinal(
     resolved,

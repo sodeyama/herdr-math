@@ -9,16 +9,16 @@ import type { OperationResult, RenderedImage } from "../../src/core/contracts.js
 import {
   processAgentStatusEvent,
   type AgentStatusWorkerDependencies,
-  type AgentStatusWorkerOutcome
+  type AgentStatusWorkerOutcome,
+  type ResponseRenderRequest
 } from "../../src/events/agent-status-worker.js";
 import { publishImage } from "../../src/graphics/publisher.js";
 import { HerdrSocketClient, type HerdrSocketClientOptions } from "../../src/herdr/socket-client.js";
 import type { RendererDocument } from "../../src/renderer/document.js";
 import {
-  renderWithBackend,
+  renderResponseWithBackend,
   type RendererBackend,
-  type RendererBackendContext,
-  type RendererFormula
+  type RendererBackendContext
 } from "../../src/renderer/render.js";
 import { createPaneStatePaths, type PaneStatePaths } from "../../src/state/paths.js";
 import { loadPaneState } from "../../src/state/store.js";
@@ -31,11 +31,12 @@ const NOW = new Date("2026-08-01T00:00:00.000Z");
 const SECRET = Buffer.alloc(32, 29);
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-export type LifecycleRenderer = (formulas: readonly RendererFormula[]) => Promise<OperationResult<RenderedImage>>;
+export type LifecycleRenderer = (request: ResponseRenderRequest) => Promise<OperationResult<RenderedImage>>;
 
 export class FullLifecycleRig {
   readonly client: HerdrSocketClient;
-  readonly renderedFormulas: RendererFormula[][] = [];
+  readonly renderedFormulas: Array<Array<{ latex: string; display: boolean }>> = [];
+  readonly renderedResponses: string[] = [];
   renderer: LifecycleRenderer = renderStatic;
   readonly #dependencies: AgentStatusWorkerDependencies;
   #closed = false;
@@ -54,9 +55,10 @@ export class FullLifecycleRig {
       now: () => NOW,
       sleep: () => Promise.resolve(),
       timing: { completionDebounceMs: 0, stableReadIntervalMs: 0 },
-      render: (formulas) => {
-        this.renderedFormulas.push(formulas.map((formula) => ({ ...formula })));
-        return this.renderer(formulas);
+      render: (request) => {
+        this.renderedResponses.push(request.text);
+        this.renderedFormulas.push(request.formulas.map(({ latex, display }) => ({ latex, display })));
+        return this.renderer(request);
       },
       publish: (request) => publishImage(request, { client: this.client, sessionIdentity: server.socketPath })
     };
@@ -151,11 +153,12 @@ export class FullLifecycleRig {
 }
 
 export function timeoutRenderer(durationMs = 10): LifecycleRenderer {
-  return (formulas) => renderWithBackend(formulas, new BlockingBackend(), { limits: { renderDurationMs: durationMs } });
+  return ({ text, formulas }) =>
+    renderResponseWithBackend(text, formulas, new BlockingBackend(), { limits: { renderDurationMs: durationMs } });
 }
 
-export function renderStatic(formulas: readonly RendererFormula[]): Promise<OperationResult<RenderedImage>> {
-  return renderWithBackend(formulas, new StaticBackend(image()));
+export function renderStatic({ text, formulas }: ResponseRenderRequest): Promise<OperationResult<RenderedImage>> {
+  return renderResponseWithBackend(text, formulas, new StaticBackend(image()));
 }
 
 function image(): RenderedImage {

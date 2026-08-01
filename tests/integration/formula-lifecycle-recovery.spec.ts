@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { renderFormulas } from "../../src/renderer/index.js";
+import { renderResponse } from "../../src/renderer/index.js";
 import { FullLifecycleRig, renderStatic, timeoutRenderer } from "../support/full-lifecycle-rig.js";
 
 describe("full formula lifecycle recovery", () => {
@@ -15,7 +15,7 @@ describe("full formula lifecycle recovery", () => {
       await rig.registerViewer("w1:p2");
       const previous = rig.server.getGraphics("w1:p2");
 
-      rig.renderer = renderFormulas;
+      rig.renderer = ({ text, formulas }) => renderResponse(text, formulas);
       const invalid = await rig.runCycle("Invalid response baseline.\n", "Invalid $\\notARealCommand{x}$.");
       expect(invalid.completion).toEqual({
         ok: false,
