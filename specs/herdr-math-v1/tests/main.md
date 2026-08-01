@@ -320,6 +320,15 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - When resolution runs
 - Then it stays within configured candidate, byte, and time bounds without quadratic growth.
 
+### AT-209 - Alternate-screen middle insertion
+
+- Priority: P0
+- Evidence: Unit, Integration, Runtime
+- Given a working baseline whose prompt is followed by a stable alternate-screen footer, and the completed answer is inserted between them
+- When a context-qualified anchor before the answer and a distinct unique anchor after the answer retain their baseline order with a larger current offset gap
+- Then the resolver returns the inserted region with strategy `middle_insertion`.
+- And it fails closed when either side is absent, ambiguous, reordered, or does not prove a positive insertion.
+
 ## D. LaTeX Scanner
 
 ### AT-300 - Inline formula

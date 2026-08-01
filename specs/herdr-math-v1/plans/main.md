@@ -218,7 +218,7 @@ The work is ordered so that pure deterministic logic and privacy invariants are 
 
 1. Define and version the fingerprint schema.
 2. Generate a local keyed-fingerprint secret with restrictive permissions.
-3. Implement full-baseline digest, prefix checkpoints, suffix-window digests, and contextual tail-anchor digests.
+3. Implement full-baseline digest, prefix checkpoints, suffix-window digests, and contextual tail-anchor digests with baseline offsets.
 4. Implement resolution against current pane text without loading a persisted baseline.
 5. Run a parity suite comparing the fingerprint resolver with the prototype reference algorithm.
 6. Implement safe session and pane key encoding.
@@ -229,14 +229,14 @@ The work is ordered so that pure deterministic logic and privacy invariants are 
 ### Tests
 
 - AT-103 through AT-111
-- AT-200 through AT-208
+- AT-200 through AT-209
 - AT-600 through AT-605
 - AT-608 through AT-610
 
 ### Exit gate
 
 - Fingerprint resolution reaches parity on the fixed corpus.
-- The repeated-prompt and sliding-window regressions pass.
+- The repeated-prompt, sliding-window, and alternate-screen middle-insertion regressions pass.
 - No state file contains answer or formula text.
 - Concurrent workers cannot corrupt state or render twice.
 

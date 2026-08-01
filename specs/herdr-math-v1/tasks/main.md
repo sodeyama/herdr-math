@@ -98,9 +98,9 @@
 ## Phase 3 - Fingerprint Boundary and Atomic State
 
 - [x] **T-301: Define the boundary fingerprint schema**
-  - Scope: Version the full digest, prefix checkpoints, suffix windows, contextual tail anchors, session/pane metadata, expiry, and processed-digest record.
+  - Scope: Version the full digest, prefix checkpoints, suffix windows, contextual tail anchors with baseline offsets, session/pane metadata, expiry, and processed-digest record.
   - Dependencies: T-203, T-204
-  - Acceptance tests: AT-200 through AT-208, AT-207 in particular
+  - Acceptance tests: AT-200 through AT-209, AT-207 in particular
   - Commit: `feat(boundary): define fingerprint baseline schema`
 
 - [x] **T-302: Implement keyed fingerprint creation**
@@ -110,9 +110,9 @@
   - Commit: `feat(boundary): create privacy-preserving baselines`
 
 - [x] **T-303: Implement fingerprint answer resolution**
-  - Scope: Resolve exact prefix, stable checkpoints, sliding windows, and contextual anchors against current text and compare parity with the reference implementation.
+  - Scope: Resolve exact prefix, stable checkpoints, middle insertions, sliding windows, and contextual anchors against current text and compare parity with the reference implementation.
   - Dependencies: T-302
-  - Acceptance tests: AT-200 through AT-208
+  - Acceptance tests: AT-200 through AT-209
   - Commit: `feat(boundary): resolve answers from fingerprints`
 
 - [x] **T-304: Implement atomic session-scoped state**
@@ -188,7 +188,7 @@
 - [x] **T-504: Implement the agent-status event worker**
   - Scope: Connect event decoding, immediate bounded working capture, authoritative `pane.get` and `agent.get` agent/status/revision/sequence resolution, supported-agent allowlisting, lifecycle state, stable completion reads, boundary resolution, scanning, rendering, generation checks, and processed digests in a bounded process.
   - Dependencies: T-305, T-404, T-501, T-503
-  - Acceptance tests: AT-103 through AT-113, AT-200 through AT-208, AT-511, AT-601
+  - Acceptance tests: AT-103 through AT-113, AT-200 through AT-209, AT-511, AT-601
   - Commit: `feat(events): process agent completion hooks`
 
 - [x] **T-505: Implement one-shot startup cleanup**
