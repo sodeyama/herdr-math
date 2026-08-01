@@ -89,6 +89,7 @@ describe("fingerprint state v1 schema", () => {
       maxPrefixCheckpoints: 16,
       maxSuffixWindows: 4,
       maxTailAnchors: 20,
+      minTailAnchorCharacters: 32,
       maxContextCharacters: 2048
     });
     for (const value of Object.values(FINGERPRINT_SCHEMA_LIMITS)) {

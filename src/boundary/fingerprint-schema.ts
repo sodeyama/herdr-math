@@ -8,6 +8,7 @@ export const FINGERPRINT_SCHEMA_LIMITS = Object.freeze({
   maxPrefixCheckpoints: 16,
   maxSuffixWindows: 4,
   maxTailAnchors: 20,
+  minTailAnchorCharacters: 32,
   maxContextCharacters: 2048
 });
 

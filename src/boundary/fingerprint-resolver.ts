@@ -243,6 +243,7 @@ function assertUsableFingerprint(state: FingerprintStateV1): void {
     baseline.tail_anchors.some(
       (anchor) =>
         !isPositiveInteger(anchor.line_characters) ||
+        anchor.line_characters < FINGERPRINT_SCHEMA_LIMITS.minTailAnchorCharacters ||
         !isNonNegativeInteger(anchor.context_characters) ||
         anchor.context_characters > FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters ||
         !isNonNegativeInteger(anchor.line_index_from_end) ||

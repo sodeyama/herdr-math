@@ -105,7 +105,11 @@ function isBaseline(value: unknown): boolean {
           "context_digest",
           "line_index_from_end"
         ]) &&
-        isPositiveCount(item.line_characters, value.character_count as number) &&
+        isCount(
+          item.line_characters,
+          value.character_count as number,
+          FINGERPRINT_SCHEMA_LIMITS.minTailAnchorCharacters
+        ) &&
         isFingerprintDigest(item.line_digest) &&
         isCount(item.context_characters, FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters) &&
         isFingerprintDigest(item.context_digest) &&
@@ -137,8 +141,8 @@ function isBoundedArray(value: unknown, maximum: number): value is Record<string
   return Array.isArray(value) && value.length <= maximum;
 }
 
-function isCount(value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= maximum;
+function isCount(value: unknown, maximum = Number.MAX_SAFE_INTEGER, minimum = 0): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= minimum && (value as number) <= maximum;
 }
 
 function isPositiveCount(value: unknown, maximum: number): value is number {
