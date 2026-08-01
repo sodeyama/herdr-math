@@ -141,7 +141,7 @@
   - Acceptance tests: AT-400 through AT-405
   - Commit: `test(renderer): add release formula corpus`
 
-- [ ] **T-402: Prototype and measure renderer candidates**
+- [x] **T-402: Prototype and measure renderer candidates**
   - Scope: Compare the proven browser path and a browser-free SVG path for correctness, visual output, clean install size/time, cold/warm latency, memory, PNG size, native modules, cleanup, and offline behavior.
   - Dependencies: T-401
   - Acceptance tests: AT-400, AT-405, AT-409, AT-410
