@@ -73,6 +73,8 @@ describe("FakeHerdrServer", () => {
       value: {
         paneId: "w1:p1",
         workspaceId: "w1",
+        tabId: "w1:t1",
+        focused: true,
         agent: "claude",
         agentSession: null,
         status: "done",
@@ -90,26 +92,27 @@ describe("FakeHerdrServer", () => {
 
   it("opens, annotates, discovers, and closes an owned plugin viewer without stealing focus", async () => {
     const server = await startFake({ panes: [createFakePane()] });
-    const opened = await call(server, "plugin.pane.open", {
-      plugin_id: "io.github.sodeyama.herdr-math",
-      entrypoint: "viewer",
+    const client = new HerdrSocketClient(server.socketPath);
+    const sourceToken = deriveViewerSourceToken(server.socketPath, "w1:p1");
+    const opened = await client.pluginPaneOpen({
+      pluginId: "io.github.sodeyama.herdr-math",
+      entrypointId: "viewer",
+      workspaceId: "w1",
+      targetPaneId: "w1:p1",
       placement: "split",
       direction: "right",
-      target_pane_id: "w1:p1",
-      focus: false
+      focus: false,
+      environment: { HERDR_MATH_SOURCE_TOKEN: sourceToken }
     });
-    expect(validateSuccess(opened), JSON.stringify(validateSuccess.errors)).toBe(true);
-    const viewerId = resultPaneId(opened);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) throw new Error("Expected the plugin viewer to open");
+    const viewerId = opened.value.pane.paneId;
     expect(viewerId).not.toBe("w1:p1");
     expect(server.paneCount).toBe(2);
     expect(server.getPane("w1:p1")?.focused).toBe(true);
     expect(server.getPane(viewerId)?.focused).toBe(false);
 
-    const sourceToken = deriveViewerSourceToken(server.socketPath, "w1:p1");
-    const annotated = await new HerdrSocketClient(server.socketPath).paneReportMetadata(
-      viewerId,
-      createViewerMetadata(sourceToken)
-    );
+    const annotated = await client.paneReportMetadata(viewerId, createViewerMetadata(sourceToken));
     expect(annotated.ok).toBe(true);
     expect(server.getPane(viewerId)).toMatchObject({
       title: "Herdr Math",
@@ -237,27 +240,6 @@ function exchangeLine(
     socket.once("end", () => settle(null));
     socket.once("error", (error) => settle(null, connected ? undefined : error));
   });
-}
-
-function resultPaneId(value: unknown): string {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("result" in value) ||
-    typeof value.result !== "object" ||
-    value.result === null ||
-    !("plugin_pane" in value.result) ||
-    typeof value.result.plugin_pane !== "object" ||
-    value.result.plugin_pane === null ||
-    !("pane" in value.result.plugin_pane) ||
-    typeof value.result.plugin_pane.pane !== "object" ||
-    value.result.plugin_pane.pane === null ||
-    !("pane_id" in value.result.plugin_pane.pane) ||
-    typeof value.result.plugin_pane.pane.pane_id !== "string"
-  ) {
-    throw new Error("Expected a plugin pane response");
-  }
-  return value.result.plugin_pane.pane.pane_id;
 }
 
 function requireValidator(validator: ValidateFunction | undefined): ValidateFunction {

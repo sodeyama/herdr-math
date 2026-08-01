@@ -16,7 +16,9 @@ export const HERDR_CLIENT_LIMITS = Object.freeze({
   socketPathBytes: 4096,
   paneGetTimeoutMs: 2000,
   paneReadTimeoutMs: 2000,
+  paneListTimeoutMs: 2000,
   paneMetadataTimeoutMs: 2000,
+  pluginPaneOpenTimeoutMs: 5000,
   agentSessionValueBytes: 4096
 });
 
@@ -30,10 +32,14 @@ export interface HerdrAgentSessionRef {
 export interface HerdrPaneSnapshot {
   paneId: string;
   workspaceId: string;
+  tabId: string;
+  focused: boolean;
   agent: string | null;
   agentSession: HerdrAgentSessionRef | null;
   status: AgentStatus;
   revision: number;
+  title?: string | null;
+  tokens?: Readonly<Record<string, string>>;
 }
 
 export interface HerdrPaneReadSnapshot {
@@ -47,7 +53,9 @@ export interface HerdrPaneReadSnapshot {
 export interface HerdrSocketClientOptions {
   paneGetTimeoutMs?: number;
   paneReadTimeoutMs?: number;
+  paneListTimeoutMs?: number;
   paneMetadataTimeoutMs?: number;
+  pluginPaneOpenTimeoutMs?: number;
   responseBytes?: number;
 }
 
@@ -57,19 +65,53 @@ export interface HerdrPaneMetadataReport {
   tokens: Readonly<Record<string, string>>;
 }
 
+export interface HerdrPluginPaneOpenRequest {
+  pluginId: string;
+  entrypointId: string;
+  workspaceId: string;
+  targetPaneId: string;
+  placement: "split";
+  direction: "right" | "down";
+  focus: false;
+  environment: Readonly<Record<string, string>>;
+}
+
+export interface HerdrPluginPaneSnapshot {
+  pluginId: string;
+  entrypointId: string;
+  pane: HerdrPaneSnapshot;
+}
+
 type HerdrRequest =
   | { id: string; method: "pane.get"; params: { pane_id: string } }
+  | { id: string; method: "pane.list"; params: { workspace_id: string } }
   | {
       id: string;
       method: "pane.read";
       params: { pane_id: string; source: "recent-unwrapped"; format: "text"; lines: number; strip_ansi: true };
     }
-  | { id: string; method: "pane.report_metadata"; params: { pane_id: string } & HerdrPaneMetadataReport };
+  | { id: string; method: "pane.report_metadata"; params: { pane_id: string } & HerdrPaneMetadataReport }
+  | {
+      id: string;
+      method: "plugin.pane.open";
+      params: {
+        plugin_id: string;
+        entrypoint: string;
+        workspace_id: string;
+        target_pane_id: string;
+        placement: "split";
+        direction: "right" | "down";
+        focus: false;
+        env: Record<string, string>;
+      };
+    };
 
 export class HerdrSocketClient {
   readonly #paneGetTimeoutMs: number;
   readonly #paneReadTimeoutMs: number;
+  readonly #paneListTimeoutMs: number;
   readonly #paneMetadataTimeoutMs: number;
+  readonly #pluginPaneOpenTimeoutMs: number;
   readonly #responseBytes: number;
 
   constructor(
@@ -86,10 +128,20 @@ export class HerdrSocketClient {
       HERDR_CLIENT_LIMITS.paneReadTimeoutMs,
       "paneReadTimeoutMs"
     );
+    this.#paneListTimeoutMs = boundedOverride(
+      options.paneListTimeoutMs,
+      HERDR_CLIENT_LIMITS.paneListTimeoutMs,
+      "paneListTimeoutMs"
+    );
     this.#paneMetadataTimeoutMs = boundedOverride(
       options.paneMetadataTimeoutMs,
       HERDR_CLIENT_LIMITS.paneMetadataTimeoutMs,
       "paneMetadataTimeoutMs"
+    );
+    this.#pluginPaneOpenTimeoutMs = boundedOverride(
+      options.pluginPaneOpenTimeoutMs,
+      HERDR_CLIENT_LIMITS.pluginPaneOpenTimeoutMs,
+      "pluginPaneOpenTimeoutMs"
     );
     this.#responseBytes = boundedOverride(options.responseBytes, POLICY_LIMITS.socketResponseBytes, "responseBytes");
   }
@@ -120,6 +172,18 @@ export class HerdrSocketClient {
       if (remote.code === "not_found") return null;
       throw new HerdrMathError("herdr_protocol_error");
     });
+  }
+
+  paneList(workspaceId: string): Promise<OperationResult<readonly HerdrPaneSnapshot[]>> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(workspaceId)) {
+      return Promise.resolve(protocolFailure());
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "pane.list",
+      params: { workspace_id: workspaceId }
+    };
+    return this.#request(outbound, this.#paneListTimeoutMs, parsePaneListResult);
   }
 
   paneRead(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>> {
@@ -160,6 +224,27 @@ export class HerdrSocketClient {
     const response = await this.#request(outbound, this.#paneMetadataTimeoutMs, parsePaneGetResult);
     if (!response.ok || response.value.paneId === paneId) return response;
     return protocolFailure();
+  }
+
+  pluginPaneOpen(request: HerdrPluginPaneOpenRequest): Promise<OperationResult<HerdrPluginPaneSnapshot>> {
+    if (!isSocketPath(this.socketPath) || !isPluginPaneOpenRequest(request)) {
+      return Promise.resolve(protocolFailure());
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "plugin.pane.open",
+      params: {
+        plugin_id: request.pluginId,
+        entrypoint: request.entrypointId,
+        workspace_id: request.workspaceId,
+        target_pane_id: request.targetPaneId,
+        placement: request.placement,
+        direction: request.direction,
+        focus: request.focus,
+        env: { ...request.environment }
+      }
+    };
+    return this.#request(outbound, this.#pluginPaneOpenTimeoutMs, parsePluginPaneOpenResult);
   }
 
   #request<T>(
@@ -284,8 +369,12 @@ function parsePaneGetResult(value: unknown): HerdrPaneSnapshot {
   if (!isRecord(value) || value.type !== "pane_info" || !isRecord(value.pane)) {
     throw new HerdrMathError("herdr_protocol_error");
   }
-  const pane = value.pane;
+  return parsePaneInfo(value.pane);
+}
+
+function parsePaneInfo(pane: Record<string, unknown>): HerdrPaneSnapshot {
   const agentSession = parseAgentSession(pane.agent_session);
+  const tokens = parseMetadataTokens(pane.tokens);
   if (
     !isIdentifier(pane.pane_id) ||
     !isIdentifier(pane.terminal_id) ||
@@ -295,19 +384,57 @@ function parsePaneGetResult(value: unknown): HerdrPaneSnapshot {
     !isAgentStatus(pane.agent_status) ||
     (pane.agent !== undefined && pane.agent !== null && !isIdentifier(pane.agent)) ||
     agentSession === undefined ||
+    tokens === undefined ||
+    (pane.title !== undefined && pane.title !== null && typeof pane.title !== "string") ||
     !Number.isSafeInteger(pane.revision) ||
     (pane.revision as number) < 0
   ) {
     throw new HerdrMathError("herdr_protocol_error");
   }
 
-  return Object.freeze({
+  const snapshot: HerdrPaneSnapshot = {
     paneId: pane.pane_id,
     workspaceId: pane.workspace_id,
+    tabId: pane.tab_id,
+    focused: pane.focused,
     agent: typeof pane.agent === "string" ? pane.agent : null,
     agentSession,
     status: pane.agent_status,
     revision: pane.revision as number
+  };
+  if (pane.title !== undefined) snapshot.title = pane.title;
+  if (tokens !== null) snapshot.tokens = tokens;
+  return Object.freeze(snapshot);
+}
+
+function parsePaneListResult(value: unknown): readonly HerdrPaneSnapshot[] {
+  if (!isRecord(value) || value.type !== "pane_list" || !Array.isArray(value.panes)) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  if (value.panes.length > 4096) throw new HerdrMathError("herdr_protocol_error");
+  return Object.freeze(
+    value.panes.map((pane) => {
+      if (!isRecord(pane)) throw new HerdrMathError("herdr_protocol_error");
+      return parsePaneInfo(pane);
+    })
+  );
+}
+
+function parsePluginPaneOpenResult(value: unknown): HerdrPluginPaneSnapshot {
+  if (
+    !isRecord(value) ||
+    value.type !== "plugin_pane_opened" ||
+    !isRecord(value.plugin_pane) ||
+    !isIdentifier(value.plugin_pane.plugin_id) ||
+    !isIdentifier(value.plugin_pane.entrypoint) ||
+    !isRecord(value.plugin_pane.pane)
+  ) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  return Object.freeze({
+    pluginId: value.plugin_pane.plugin_id,
+    entrypointId: value.plugin_pane.entrypoint,
+    pane: parsePaneInfo(value.plugin_pane.pane)
   });
 }
 
@@ -423,6 +550,53 @@ function isMetadataReport(value: unknown): value is HerdrPaneMetadataReport {
         token.length > 0 &&
         [...token].length <= 80 &&
         !containsMetadataControl(token)
+    )
+  );
+}
+
+function parseMetadataTokens(value: unknown): Readonly<Record<string, string>> | null | undefined {
+  if (value === undefined) return null;
+  if (!isRecord(value)) return undefined;
+  const entries = Object.entries(value);
+  if (
+    entries.length > 32 ||
+    entries.some(
+      ([key, token]) =>
+        !/^[A-Za-z0-9_-]{1,32}$/.test(key) ||
+        typeof token !== "string" ||
+        token.length === 0 ||
+        [...token].length > 80 ||
+        containsMetadataControl(token)
+    )
+  ) {
+    return undefined;
+  }
+  return Object.freeze(Object.fromEntries(entries) as Record<string, string>);
+}
+
+function isPluginPaneOpenRequest(value: unknown): value is HerdrPluginPaneOpenRequest {
+  if (
+    !isRecord(value) ||
+    !isIdentifier(value.pluginId) ||
+    !isIdentifier(value.entrypointId) ||
+    !isIdentifier(value.workspaceId) ||
+    !isIdentifier(value.targetPaneId) ||
+    value.placement !== "split" ||
+    (value.direction !== "right" && value.direction !== "down") ||
+    value.focus !== false ||
+    !isRecord(value.environment)
+  ) {
+    return false;
+  }
+  const environment = Object.entries(value.environment);
+  return (
+    environment.length <= 16 &&
+    environment.every(
+      ([key, entry]) =>
+        /^[A-Z][A-Z0-9_]{0,63}$/.test(key) &&
+        typeof entry === "string" &&
+        !entry.includes("\0") &&
+        Buffer.byteLength(entry, "utf8") <= 4096
     )
   );
 }

@@ -73,6 +73,8 @@ describe("viewer entrypoint", () => {
     const response: HerdrPaneSnapshot = {
       paneId: "w1:p3",
       workspaceId: "w2",
+      tabId: "w2:t1",
+      focused: false,
       agent: null,
       agentSession: null,
       status: "idle",

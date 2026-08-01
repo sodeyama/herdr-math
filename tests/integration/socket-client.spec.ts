@@ -63,6 +63,8 @@ describe("HerdrSocketClient", () => {
         value: {
           paneId: result.pane.pane_id,
           workspaceId: result.pane.workspace_id,
+          tabId: result.pane.tab_id,
+          focused: result.pane.focused,
           agent: result.pane.agent ?? null,
           agentSession: null,
           status: result.pane.agent_status,
