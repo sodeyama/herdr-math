@@ -1,8 +1,9 @@
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 
+import { chromium } from "playwright";
 import sharp from "sharp";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { RenderedImage } from "../../src/core/contracts.js";
 import { POLICY_LIMITS } from "../../src/core/limits.js";
@@ -54,6 +55,7 @@ describe("bounded local renderer", () => {
   }, 30_000);
 
   it("rejects malformed and link-capable input before browser startup without leaking source", async () => {
+    const launch = vi.spyOn(chromium, "launch");
     const failures = [...corpus.invalidCases, ...corpus.securityCases];
     for (const testCase of failures) {
       const backend = new BrowserRendererBackend();
@@ -62,6 +64,8 @@ describe("bounded local renderer", () => {
       expect(JSON.stringify(result)).not.toContain(testCase.formula.latex);
       expect(backend.hasOpenResources()).toBe(false);
     }
+    expect(launch).not.toHaveBeenCalled();
+    launch.mockRestore();
   });
 
   it("rejects count, per-formula, and aggregate limits before backend work", async () => {
