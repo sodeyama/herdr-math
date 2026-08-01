@@ -173,7 +173,7 @@
   - Acceptance tests: AT-100 through AT-102, AT-112, AT-609
   - Commit: `feat(herdr): decode bounded plugin events`
 
-- [ ] **T-502: Implement the bounded Herdr socket client**
+- [x] **T-502: Implement the bounded Herdr socket client**
   - Scope: Add opaque socket-path handling, unique ids, response-size limits, method timeouts, JSON framing, disconnect behavior, `pane.get` support, and stable error mapping.
   - Dependencies: T-104, T-204
   - Acceptance tests: AT-002, AT-100, AT-101, AT-113, AT-608, AT-609
