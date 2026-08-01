@@ -137,6 +137,49 @@ describe("agent status worker", () => {
     expect(rig.renders).toEqual([[{ latex: "E=mc^2", display: false }]]);
   });
 
+  it("recovers a complete Pi final response after an earlier ANSI unwrap mismatch", async () => {
+    const rig = await createRig({
+      agent: "pi",
+      agent_session: { source: "herdr:pi", agent: "pi", kind: "id", value: "session-pi-ansi-suffix" }
+    });
+    const baseline = "Synthetic Pi baseline before an unwrap mismatch.";
+    rig.server.setPaneOutput("w1:p1", baseline);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+
+    const plain =
+      "plain historical tool row\nReasoning checks $r=1$.\n\nFinal answer is $E=mc^2$.\n\n────────────────────────\nstatus";
+    const ansi =
+      "different ANSI tool row\n\u001b[3mReasoning checks $r=1$.\u001b[0m\n\nFinal answer is $E=mc^2$.\n\n────────────────────────\nstatus";
+    rig.server.setPaneOutput("w1:p1", `${baseline}\n${plain}`, false, `${baseline}\n${ansi}`);
+
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
+      ok: true,
+      value: { kind: "image_published", formulaCount: 1 }
+    });
+    expect(rig.renderedTexts).toEqual(["Final answer is $E=mc^2$."]);
+  });
+
+  it("rejects Pi ANSI suffix recovery without a preceding styled boundary", async () => {
+    const rig = await createRig({
+      agent: "pi",
+      agent_session: { source: "herdr:pi", agent: "pi", kind: "id", value: "session-pi-partial-suffix" }
+    });
+    const baseline = "Synthetic Pi baseline before a partial suffix.";
+    rig.server.setPaneOutput("w1:p1", baseline);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+
+    const plain = "plain historical row\nFinal answer tail is $E=mc^2$.\n\n────────────────────────\nstatus";
+    const ansi = "different ANSI row\nFinal answer tail is $E=mc^2$.\n\n────────────────────────\nstatus";
+    rig.server.setPaneOutput("w1:p1", `${baseline}\n${plain}`, false, `${baseline}\n${ansi}`);
+
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
+      ok: false,
+      error: { code: "conclusion_boundary_failed" }
+    });
+    expect(rig.renders).toHaveLength(0);
+    expect(rig.publications).toHaveLength(0);
+  });
+
   it("publishes a completed formula through the owned graphics viewer", async () => {
     const rig = await createRig();
     const client = new HerdrSocketClient(rig.server.socketPath);

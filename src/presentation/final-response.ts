@@ -8,6 +8,7 @@ export interface FinalResponseRequest {
   answer: string;
   answerStartOffset: number;
   snapshot: StyledTerminalSnapshot;
+  requirePiFooter?: boolean;
 }
 
 export interface FinalResponse {
@@ -30,7 +31,10 @@ export function extractFinalResponse(request: FinalResponseRequest): OperationRe
   try {
     validateRequest(request);
     const lines = answerLines(request);
-    const selected = trimKnownTailChrome(request.agent, selectFinalLines(request.agent, lines));
+    const selected = trimKnownTailChrome(
+      request.agent,
+      selectFinalLines(request.agent, lines, request.requirePiFooter === true)
+    );
     const trimmed = trimBlankLines(selected);
     if (trimmed.length === 0) throw new HerdrMathError("conclusion_boundary_failed");
     const text = normalizeResponseLines(trimmed);
@@ -49,10 +53,14 @@ export function extractFinalResponse(request: FinalResponseRequest): OperationRe
   }
 }
 
-function selectFinalLines(agent: SupportedAgent, lines: readonly ResponseLine[]): ResponseLine[] {
+function selectFinalLines(
+  agent: SupportedAgent,
+  lines: readonly ResponseLine[],
+  requirePiFooter: boolean
+): ResponseLine[] {
   if (agent === "claude") return selectClaude(lines);
   if (agent === "codex") return selectCodex(lines);
-  if (agent === "pi") return selectPi(lines);
+  if (agent === "pi") return selectPi(lines, requirePiFooter);
   return selectOpenCode(lines);
 }
 
@@ -80,7 +88,7 @@ function selectCodex(lines: readonly ResponseLine[]): ResponseLine[] {
   throw new HerdrMathError("conclusion_boundary_failed");
 }
 
-function selectPi(lines: readonly ResponseLine[]): ResponseLine[] {
+function selectPi(lines: readonly ResponseLine[], requireFooter: boolean): ResponseLine[] {
   const lastReasoning = findLastIndex(lines, (line) => {
     if (line.nonWhitespaceCharacters === 0) return false;
     return line.italicCharacters / line.nonWhitespaceCharacters >= 0.8;
@@ -88,10 +96,12 @@ function selectPi(lines: readonly ResponseLine[]): ResponseLine[] {
   const lastTool = findLastIndex(lines, (line) => line.nonWhitespaceCharacters > 0 && line.hasBackground);
   const lastChrome = Math.max(lastReasoning, lastTool);
   if (lastChrome === -1) {
+    if (requireFooter) throw new HerdrMathError("conclusion_boundary_failed");
     if (lines.some(({ text }) => SEPARATOR.test(text))) throw new HerdrMathError("conclusion_boundary_failed");
     return [...lines];
   }
   const footer = lines.findIndex(({ text }, index) => index > lastChrome && SEPARATOR.test(text));
+  if (requireFooter && footer === -1) throw new HerdrMathError("conclusion_boundary_failed");
   return lines.slice(lastChrome + 1, footer === -1 ? lines.length : footer);
 }
 
@@ -311,6 +321,7 @@ function validateRequest(request: FinalResponseRequest): void {
   if (
     !Number.isSafeInteger(request.answerStartOffset) ||
     request.answerStartOffset < 0 ||
+    (request.requirePiFooter === true && request.agent !== "pi") ||
     endOffset > request.snapshot.text.length ||
     request.snapshot.text.slice(request.answerStartOffset, endOffset) !== request.answer
   ) {

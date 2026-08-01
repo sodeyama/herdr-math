@@ -60,7 +60,27 @@ export function parseMatchingAnsiSnapshot(
   }
 }
 
-function parseAnsiSnapshot(source: string, expectedText: string): StyledTerminalSnapshot {
+export function parseMatchingAnsiSuffixSnapshot(
+  plainText: string,
+  ansiText: string
+): OperationResult<StyledTerminalSnapshot> {
+  try {
+    assertBoundedInput(plainText);
+    assertBoundedInput(ansiText);
+    const snapshot = parseAnsiSnapshot(ansiText, plainText, true);
+    return success(snapshot);
+  } catch (error) {
+    return failure(
+      serializeError(error instanceof HerdrMathError ? error : new HerdrMathError("conclusion_boundary_failed"))
+    );
+  }
+}
+
+function parseAnsiSnapshot(
+  source: string,
+  expectedText: string,
+  allowMismatchedPrefix = false
+): StyledTerminalSnapshot {
   const style = defaultStyle();
   const lines: StyledTerminalLine[] = [];
   const expectedLines = expectedText.split("\n");
@@ -68,16 +88,18 @@ function parseAnsiSnapshot(source: string, expectedText: string): StyledTerminal
   let line = emptyLine();
   let text = "";
   let lineIndex = 0;
+  let lastMismatchLine = -1;
 
   const finishLine = (withNewline: boolean): void => {
     const rawLine = line.characters.join("");
     const expectedLine = expectedLines[lineIndex];
-    if (
-      expectedLine === undefined ||
-      (rawLine !== expectedLine &&
-        (!rawLine.startsWith(expectedLine) || !/^[ \t]*$/u.test(rawLine.slice(expectedLine.length))))
-    ) {
-      throw new HerdrMathError("conclusion_boundary_failed");
+    if (expectedLine === undefined) throw new HerdrMathError("conclusion_boundary_failed");
+    const matches =
+      rawLine === expectedLine ||
+      (rawLine.startsWith(expectedLine) && /^[ \t]*$/u.test(rawLine.slice(expectedLine.length)));
+    if (!matches) {
+      if (!allowMismatchedPrefix) throw new HerdrMathError("conclusion_boundary_failed");
+      lastMismatchLine = lineIndex;
     }
     const lineText = expectedLine;
     const startOffset = text.length;
@@ -130,7 +152,9 @@ function parseAnsiSnapshot(source: string, expectedText: string): StyledTerminal
   if (lineIndex !== expectedLineCount || text !== expectedText) {
     throw new HerdrMathError("conclusion_boundary_failed");
   }
-  return Object.freeze({ text, lines: Object.freeze(lines) });
+  const matchedLines = allowMismatchedPrefix ? lines.slice(lastMismatchLine + 1) : lines;
+  if (matchedLines.length === 0) throw new HerdrMathError("conclusion_boundary_failed");
+  return Object.freeze({ text, lines: Object.freeze(matchedLines) });
 }
 
 function consumeSgr(source: string, start: number, style: MutableStyle): number {

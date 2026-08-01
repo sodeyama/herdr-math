@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { POLICY_LIMITS } from "../../src/core/limits.js";
-import { parseMatchingAnsiSnapshot } from "../../src/presentation/ansi-snapshot.js";
+import { parseMatchingAnsiSnapshot, parseMatchingAnsiSuffixSnapshot } from "../../src/presentation/ansi-snapshot.js";
 
 describe("matching ANSI terminal snapshots", () => {
   it("normalizes safe SGR styles and terminal row padding", () => {
@@ -41,6 +41,32 @@ describe("matching ANSI terminal snapshots", () => {
         text: "Summary $x$.",
         lines: [{ text: "Summary $x$.", hasItalic: false }]
       }
+    });
+  });
+
+  it("recovers only the exact line-aligned suffix after an earlier mismatch", () => {
+    const plain = "History\nplain tool row\nReasoning $r$.\n\nFinal $x$.\n\n────────────────────────\nstatus";
+    const ansi =
+      "History\nANSI tool row\n\u001b[3mReasoning $r$.\u001b[0m\n\nFinal $x$.\n\n────────────────────────\nstatus";
+
+    expect(parseMatchingAnsiSnapshot(plain, ansi)).toMatchObject({ ok: false });
+    const result = parseMatchingAnsiSuffixSnapshot(plain, ansi);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.text).toBe(plain);
+    expect(result.value.lines[0]).toMatchObject({
+      text: "Reasoning $r$.",
+      startOffset: "History\nplain tool row\n".length,
+      hasItalic: true
+    });
+    expect(result.value.lines.at(-1)?.text).toBe("status");
+  });
+
+  it("rejects suffix recovery when ANSI line positions differ", () => {
+    expect(parseMatchingAnsiSuffixSnapshot("History\nFinal $x$.", "History\nextra\nFinal $x$.")).toEqual({
+      ok: false,
+      error: { code: "conclusion_boundary_failed", retryable: false }
     });
   });
 

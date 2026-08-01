@@ -16,7 +16,11 @@ import {
 } from "./lifecycle.js";
 import { decodeAgentStatusEvent, type DecodedAgentStatusEvent } from "../herdr/event-decoder.js";
 import type { HerdrAgentSnapshot, HerdrPaneReadSnapshot, HerdrPaneSnapshot } from "../herdr/socket-client.js";
-import { parseMatchingAnsiSnapshot, type StyledTerminalSnapshot } from "../presentation/ansi-snapshot.js";
+import {
+  parseMatchingAnsiSnapshot,
+  parseMatchingAnsiSuffixSnapshot,
+  type StyledTerminalSnapshot
+} from "../presentation/ansi-snapshot.js";
 import { extractFinalResponse } from "../presentation/final-response.js";
 import { scanLatex } from "../scanner/scan-latex.js";
 import { acquirePaneLock } from "../state/pane-lock.js";
@@ -122,6 +126,7 @@ interface CompletionPhase {
 interface StableRead {
   snapshot: HerdrPaneReadSnapshot;
   styledSnapshot: StyledTerminalSnapshot;
+  usesAnsiSuffix: boolean;
   digest: string;
   styledDigest: string;
 }
@@ -322,11 +327,22 @@ async function processCompletion(
   });
   if (!boundary.ok) return failure(boundary.error);
 
+  const answerEndOffset = boundary.value.startOffset + boundary.value.answer.length;
+  const styledStartOffset = stable.value.styledSnapshot.lines[0]?.startOffset;
+  const answerStartOffset = stable.value.usesAnsiSuffix ? styledStartOffset : boundary.value.startOffset;
+  if (
+    answerStartOffset === undefined ||
+    answerStartOffset < boundary.value.startOffset ||
+    answerStartOffset >= answerEndOffset
+  ) {
+    return safeFailure("conclusion_boundary_failed");
+  }
   const finalResponse = extractFinalResponse({
     agent: resolved.agent,
-    answer: boundary.value.answer,
-    answerStartOffset: boundary.value.startOffset,
-    snapshot: stable.value.styledSnapshot
+    answer: stable.value.snapshot.text.slice(answerStartOffset, answerEndOffset),
+    answerStartOffset,
+    snapshot: stable.value.styledSnapshot,
+    ...(stable.value.usesAnsiSuffix ? { requirePiFooter: true } : {})
   });
   if (!finalResponse.ok) return failure(finalResponse.error);
 
@@ -407,7 +423,12 @@ async function readStableCompletion(
       if (attempt + 1 < AGENT_STATUS_TIMING.stableReadAttempts) await sleep(intervalMs);
       continue;
     }
-    const styledSnapshot = parseMatchingAnsiSnapshot(read.value.text, ansiRead.value.text);
+    let styledSnapshot = parseMatchingAnsiSnapshot(read.value.text, ansiRead.value.text);
+    let usesAnsiSuffix = false;
+    if (!styledSnapshot.ok && resolved.agent === "pi") {
+      styledSnapshot = parseMatchingAnsiSuffixSnapshot(read.value.text, ansiRead.value.text);
+      usesAnsiSuffix = styledSnapshot.ok;
+    }
     if (!styledSnapshot.ok) {
       snapshotMismatch = true;
       previous = undefined;
@@ -417,6 +438,7 @@ async function readStableCompletion(
     const candidate: StableRead = {
       snapshot: read.value,
       styledSnapshot: styledSnapshot.value,
+      usesAnsiSuffix,
       digest: fingerprintDigest("stable-pane-read", read.value.text, dependencies.secret),
       styledDigest: fingerprintDigest("stable-pane-ansi", ansiRead.value.text, dependencies.secret)
     };

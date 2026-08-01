@@ -90,6 +90,36 @@ describe("coding-agent final response extraction", () => {
     ).toEqual({ ok: false, error: { code: "conclusion_boundary_failed", retryable: false } });
   });
 
+  it("requires a styled Pi boundary and footer for suffix recovery", () => {
+    const noBoundary = "Final $x$.\n\n────────────────────────";
+    const noBoundarySnapshot = parseMatchingAnsiSnapshot(noBoundary, noBoundary);
+    expect(noBoundarySnapshot.ok).toBe(true);
+    if (!noBoundarySnapshot.ok) return;
+    expect(
+      extractFinalResponse({
+        agent: "pi",
+        answer: noBoundary,
+        answerStartOffset: 0,
+        snapshot: noBoundarySnapshot.value,
+        requirePiFooter: true
+      })
+    ).toMatchObject({ ok: false, error: { code: "conclusion_boundary_failed" } });
+
+    const noFooter = "Reasoning $r$.\n\nFinal $x$.";
+    const noFooterSnapshot = parseMatchingAnsiSnapshot(noFooter, "\u001b[3mReasoning $r$.\u001b[0m\n\nFinal $x$.");
+    expect(noFooterSnapshot.ok).toBe(true);
+    if (!noFooterSnapshot.ok) return;
+    expect(
+      extractFinalResponse({
+        agent: "pi",
+        answer: noFooter,
+        answerStartOffset: 0,
+        snapshot: noFooterSnapshot.value,
+        requirePiFooter: true
+      })
+    ).toMatchObject({ ok: false, error: { code: "conclusion_boundary_failed" } });
+  });
+
   it("keeps synthetic fixtures free of local paths and credentials", () => {
     expect(fixtureSource).not.toMatch(/\/Users\/|\\Users\\|api[_-]?key|access[_-]?token|bearer\s+/iu);
   });
