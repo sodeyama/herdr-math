@@ -63,7 +63,7 @@
   - Acceptance tests: AT-002, AT-008, AT-011, AT-706
   - Commit: `test(plugin): validate manifest and release metadata`
 
-- [ ] **T-107: Record Pi and OpenCode lifecycle evidence**
+- [x] **T-107: Record Pi and OpenCode lifecycle evidence**
   - Scope: In an isolated real Herdr session, run Pi and OpenCode with the integrations required by the selected minimum Herdr version; record redacted canonical agent ids, lifecycle authorities, integration versions, observed status transitions, completion behavior, and alternate-screen pane-read behavior. Do not enable either agent in the plugin allowlist yet.
   - Dependencies: T-104
   - Acceptance tests: Evidence prerequisite for AT-100 and AT-112
