@@ -83,7 +83,7 @@
   - Acceptance tests: AT-300 through AT-308
   - Commit: `feat(scanner): parse supported math delimiters`
 
-- [ ] **T-203: Add the prototype boundary reference implementation**
+- [x] **T-203: Add the prototype boundary reference implementation**
   - Scope: Port exact-prefix, stable-prefix, sliding-window, and contextual-anchor behavior as a test oracle, including the repeated-prompt fix.
   - Dependencies: T-201
   - Acceptance tests: AT-200 through AT-206, AT-208
