@@ -415,6 +415,9 @@ Prototype values provide the initial defaults, subject to release validation:
 | Limit | Initial value | Enforcement point |
 |---|---:|---|
 | Pane read | 1,000 recent lines | Herdr reader |
+| Scanner input | 1 MiB UTF-8 | Scanner |
+| Delimiter runs per answer | 4,096 | Scanner |
+| Characters per delimiter run | 8 | Scanner |
 | Formulas per answer | 20 | Scanner/renderer boundary |
 | Characters per formula | 2,000 | Scanner/renderer boundary |
 | Aggregate formula characters | 10,000 | Renderer boundary |
