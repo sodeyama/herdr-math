@@ -163,6 +163,81 @@ describe("fingerprint answer resolver", () => {
     });
   });
 
+  it("resolves a forward-qualified alternate-screen replacement with a new formula", () => {
+    const before = "Synthetic working anchor with unique value 1234567890";
+    const baselineGap = "\nworking $u$\n";
+    const currentGap = "\ncompleted $u$ and $$x^2+y^2=z^2$$\n";
+    const after = "Synthetic footer anchor with unique value abcdefghij";
+    const following = "\n\nSynthetic stable footer context with unique value 9876543210";
+    const testCase: BoundaryCase = {
+      id: "middle-replacement",
+      agent: "pi",
+      baseline: `${before}${baselineGap}${after}${following}`,
+      completion: `${before}${currentGap}${after}${following}`,
+      expectedAnswer: currentGap,
+      expectedStrategy: "contextual_anchor",
+      readTruncated: false
+    };
+    const result = resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.strategy).toBe("middle_replacement");
+    expect(result.value.answer).toBe(currentGap);
+    expect(result.value.proof).toMatchObject({
+      kind: "middle_replacement",
+      baselineGapCharacters: baselineGap.length,
+      replacementCharacters: currentGap.length
+    });
+    expect(JSON.stringify(result.value.proof)).not.toContain("$u$");
+  });
+
+  it.each([
+    ["only a baseline formula", "\nupdated prose $u$\n"],
+    ["unscannable delimiters", "\n$$$$$$$$$\n"]
+  ])("fails closed for a replacement with %s", (_name, currentGap) => {
+    const before = "Synthetic working anchor with unique value 1234567890";
+    const baselineGap = "\nworking $u$\n";
+    const after = "Synthetic footer anchor with unique value abcdefghij";
+    const following = "\n\nSynthetic stable footer context with unique value 9876543210";
+    const testCase: BoundaryCase = {
+      id: "invalid-middle-replacement",
+      agent: "opencode",
+      baseline: `${before}${baselineGap}${after}${following}`,
+      completion: `${before}${currentGap}${after}${following}`,
+      expectedAnswer: "",
+      expectedStrategy: "contextual_anchor",
+      readTruncated: false
+    };
+
+    expect(resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret)).toEqual({
+      ok: false,
+      error: { code: "boundary_failed", retryable: false }
+    });
+  });
+
+  it("fails closed when the replacement forward anchor is ambiguous", () => {
+    const before = "Synthetic working anchor with unique value 1234567890";
+    const baselineGap = "\nworking\n";
+    const currentGap = "\ncompleted $$x+y$$\n";
+    const after = "Synthetic footer anchor with unique value abcdefghij";
+    const following = "\n\nSynthetic stable footer context with unique value 9876543210";
+    const testCase: BoundaryCase = {
+      id: "ambiguous-middle-replacement",
+      agent: "pi",
+      baseline: `${before}${baselineGap}${after}${following}`,
+      completion: `${before}${currentGap}${after}${following}\n${after}${following}`,
+      expectedAnswer: "",
+      expectedStrategy: "contextual_anchor",
+      readTruncated: false
+    };
+
+    expect(resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret)).toEqual({
+      ok: false,
+      error: { code: "boundary_failed", retryable: false }
+    });
+  });
+
   it.each([
     [
       "missing before anchor",

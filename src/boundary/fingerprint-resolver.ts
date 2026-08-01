@@ -3,7 +3,13 @@ import { Buffer } from "node:buffer";
 import { failure, success, type BoundaryProof, type BoundaryResult, type OperationResult } from "../core/contracts.js";
 import { HerdrMathError, serializeError } from "../core/errors.js";
 import { POLICY_LIMITS } from "../core/limits.js";
-import { assertFingerprintSecret, fingerprintDigest, fingerprintDigestsEqual } from "./fingerprint-digest.js";
+import { scanLatex } from "../scanner/scan-latex.js";
+import {
+  assertFingerprintSecret,
+  fingerprintDigest,
+  fingerprintDigestsEqual,
+  formulaFingerprintDigest
+} from "./fingerprint-digest.js";
 import {
   FINGERPRINT_SCHEMA_LIMITS,
   FINGERPRINT_SCHEMA_VERSION,
@@ -44,7 +50,13 @@ export function resolveAnswerFromFingerprint(
     if (middle.status === "resolved") {
       return success(result(current, middle.startOffset, middle.proof, currentDigest, readTruncated, middle.endOffset));
     }
-    if (middle.status === "conflict") {
+    const replacement = resolveMiddleReplacement(state, current, secret);
+    if (replacement.status === "resolved") {
+      return success(
+        result(current, replacement.startOffset, replacement.proof, currentDigest, readTruncated, replacement.endOffset)
+      );
+    }
+    if (middle.status === "conflict" || replacement.status === "conflict") {
       return failure(serializeError(new HerdrMathError(readTruncated ? "answer_truncated" : "boundary_failed")));
     }
 
@@ -96,6 +108,15 @@ type MiddleInsertionResult =
       proof: Extract<BoundaryProof, { kind: "middle_insertion" }>;
     };
 
+type MiddleReplacementResult =
+  | { status: "none" | "conflict" }
+  | {
+      status: "resolved";
+      startOffset: number;
+      endOffset: number;
+      proof: Extract<BoundaryProof, { kind: "middle_replacement" }>;
+    };
+
 function resolveMiddleInsertion(
   state: FingerprintStateV1,
   current: string,
@@ -118,11 +139,11 @@ function resolveMiddleInsertion(
       continue;
     }
 
-    const beforeMatches = matchingLines(before, lines, current, secret, true, () => {
+    const beforeMatches = matchingLines(before, lines, current, secret, "preceding", () => {
       candidatesExamined += 1;
       return candidatesExamined <= POLICY_LIMITS.anchorOccurrences;
     });
-    const afterMatches = matchingLines(after, lines, current, secret, false, () => {
+    const afterMatches = matchingInsertionAfterLines(after, lines, current, secret, () => {
       candidatesExamined += 1;
       return candidatesExamined <= POLICY_LIMITS.anchorOccurrences;
     });
@@ -173,29 +194,157 @@ function resolveMiddleInsertion(
   return { status: conflict ? "conflict" : "none" };
 }
 
+function resolveMiddleReplacement(
+  state: FingerprintStateV1,
+  current: string,
+  secret: Uint8Array
+): MiddleReplacementResult {
+  const anchors = state.baseline.tail_anchors
+    .filter((anchor): anchor is TailAnchorV1 & { end_offset: number } => anchor.end_offset !== undefined)
+    .sort((left, right) => left.end_offset - right.end_offset);
+  const lines = collectRecentLines(current, POLICY_LIMITS.boundaryCandidates);
+  let candidatesExamined = 0;
+  let conflict = false;
+
+  for (let index = 0; index < anchors.length - 1; index += 1) {
+    const before = anchors[index];
+    const after = anchors[index + 1];
+    if (
+      before?.next_anchor_gap_digest === undefined ||
+      before.next_anchor_gap_formula_digests === undefined ||
+      after?.forward_context_characters === undefined ||
+      after.forward_context_characters === 0 ||
+      after.forward_context_digest === undefined
+    ) {
+      continue;
+    }
+    if (fingerprintDigestsEqual(before.line_digest, after.line_digest)) {
+      conflict = true;
+      continue;
+    }
+
+    const beforeMatches = matchingLines(before, lines, current, secret, "preceding", () => {
+      candidatesExamined += 1;
+      return candidatesExamined <= POLICY_LIMITS.anchorOccurrences;
+    });
+    const afterMatches = matchingLines(after, lines, current, secret, "following", () => {
+      candidatesExamined += 1;
+      return candidatesExamined <= POLICY_LIMITS.anchorOccurrences;
+    });
+    if (candidatesExamined > POLICY_LIMITS.anchorOccurrences) return { status: "conflict" };
+    if (beforeMatches.length !== 1 || afterMatches.length !== 1) {
+      const bothSidesPresent = beforeMatches.length > 0 && afterMatches.length > 0;
+      if (bothSidesPresent) conflict = true;
+      continue;
+    }
+
+    const beforeMatch = beforeMatches[0];
+    const afterMatch = afterMatches[0];
+    if (beforeMatch === undefined || afterMatch === undefined || afterMatch.start < beforeMatch.end) {
+      conflict = true;
+      continue;
+    }
+    const baselineAfterStart = after.end_offset - after.line_characters;
+    const baselineGapCharacters = baselineAfterStart - before.end_offset;
+    if (baselineGapCharacters < 0) throw new HerdrMathError("state_corrupt");
+    const currentGap = current.slice(beforeMatch.end, afterMatch.start);
+    if (gapMatches(currentGap, before, secret)) continue;
+
+    let formulas: ReturnType<typeof scanLatex>;
+    try {
+      formulas = scanLatex(currentGap);
+    } catch {
+      conflict = true;
+      continue;
+    }
+    const baselineFormulaDigests = before.next_anchor_gap_formula_digests;
+    const hasNewFormula = formulas.some((formula) => {
+      const digest = formulaFingerprintDigest(formula, secret);
+      return !baselineFormulaDigests.some((baselineDigest) => fingerprintDigestsEqual(digest, baselineDigest));
+    });
+    if (!hasNewFormula) {
+      conflict = true;
+      continue;
+    }
+
+    return {
+      status: "resolved",
+      startOffset: beforeMatch.end,
+      endOffset: afterMatch.start,
+      proof: {
+        kind: "middle_replacement",
+        beforeMatchEndOffset: beforeMatch.end,
+        afterMatchStartOffset: afterMatch.start,
+        baselineGapCharacters,
+        replacementCharacters: currentGap.length,
+        baselineFormulaDigests
+      }
+    };
+  }
+  return { status: conflict ? "conflict" : "none" };
+}
+
+type AnchorMatchContext = "line" | "preceding" | "following";
+
+function matchingInsertionAfterLines(
+  anchor: TailAnchorV1,
+  lines: LineRange[],
+  current: string,
+  secret: Uint8Array,
+  consumeCandidate: () => boolean
+): LineRange[] {
+  const lineMatches = matchingLines(anchor, lines, current, secret, "line", consumeCandidate);
+  if (lineMatches.length <= 1 || anchor.forward_context_characters === undefined) return lineMatches;
+  return matchingLines(anchor, lines, current, secret, "following", consumeCandidate);
+}
+
 function matchingLines(
   anchor: TailAnchorV1,
   lines: LineRange[],
   current: string,
   secret: Uint8Array,
-  requireContext: boolean,
+  context: AnchorMatchContext,
   consumeCandidate: () => boolean
 ): LineRange[] {
   const matches: LineRange[] = [];
   for (const line of lines) {
     if (line.end - line.start !== anchor.line_characters) continue;
     if (!consumeCandidate()) break;
-    const matched = requireContext
-      ? anchorMatches(anchor, line, current, secret)
-      : fingerprintDigestsEqual(
-          fingerprintDigest("anchor-line", current.slice(line.start, line.end), secret),
-          anchor.line_digest
-        );
+    const lineMatched = fingerprintDigestsEqual(
+      fingerprintDigest("anchor-line", current.slice(line.start, line.end), secret),
+      anchor.line_digest
+    );
+    const matched =
+      lineMatched &&
+      (context === "line" ||
+        (context === "preceding" && anchorContextMatches(anchor, line, current, secret)) ||
+        (context === "following" && anchorForwardContextMatches(anchor, line, current, secret)));
     if (!matched) continue;
     matches.push(line);
     if (matches.length > 1) break;
   }
   return matches;
+}
+
+function anchorContextMatches(anchor: TailAnchorV1, line: LineRange, current: string, secret: Uint8Array): boolean {
+  if (line.start < anchor.context_characters) return false;
+  const context = current.slice(line.start - anchor.context_characters, line.start);
+  return fingerprintDigestsEqual(fingerprintDigest("anchor-context", context, secret), anchor.context_digest);
+}
+
+function anchorForwardContextMatches(
+  anchor: TailAnchorV1,
+  line: LineRange,
+  current: string,
+  secret: Uint8Array
+): boolean {
+  if (anchor.forward_context_characters === undefined || anchor.forward_context_digest === undefined) return false;
+  const end = line.end + anchor.forward_context_characters;
+  if (end > current.length) return false;
+  return fingerprintDigestsEqual(
+    fingerprintDigest("anchor-forward-context", current.slice(line.end, end), secret),
+    anchor.forward_context_digest
+  );
 }
 
 function gapMatches(gap: string, before: TailAnchorV1, secret: Uint8Array): boolean {
@@ -304,11 +453,7 @@ function resolveContextualAnchor(state: FingerprintStateV1, current: string, sec
 
 function anchorMatches(anchor: TailAnchorV1, line: LineRange, current: string, secret: Uint8Array): boolean {
   const lineDigest = fingerprintDigest("anchor-line", current.slice(line.start, line.end), secret);
-  if (!fingerprintDigestsEqual(lineDigest, anchor.line_digest) || line.start < anchor.context_characters) {
-    return false;
-  }
-  const context = current.slice(line.start - anchor.context_characters, line.start);
-  return fingerprintDigestsEqual(fingerprintDigest("anchor-context", context, secret), anchor.context_digest);
+  return fingerprintDigestsEqual(lineDigest, anchor.line_digest) && anchorContextMatches(anchor, line, current, secret);
 }
 
 function collectRecentLineEnds(input: string, limit: number): number[] {
@@ -379,6 +524,15 @@ function assertUsableFingerprint(state: FingerprintStateV1): void {
             anchor.end_offset < anchor.line_characters)) ||
         (anchor.next_anchor_gap_digest !== undefined &&
           (anchor.end_offset === undefined || !isFingerprintDigest(anchor.next_anchor_gap_digest))) ||
+        (anchor.forward_context_characters === undefined) !== (anchor.forward_context_digest === undefined) ||
+        (anchor.forward_context_characters !== undefined &&
+          (!isNonNegativeInteger(anchor.forward_context_characters) ||
+            anchor.forward_context_characters > FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters ||
+            !isFingerprintDigest(anchor.forward_context_digest))) ||
+        (anchor.next_anchor_gap_formula_digests !== undefined &&
+          (anchor.next_anchor_gap_digest === undefined ||
+            anchor.next_anchor_gap_formula_digests.length > FINGERPRINT_SCHEMA_LIMITS.maxGapFormulaDigests ||
+            anchor.next_anchor_gap_formula_digests.some((digest) => !isFingerprintDigest(digest)))) ||
         !isFingerprintDigest(anchor.line_digest) ||
         !isFingerprintDigest(anchor.context_digest)
     );
