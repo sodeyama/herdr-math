@@ -388,21 +388,32 @@ Example state shape:
 ```json
 {
   "schema_version": 1,
+  "session_key": "<digest>",
+  "workspace_id": "w1",
   "source_pane_id": "w1:p1",
   "agent": "codex",
+  "lifecycle_authority": "screen_detection",
+  "occupant_key": "<digest>",
+  "pane_revision": 120,
+  "event_sequence": 18,
   "generation": 42,
   "baseline": {
     "character_count": 8120,
+    "utf8_bytes": 8200,
     "line_count": 240,
     "digest": "<redacted>",
-    "checkpoints": [],
+    "prefix_checkpoints": [],
     "suffix_windows": [],
     "tail_anchors": []
   },
   "viewer_pane_id": "w1:p2",
-  "processed_digest": "<redacted>",
-  "created_at": "2026-08-01T00:00:00Z",
-  "expires_at": "2026-08-02T00:00:00Z"
+  "processed": {
+    "content_digest": "<redacted>",
+    "pane_revision": 121,
+    "processed_at": "2026-08-01T00:01:00.000Z"
+  },
+  "created_at": "2026-08-01T00:00:00.000Z",
+  "expires_at": "2026-08-02T00:00:00.000Z"
 }
 ```
 
