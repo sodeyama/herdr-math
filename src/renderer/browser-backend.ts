@@ -92,7 +92,14 @@ export class BrowserRendererBackend implements RendererBackend {
       if (sharpRemainingMs < 1000) throw new HerdrMathError("renderer_timeout", {}, true);
       const output = await sharp(screenshot, { limitInputPixels: renderContext.limits.imagePixels })
         .timeout({ seconds: Math.floor(sharpRemainingMs / 1000) })
-        .png({ adaptiveFiltering: true, compressionLevel: 9 })
+        .png({
+          adaptiveFiltering: true,
+          compressionLevel: 9,
+          palette: true,
+          quality: 100,
+          colours: 256,
+          dither: 0
+        })
         .toBuffer({ resolveWithObject: true });
       return {
         buffer: output.data,

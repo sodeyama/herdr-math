@@ -79,6 +79,26 @@ describe("bounded local renderer", () => {
     expect(backend.hasOpenResources()).toBe(false);
   }, 30_000);
 
+  it("keeps a tall transparent response within the PNG transport budget", async () => {
+    const prose = Array.from(
+      { length: 28 },
+      (_, index) =>
+        `${index + 1}. This synthetic conclusion paragraph explains a bounded local rendering behavior with enough detail to wrap across a narrow viewer while preserving readable prose.`
+    ).join("\n\n");
+    const text = `${prose}\n\n$$a^2+b^2=c^2$$\n\n$$x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}$$\n\n$$e^{i\\pi}+1=0$$`;
+    const result = await renderResponse(text, scanLatex(text));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const metadata = await sharp(result.value.buffer).metadata();
+    const alpha = (await sharp(result.value.buffer).ensureAlpha().stats()).channels[3];
+    expect(metadata.isPalette).toBe(true);
+    expect(result.value.height).toBeGreaterThan(2_000);
+    expect(result.value.bytes).toBeLessThanOrEqual(POLICY_LIMITS.rawPngBytes);
+    expect(alpha?.min).toBe(0);
+    expect(alpha?.max).toBe(255);
+  }, 30_000);
+
   it("rejects malformed and link-capable input before browser startup without leaking source", async () => {
     const launch = vi.spyOn(chromium, "launch");
     const failures = [...corpus.invalidCases, ...corpus.securityCases];

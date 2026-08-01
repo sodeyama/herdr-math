@@ -109,7 +109,14 @@ async function cropFrame(image: RenderedImage, top: number, height: number): Pro
   try {
     const output = await sharp(image.buffer, { limitInputPixels: POLICY_LIMITS.imagePixels })
       .extract({ left: 0, top, width: image.width, height })
-      .png({ adaptiveFiltering: true, compressionLevel: 9 })
+      .png({
+        adaptiveFiltering: true,
+        compressionLevel: 9,
+        palette: true,
+        quality: 100,
+        colours: 256,
+        dither: 0
+      })
       .toBuffer({ resolveWithObject: true });
     return {
       buffer: output.data,
