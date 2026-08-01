@@ -38,6 +38,7 @@ function sampleState(): FingerprintStateV1 {
       tail_anchors: [
         {
           end_offset: 480,
+          next_anchor_gap_digest: digest,
           line_characters: 40,
           line_digest: digest,
           context_characters: 256,

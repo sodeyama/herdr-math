@@ -101,7 +101,7 @@ function isBaseline(value: unknown): boolean {
         hasKeys(
           item,
           ["line_characters", "line_digest", "context_characters", "context_digest", "line_index_from_end"],
-          ["end_offset"]
+          ["end_offset", "next_anchor_gap_digest"]
         ) &&
         isCount(
           item.line_characters,
@@ -112,6 +112,8 @@ function isBaseline(value: unknown): boolean {
           (isPositiveCount(item.end_offset, value.character_count as number) &&
             item.end_offset >= item.line_characters)) &&
         isFingerprintDigest(item.line_digest) &&
+        (item.next_anchor_gap_digest === undefined ||
+          (item.end_offset !== undefined && isFingerprintDigest(item.next_anchor_gap_digest))) &&
         isCount(item.context_characters, FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters) &&
         isFingerprintDigest(item.context_digest) &&
         isCount(item.line_index_from_end, FINGERPRINT_SCHEMA_LIMITS.maxTailAnchors - 1)

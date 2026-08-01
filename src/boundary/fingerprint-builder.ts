@@ -138,6 +138,18 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
     }
     lineEnd = newline;
   }
+
+  const orderedAnchors = [...anchors].sort((left, right) => {
+    return (left.end_offset ?? 0) - (right.end_offset ?? 0);
+  });
+  for (let index = 0; index < orderedAnchors.length - 1; index += 1) {
+    const before = orderedAnchors[index];
+    const after = orderedAnchors[index + 1];
+    if (before?.end_offset === undefined || after?.end_offset === undefined) continue;
+    const afterStart = after.end_offset - after.line_characters;
+    if (afterStart < before.end_offset) continue;
+    before.next_anchor_gap_digest = fingerprintDigest("anchor-gap", input.slice(before.end_offset, afterStart), secret);
+  }
   return anchors;
 }
 

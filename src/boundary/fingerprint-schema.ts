@@ -28,6 +28,7 @@ export interface SuffixWindowV1 {
 
 export interface TailAnchorV1 {
   end_offset?: number;
+  next_anchor_gap_digest?: FingerprintDigest;
   line_characters: number;
   line_digest: FingerprintDigest;
   context_characters: number;

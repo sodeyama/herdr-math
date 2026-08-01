@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildBaselineFingerprint, deriveStateKey } from "../../src/boundary/fingerprint-builder.js";
+import { fingerprintDigest } from "../../src/boundary/fingerprint-digest.js";
 import { isFingerprintDigest } from "../../src/boundary/fingerprint-schema.js";
 import { loadOrCreateFingerprintSecret } from "../../src/boundary/fingerprint-secret.js";
 import { HerdrMathError, serializeError } from "../../src/core/errors.js";
@@ -127,6 +128,22 @@ describe("baseline fingerprint builder", () => {
       first.baseline.tail_anchors[0]?.context_digest
     );
     expect(first.baseline.tail_anchors[0]?.end_offset).toBe(first.baseline.character_count);
+  });
+
+  it("binds eligible adjacent anchors to their intervening baseline gap", () => {
+    const secret = Buffer.alloc(32, 6);
+    const before = "Synthetic prompt anchor with unique value 1234567890";
+    const gap = "\nstable alternate-screen status\n";
+    const after = "Synthetic footer anchor with unique value abcdefghij";
+    const state = buildBaselineFingerprint(`${before}${gap}${after}`, metadata(), secret);
+    const beforeAnchor = state.baseline.tail_anchors.find((anchor) => anchor.end_offset === before.length);
+    const afterAnchor = state.baseline.tail_anchors.find(
+      (anchor) => anchor.end_offset === before.length + gap.length + after.length
+    );
+
+    expect(beforeAnchor?.next_anchor_gap_digest).toBe(fingerprintDigest("anchor-gap", gap, secret));
+    expect(afterAnchor?.next_anchor_gap_digest).toBeUndefined();
+    expect(JSON.stringify(state)).not.toContain(gap);
   });
 
   it("derives path-safe non-reversible state keys", () => {
