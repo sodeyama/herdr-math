@@ -45,7 +45,7 @@
   - Acceptance tests: AT-008, AT-009, AT-706, AT-709
   - Commit: `chore(repo): add quality and build tooling`
 
-- [ ] **T-104: Capture and validate the Herdr manifest contract**
+- [x] **T-104: Capture and validate the Herdr manifest contract**
   - Scope: Export the schema from the proposed minimum Herdr version; confirm that `pane.agent_status_changed` carries required workspace id/pane id/status and an optional agent hint; confirm manifest fields, canonical `claude`/`codex`/`pi`/`opencode` ids, lifecycle authorities, and minimum integration versions; add schema-compatible public fixtures without machine paths.
   - Dependencies: T-103
   - Acceptance tests: AT-002, AT-003, AT-100, AT-112, AT-113
