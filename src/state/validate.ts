@@ -107,7 +107,8 @@ function isBaseline(value: unknown): boolean {
             "forward_context_digest",
             "next_anchor_gap_digest",
             "next_anchor_gap_formula_digests",
-            "prefix_formula_digests"
+            "prefix_formula_digests",
+            "suffix_formula_digests"
           ]
         ) &&
         isCount(
@@ -131,6 +132,9 @@ function isBaseline(value: unknown): boolean {
         (item.prefix_formula_digests === undefined ||
           (isBoundedArray(item.prefix_formula_digests, FINGERPRINT_SCHEMA_LIMITS.maxGapFormulaDigests) &&
             item.prefix_formula_digests.every(isFingerprintDigest))) &&
+        (item.suffix_formula_digests === undefined ||
+          (isBoundedArray(item.suffix_formula_digests, FINGERPRINT_SCHEMA_LIMITS.maxGapFormulaDigests) &&
+            item.suffix_formula_digests.every(isFingerprintDigest))) &&
         isCount(item.context_characters, FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters) &&
         isFingerprintDigest(item.context_digest) &&
         isCount(item.line_index_from_end, POLICY_LIMITS.paneReadLines - 1)

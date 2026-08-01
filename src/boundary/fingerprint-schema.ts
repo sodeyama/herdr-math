@@ -34,6 +34,7 @@ export interface TailAnchorV1 {
   next_anchor_gap_digest?: FingerprintDigest;
   next_anchor_gap_formula_digests?: FingerprintDigest[];
   prefix_formula_digests?: FingerprintDigest[];
+  suffix_formula_digests?: FingerprintDigest[];
   line_characters: number;
   line_digest: FingerprintDigest;
   context_characters: number;

@@ -165,6 +165,10 @@ describe("baseline fingerprint builder", () => {
     expect(afterAnchor?.prefix_formula_digests).toEqual([
       formulaFingerprintDigest({ latex: "x+y", display: false }, secret)
     ]);
+    expect(beforeAnchor?.suffix_formula_digests).toEqual([
+      formulaFingerprintDigest({ latex: "x+y", display: false }, secret)
+    ]);
+    expect(afterAnchor?.suffix_formula_digests).toEqual([]);
     expect(afterAnchor?.forward_context_characters).toBe(following.length);
     expect(afterAnchor?.forward_context_digest).toBe(fingerprintDigest("anchor-forward-context", following, secret));
     expect(JSON.stringify(state)).not.toContain("x+y");

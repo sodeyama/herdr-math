@@ -132,6 +132,10 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
         baselineFormulas === undefined
           ? undefined
           : [...new Set(baselineFormulas.filter(({ end }) => end <= lineStart).map(({ digest }) => digest))];
+      const suffixFormulaDigests =
+        baselineFormulas === undefined
+          ? undefined
+          : [...new Set(baselineFormulas.filter(({ start }) => start >= lineEnd).map(({ digest }) => digest))];
       anchors.push({
         end_offset: lineEnd,
         forward_context_characters: forwardContext.length,
@@ -141,7 +145,8 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
         context_characters: context.length,
         context_digest: fingerprintDigest("anchor-context", context, secret),
         line_index_from_end: lineIndex,
-        ...(prefixFormulaDigests === undefined ? {} : { prefix_formula_digests: prefixFormulaDigests })
+        ...(prefixFormulaDigests === undefined ? {} : { prefix_formula_digests: prefixFormulaDigests }),
+        ...(suffixFormulaDigests === undefined ? {} : { suffix_formula_digests: suffixFormulaDigests })
       });
     }
     if (newline === -1) {
@@ -177,6 +182,7 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
 function fingerprintBaselineFormulas(input: string, secret: Uint8Array) {
   try {
     return scanLatex(input).map((formula) => ({
+      start: formula.start,
       end: formula.end,
       digest: formulaFingerprintDigest(formula, secret)
     }));
