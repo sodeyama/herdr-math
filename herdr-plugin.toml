@@ -1,0 +1,37 @@
+id = "io.github.sodeyama.herdr-math"
+name = "Herdr Math"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+description = "Render LaTeX from AI agent responses in a side pane."
+platforms = ["macos"]
+
+[[build]]
+command = ["npm", "ci"]
+
+[[build]]
+command = ["npm", "run", "build"]
+
+[[startup]]
+command = ["node", "dist/startup.js"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["node", "dist/on-agent-status.js"]
+
+[[events]]
+on = "pane.closed"
+command = ["node", "dist/on-pane-closed.js"]
+
+[[actions]]
+id = "diagnose"
+title = "Diagnose Herdr Math"
+description = "Report local Herdr Math capability status."
+contexts = ["pane"]
+command = ["node", "dist/diagnose.js"]
+
+[[panes]]
+id = "viewer"
+title = "Math"
+description = "Display equations detected in an AI agent response."
+placement = "split"
+command = ["node", "dist/viewer.js"]
