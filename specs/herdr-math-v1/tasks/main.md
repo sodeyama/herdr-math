@@ -133,7 +133,7 @@
   - Acceptance tests: AT-207, AT-208, AT-608, AT-609
   - Commit: `test(boundary): enforce privacy and complexity limits`
 
-- [ ] **T-307: Collect eligible anchors across alternate-screen tails**
+- [x] **T-307: Collect eligible anchors across alternate-screen tails**
   - Scope: Scan the bounded baseline until the nearest eligible anchor-count limit is filled, without allowing blank or short tail rows to consume that limit.
   - Dependencies: T-306
   - Acceptance tests: AT-208, AT-210
