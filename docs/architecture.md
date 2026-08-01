@@ -260,6 +260,9 @@ Required methods include:
 
 The client does not silently fall back to a user-specific socket.
 
+The socket request for an unwrapped recent pane read uses the protocol enum `recent_unwrapped`. The hyphenated
+`recent-unwrapped` spelling belongs to the Herdr CLI and is not sent over the socket.
+
 ### 8. Viewer manager
 
 The viewer manager owns the one-to-one mapping between a source pane and a viewer pane.

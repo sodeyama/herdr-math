@@ -161,6 +161,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given a supported source pane in `working`
 - When the event is processed
 - Then one fingerprint generation is atomically stored for that pane and no raw pane text is written.
+- And the socket request uses the protocol enum `recent_unwrapped`, not the CLI spelling `recent-unwrapped`.
 
 ### AT-104 - Duplicate working is idempotent
 
