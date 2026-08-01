@@ -255,7 +255,7 @@
   - Acceptance tests: AT-208, AT-404, AT-409, AT-410
   - Commit: `test(perf): establish worker and renderer budgets`
 
-- [ ] **T-705: Run the complete automated release suite without retry**
+- [x] **T-705: Run the complete automated release suite without retry**
   - Scope: Execute clean install, checks, unit, contract, integration, render, build, static security, license, and artifact scans; save bounded evidence.
   - Dependencies: T-702, T-703, T-704
   - Acceptance tests: Every automated P0 case
