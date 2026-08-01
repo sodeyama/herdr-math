@@ -370,6 +370,8 @@ Lock records contain only:
 
 Stale-lock recovery verifies both age and process liveness where the platform supports it. A PID match alone is insufficient because ids can be reused.
 
+Startup cleanup inspects locks before state. A young, live, malformed, or liveness-uncertain lock protects the matching pane state and temporary files. Cleanup removes only identity-checked dead stale locks, expired fingerprint state, and allowlisted stale temporary files; corrupt, symbolic-link, and unknown artifacts remain untouched for fail-closed handling.
+
 State updates use write-to-temporary-file, `fsync` where practical, and atomic rename. Temporary files are restricted to `HERDR_PLUGIN_STATE_DIR` and removed by the startup cleanup hook after an age threshold.
 
 ## State Layout
@@ -456,6 +458,8 @@ Prototype values provide the initial defaults, subject to release validation:
 | Herdr method timeout | 2 seconds | `pane.get` and `pane.read` |
 | Completion debounce | 500 ms | Completion worker |
 | Stable completion reads | 3 attempts, 100 ms apart | Completion worker |
+| Startup sessions examined | 256 | Startup cleanup |
+| Startup directory entries | 4,096 per directory | Startup cleanup |
 | Stale lock age | 120 seconds | State store |
 | Fingerprint expiry | 24 hours | State store |
 

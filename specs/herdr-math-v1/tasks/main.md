@@ -191,7 +191,7 @@
   - Acceptance tests: AT-103 through AT-113, AT-200 through AT-208, AT-511, AT-601
   - Commit: `feat(events): process agent completion hooks`
 
-- [ ] **T-505: Implement one-shot startup cleanup**
+- [x] **T-505: Implement one-shot startup cleanup**
   - Scope: Remove expired state, stale temporary files, and recoverable locks without launching a daemon or modifying live state.
   - Dependencies: T-304, T-501
   - Acceptance tests: AT-602, AT-603, AT-606, AT-610
