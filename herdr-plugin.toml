@@ -1,6 +1,7 @@
 id = "io.github.sodeyama.herdr-math"
 name = "Herdr Math"
 version = "0.1.0"
+# Verified v0.1 candidate: Herdr 0.7.5 on macOS arm64. See docs/compatibility.md.
 min_herdr_version = "0.7.5"
 description = "Render LaTeX from AI agent responses in a side pane."
 platforms = ["macos"]

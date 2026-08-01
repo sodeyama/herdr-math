@@ -306,7 +306,7 @@
   - Acceptance tests: AT-700, and AT-701 if Linux is proposed
   - Commit: `docs(compat): record platform release matrix`
 
-- [ ] **T-806: Finalize minimum Herdr version and manifest platforms**
+- [x] **T-806: Finalize minimum Herdr version and manifest platforms**
   - Scope: Set values only from T-801 through T-805 evidence and document verified, expected, and unsupported combinations.
   - Dependencies: T-801, T-802, T-803, T-805
   - Acceptance tests: AT-002, AT-003, AT-700 through AT-705
@@ -380,5 +380,5 @@
 
 ## Current Next Task
 
-Continue with **T-806**. T-804 remains an optional P1 compatibility expansion and does not block the initial
+Continue with **T-901**. T-804 remains an optional P1 compatibility expansion and does not block the initial
 Ghostty-only release scope.

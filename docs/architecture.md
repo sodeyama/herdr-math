@@ -51,15 +51,15 @@ Herdr owns plugin installation, event dispatch, process launch, pane layout, soc
 
 ## Manifest Contract
 
-The planned manifest shape is:
+The validated v0.1 manifest shape is:
 
 ```toml
 id = "io.github.sodeyama.herdr-math"
 name = "Herdr Math"
 version = "0.1.0"
-min_herdr_version = "<validated minimum>"
+min_herdr_version = "0.7.5"
 description = "Render LaTeX from AI agent responses in a side pane"
-platforms = ["<release-gated platforms>"]
+platforms = ["macos"]
 
 [[build]]
 command = ["npm", "ci"]
@@ -590,7 +590,9 @@ The release matrix records each dimension independently:
 | Named session | State namespace and restart test |
 | Remote attach | Explicitly tested or documented as unsupported |
 
-The prototype provides initial evidence only for Herdr 0.7.5, macOS, and Ghostty 1.3.1 in a local session.
+The current implementation is verified with Herdr 0.7.5 on macOS arm64 and Ghostty 1.3.1. Named-session restart
+and default-session isolation are also verified. See [Compatibility](compatibility.md) for exact release-candidate
+and unverified combinations.
 
 ## Test Architecture
 
@@ -606,18 +608,17 @@ The prototype provides initial evidence only for Herdr 0.7.5, macOS, and Ghostty
 
 Every acceptance-test id in the specification maps to at least one automated or recorded manual test.
 
-## Open Decisions
+## V0.1 Compatibility Decisions
 
-The following decisions must be closed during the implementation plan, not silently assumed:
+- Node.js 22 or later is required; v0.1 does not ship a standalone binary.
+- Herdr 0.7.5 is the verified minimum and protocol 17 is the recorded contract.
+- The manifest declares macOS; arm64 is the only verified architecture.
+- Ghostty 1.3.1 is the only verified outer terminal.
+- V0.1 has no manual `render-current` action.
+- Remote attach graphics are unverified and unsupported as a v0.1 claim.
 
-- Exact Node.js support range or whether to ship a standalone binary later
-- Minimum Herdr version after manifest event-hook validation
-- First-release platform list
-- First-release outer-terminal matrix
-- Whether a manual `render-current` action belongs in v0.1
-- Whether remote attach can display the graphics layer reliably
-
-Changing an open decision requires updating the plan, tests, user documentation, and release checklist together.
+Changing one of these decisions requires updating the plan, tests, [compatibility matrix](compatibility.md), user
+documentation, and release checklist together.
 
 ## Primary References
 

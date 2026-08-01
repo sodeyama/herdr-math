@@ -47,7 +47,7 @@ The canonical v1 specification is split into three synchronized documents:
 
 ## Compatibility Direction
 
-The prototype was verified with Herdr 0.7.5 on macOS using Ghostty 1.3.1 and Herdr's experimental Kitty graphics support. The first release will declare only the platforms and terminals that pass the release matrix.
+The current 0.1.0 development build is verified with Herdr 0.7.5 on macOS arm64 using Ghostty 1.3.1 and Herdr's experimental Kitty graphics support. The first release will declare only combinations that pass the release matrix. See [Compatibility](docs/compatibility.md) for verified and unverified combinations.
 
 Herdr Math does not call Ghostty APIs. It uses Herdr's plugin and pane graphics APIs; the attached outer terminal must support the image path used by Herdr.
 
