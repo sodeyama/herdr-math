@@ -44,6 +44,7 @@
     "postinstall": "npm run install:browser",
     "security:check": "node scripts/security-check.mjs",
     "test": "vitest run",
+    "test:performance": "vitest run tests/integration/performance.spec.ts --reporter=verbose",
     "typecheck": "tsc --noEmit",
     "validate:manifest": "npm run build --silent && node dist/manifest/validate-cli.js"
   },
