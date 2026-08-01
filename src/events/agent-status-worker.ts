@@ -1,5 +1,9 @@
 import { buildBaselineFingerprint, deriveStateKey } from "../boundary/fingerprint-builder.js";
-import { fingerprintDigest } from "../boundary/fingerprint-digest.js";
+import {
+  fingerprintDigest,
+  fingerprintDigestsEqual,
+  formulaFingerprintDigest
+} from "../boundary/fingerprint-digest.js";
 import type { FingerprintStateV1, LifecycleAuthority, SupportedAgent } from "../boundary/fingerprint-schema.js";
 import { resolveAnswerFromFingerprint } from "../boundary/fingerprint-resolver.js";
 import { failure, success, type OperationResult, type RenderedImage } from "../core/contracts.js";
@@ -312,6 +316,13 @@ async function processCompletion(
   let formulas: ReturnType<typeof scanLatex>;
   try {
     formulas = scanLatex(boundary.value.answer);
+    if (boundary.value.proof.kind === "middle_replacement") {
+      const baselineFormulaDigests = boundary.value.proof.baselineFormulaDigests;
+      formulas = formulas.filter((formula) => {
+        const digest = formulaFingerprintDigest(formula, dependencies.secret);
+        return !baselineFormulaDigests.some((baselineDigest) => fingerprintDigestsEqual(digest, baselineDigest));
+      });
+    }
   } catch (error) {
     return failure(serializeError(error));
   }

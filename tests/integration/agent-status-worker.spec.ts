@@ -132,6 +132,27 @@ describe("agent status worker", () => {
     expect(rig.renders).toEqual([[{ latex: "x^2+y^2=z^2", display: true }]]);
   });
 
+  it("publishes only new formulas from an alternate-screen replacement", async () => {
+    const rig = await createRig({
+      agent: "opencode",
+      agent_session: { source: "herdr:opencode", agent: "opencode", kind: "id", value: "replacement-session" }
+    });
+    const before = "Synthetic working anchor with unique value 1234567890";
+    const baselineGap = "\nworking $u$\n";
+    const after = "Synthetic footer anchor with unique value abcdefghij";
+    const following = "\n\nSynthetic stable footer context with unique value 9876543210";
+    rig.server.setPaneOutput("w1:p1", `${before}${baselineGap}${after}${following}`);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+
+    const replacement = "\ncompleted $u$ and $$x^2+y^2=z^2$$\n";
+    rig.server.setPaneOutput("w1:p1", `${before}${replacement}${after}${following}`);
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "idle"))).toMatchObject({
+      ok: true,
+      value: { kind: "image_published", formulaCount: 1 }
+    });
+    expect(rig.renders).toEqual([[{ latex: "x^2+y^2=z^2", display: true }]]);
+  });
+
   it("processes a later turn when the agent sequence advances without a pane revision change", async () => {
     const rig = await createRig({ revision: 4, state_change_seq: 10 });
     const firstBaseline = "First baseline for a stable pane metadata revision.";
