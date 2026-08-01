@@ -241,7 +241,7 @@
   - Acceptance tests: AT-507, AT-508, AT-608, AT-609, AT-705
   - Commit: `feat(diagnostics): explain local capability failures`
 
-- [ ] **T-605: Isolate visible final responses**
+- [x] **T-605: Isolate visible final responses**
   - Scope: Read bounded matching plain-text and ANSI completion snapshots, parse only safe terminal style state, add synthetic Claude Code, Codex, Pi, and OpenCode presentation fixtures derived from redacted runtime structure, exclude prompts/reasoning/tools/progress/footer chrome, normalize terminal soft wraps, and fail closed when the final-response boundary or snapshot equivalence is unprovable.
   - Dependencies: T-504, T-701
   - Acceptance tests: AT-309, AT-310, AT-511, AT-608, AT-609
