@@ -153,7 +153,7 @@
   - Acceptance tests: AT-410, AT-708
   - Commit: `docs(renderer): select the v1 rendering backend`
 
-- [ ] **T-404: Implement the backend-neutral renderer contract**
+- [x] **T-404: Implement the backend-neutral renderer contract**
   - Scope: Add local assets, strict trust policy, remote-resource denial, count/length/timeout/dimension/byte limits, error mapping, and deterministic resource cleanup.
   - Dependencies: T-403
   - Acceptance tests: AT-400 through AT-409
