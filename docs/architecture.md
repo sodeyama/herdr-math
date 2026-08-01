@@ -264,7 +264,7 @@ The client does not silently fall back to a user-specific socket.
 
 The viewer manager owns the one-to-one mapping between a source pane and a viewer pane.
 
-The source token is a domain-separated SHA-256 digest of the Herdr session identity and source pane id. The raw source pane id is not copied into presentation metadata. The managed viewer validates `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ENTRYPOINT_ID`, its pane and workspace ids, and the 64-character source token before reporting the English `Herdr Math` title and the `herdr_math_owner` and `herdr_math_source` tokens. Metadata registration has a two-second timeout. After registration, the viewer does not poll; it remains attached to its Herdr pane until stdin closes or Herdr sends `SIGHUP`, `SIGINT`, or `SIGTERM`.
+The source token is a domain-separated SHA-256 digest of the Herdr session identity and source pane id. The raw source pane id is not copied into presentation metadata. The managed viewer validates `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ENTRYPOINT_ID`, its pane and workspace ids, and the 64-character source token before reporting the English `Herdr Math` title and the `herdr_math_owner` and `herdr_math_source` tokens. Herdr acknowledges `pane.report_metadata` with `ok`; the client then reads the pane and validates the reported ownership metadata and workspace. Metadata registration and verification each have a two-second timeout. After registration, the viewer does not poll; it remains attached to its Herdr pane until stdin closes or Herdr sends `SIGHUP`, `SIGINT`, or `SIGTERM`.
 
 Discovery order:
 

@@ -477,6 +477,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - When completion is processed
 - Then one right-side plugin split is opened with focus disabled and receives the image.
 - And the split request uses `target_pane_id` without `workspace_id`, then validates the workspace returned by Herdr.
+- And after metadata reporting returns `ok`, the plugin re-reads the viewer pane and validates its ownership metadata.
 
 ### AT-501 - Viewer reuse
 
