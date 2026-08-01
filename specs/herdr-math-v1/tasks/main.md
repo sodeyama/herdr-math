@@ -205,7 +205,7 @@
 
 ## Phase 6 - Viewer and Graphics
 
-- [ ] **T-601: Implement the viewer entrypoint and metadata**
+- [x] **T-601: Implement the viewer entrypoint and metadata**
   - Scope: Add the bounded Herdr-managed viewer process, English title, ownership metadata, source-pane token, and safe exit behavior.
   - Dependencies: T-105, T-502
   - Acceptance tests: AT-500, AT-506, AT-510, AT-706
