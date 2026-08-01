@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Fail-closed answer-boundary fingerprints for appended and alternate-screen responses.
 - Conservative `$...$` and `$$...$$` scanning.
 - Local KaTeX, Chromium, and Sharp PNG rendering with network denial and strict limits.
+- Clean final-response presentation with escaped prose, rendered math, transparent output, and matched text sizing.
 - One reusable Herdr-owned viewer per source pane with focus preservation.
 - Session-scoped atomic state, stale-lock cleanup, diagnostics, and pane-close recovery.
 - Automated unit, contract, integration, rendering, performance, privacy, security, and manifest gates.
@@ -25,4 +26,3 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Remote resources, trusted links, TeX execution, shell evaluation, and input-selected executable paths are denied.
 
 No version has been released. The `0.1.0` heading will be added only when the release commit is prepared.
-

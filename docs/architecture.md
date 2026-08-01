@@ -17,9 +17,10 @@ V1 adopts the following decisions:
 5. The working-state baseline is represented by cryptographic boundary fingerprints.
 6. Rendering occurs fully on the local machine with no executable TeX engine.
 7. One Herdr-managed viewer pane is owned per source pane.
-8. Images are replaced with `pane.graphics.set` only after complete validation.
-9. Ambiguous answer boundaries, unsupported graphics, and invalid formulas fail closed.
-10. V1 compatibility claims are restricted to the release matrix that has real runtime evidence.
+8. The visible final response is composed as escaped prose and rendered math in source order.
+9. Images are replaced with `pane.graphics.set` only after complete validation.
+10. Ambiguous answer boundaries, unsupported graphics, and invalid formulas fail closed.
+11. V1 compatibility claims are restricted to the release matrix that has real runtime evidence.
 
 ## System Context
 
@@ -35,7 +36,8 @@ Herdr server
 Herdr Math event worker
     |-- reads current pane through the Herdr socket API
     |-- reads/writes fingerprint state in HERDR_PLUGIN_STATE_DIR
-    |-- scans only a proven answer delta
+    |-- isolates the visible final response from matching text and ANSI snapshots
+    |-- composes escaped prose and rendered math from the proven response
     |-- invokes the local renderer
     |-- opens or finds the owned viewer pane
     `-- sends a validated PNG through pane.graphics.set
@@ -216,7 +218,17 @@ The scanner is deterministic, linear-time for bounded input, and independent of 
 
 ### 6. Renderer
 
-The renderer accepts a bounded array of formulas and returns:
+The renderer accepts a bounded response document and returns:
+
+```ts
+type RendererDocumentSegment =
+  | { kind: "text"; text: string }
+  | { kind: "math"; latex: string; display: boolean };
+```
+
+Text segments are HTML-escaped. Math segments are created only from scanner-proven source offsets, so prose and formulas retain their original order. This is not a general Markdown renderer.
+
+The backend returns:
 
 ```ts
 type RenderedImage = {
@@ -236,7 +248,8 @@ Required properties:
 - Explicit untrusted-input mode
 - Deterministic layout for a fixed version, font set, and input
 - Hard timeout and image-size limits
-- Opaque white background for deterministic v0.1 output
+- Transparent background with no opaque page or formula card
+- One inherited base font size across prose and KaTeX
 - Stable error mapping
 
 V0.1 uses KaTeX, Playwright Chromium headless shell, and Sharp. The backend remains behind this interface so event, state, and viewer modules do not depend on browser details. [ADR 0001](decisions/0001-v1-renderer.md) records the comparison, security boundary, packaging cost, and compatibility limit.

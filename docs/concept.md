@@ -2,24 +2,24 @@
 
 ## Summary
 
-Herdr Math is a Herdr plugin that turns LaTeX equations in completed AI-agent responses into readable, locally rendered math in a side pane.
+Herdr Math is a Herdr plugin that presents the visible conclusion of a completed AI-agent response as clean prose and locally rendered math in a side pane.
 
 The plugin is designed for people who use coding agents inside terminal multiplexers and regularly discuss mathematics, statistics, machine learning, optimization, physics, or technical documentation. Those conversations often contain `$...$` and `$$...$$` expressions that remain raw terminal text. The source is useful for copying, but it is slower to read than typeset notation.
 
-Herdr Math keeps the original answer untouched and opens a separate visual surface for the equations.
+Herdr Math keeps the original answer untouched and opens a separate visual surface for the conclusion, including its explanatory message and equations.
 
 ## Product Promise
 
-> Stay in the terminal, keep the original answer, and read the math as rendered notation.
+> Stay in the terminal, keep the original answer, and read its conclusion with rendered notation.
 
 The target experience is automatic:
 
 1. A supported agent starts working in a Herdr pane.
 2. Herdr Math records a privacy-preserving baseline for that pane.
 3. The agent reaches a completed state.
-4. Herdr Math identifies only the newly completed answer.
-5. It scans that answer for supported math delimiters.
-6. If equations exist, it renders them locally and updates a right-side viewer.
+4. Herdr Math isolates only the visible final response, excluding reasoning, tool output, progress, prompts, and terminal chrome.
+5. It scans that response for supported math delimiters.
+6. If equations exist, it renders the response prose and math locally and updates a right-side viewer.
 7. The agent pane keeps focus, and later answers reuse the same viewer.
 
 If no equation exists, nothing opens and the current viewer is not changed.
@@ -30,7 +30,7 @@ The original terminal transcript remains the canonical conversation record. Rewr
 
 A separate pane provides four useful properties:
 
-- The raw answer and rendered equation remain visible together.
+- The raw answer and the cleanly formatted conclusion remain visible together.
 - The source pane does not need to understand images.
 - Viewer ownership is explicit and reversible.
 - The plugin can update or close its surface without modifying agent output.
@@ -79,6 +79,8 @@ The repository name is `herdr-math`. The public description should include the m
 - Inline math delimited by `$...$`
 - Display math delimited by `$$...$$`
 - Multiple equations in one completed answer
+- Visible final-response prose and equations in source order
+- Transparent output with one base size across prose and math
 - A reusable viewer split for each source pane
 - Local PNG generation
 - Safe replacement of the existing viewer image
@@ -214,7 +216,7 @@ V1 is successful when a new user can:
 1. Install the plugin from a tagged GitHub revision using one Herdr command.
 2. Enable the documented Herdr graphics setting.
 3. Start a supported agent inside Herdr.
-4. Receive a math answer and see one correctly rendered companion pane.
+4. Receive a math answer and see its clean final message and rendered equations in one companion pane.
 5. Continue the conversation and see that pane update without focus loss or split duplication.
 6. Inspect clear local diagnostics when the environment is unsupported.
 7. Uninstall the plugin without losing unrelated Herdr configuration or panes.
@@ -229,7 +231,7 @@ Future versions may evaluate:
 - SVG-native rendering
 - Copy actions for equation source
 - Accessible text descriptions
-- Theme-aware rendering
+- User-configurable foreground colors
 - User-controlled placement and sizing
 - Per-agent or per-workspace configuration
 - Linux and Windows support

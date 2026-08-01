@@ -7,7 +7,7 @@
 
 ## Context
 
-Herdr Math needs to turn a bounded list of untrusted LaTeX formulas into one local PNG. The renderer must preserve formula coverage, remain offline after installation, reject unsafe input, clean up deterministically, and fit the public plugin installation model.
+Herdr Math needs to turn a bounded final-response document containing untrusted prose and LaTeX into one local PNG. The renderer must preserve source order and formula coverage, remain offline after installation, reject unsafe input, clean up deterministically, and fit the public plugin installation model.
 
 T-402 compared two fixed-version candidates against the same release corpus:
 
@@ -22,16 +22,18 @@ V1 will use **KaTeX, Playwright Chromium headless shell, and Sharp** behind the 
 
 The renderer will:
 
-- parse each formula with KaTeX using `throwOnError: true`, `trust: false`, strict command handling, bounded expansion, and fresh macros per render;
+- escape prose as text and parse each formula with KaTeX using `throwOnError: true`, `trust: false`, strict command handling, bounded expansion, and fresh macros per render;
 - reject URL-capable and HTML-extension commands in a shared input gate before browser startup;
 - load only local KaTeX CSS and font assets;
 - abort browser HTTP and HTTPS requests;
-- compose all formulas into one page with fixed padding and an opaque white background;
+- compose prose, inline math, and display math in source order with fixed padding;
+- use one inherited base font size for prose and KaTeX;
+- capture a transparent background so the attached terminal remains visible behind the response;
 - capture a PNG, validate dimensions and byte limits, and optimize it with Sharp;
 - close the page, browser context, and browser on every success or failure path;
 - map failures to the stable renderer error codes without logging formula source or rendered markup.
 
-The white background is the fixed v0.1 behavior. Theme-aware output is deferred until Herdr provides a tested theme contract.
+Transparent output is the fixed v0.1 background behavior. Custom foreground colors remain deferred until Herdr provides a tested theme contract.
 
 ## Evidence
 
@@ -54,7 +56,7 @@ All values below are medians from three fresh Node.js processes on macOS 26.5.2 
 | Native runtime artifact | Sharp addon and Chromium executable | resvg addon |
 | Rendering network attempts observed | 0 | 0 |
 
-The browser backend produced one padded image for every case, including cases with multiple formulas. The SVG prototype produced correct individual formula shapes but did not implement case-level composition or padding, and it accepted one unsupported command.
+The original candidate comparison produced one padded image for every formula case, including cases with multiple formulas. The implemented response-document contract additionally verifies escaped prose, source order, transparent pixels, and a shared prose-and-math base size. The SVG prototype produced correct individual formula shapes but did not implement case-level composition or padding, and it accepted one unsupported command.
 
 ## Security Boundary
 
