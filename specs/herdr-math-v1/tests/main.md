@@ -134,9 +134,9 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 
 - Priority: P0
 - Evidence: Unit, Contract
-- Given a schema-compatible `pane.agent_status_changed` event containing workspace id, pane id, status, and an optional agent hint, and `pane.get` reports that pane as Claude Code, Codex, Pi, or OpenCode with matching current values
+- Given a schema-compatible `pane.agent_status_changed` event containing workspace id, pane id, status, and an optional agent hint, `pane.get` reports matching pane values, and `agent.get` reports that pane as Claude Code, Codex, Pi, or OpenCode with a current state-change sequence
 - When the event decoder and authoritative pane resolver run
-- Then the decoder returns only the validated event name, workspace id, pane id, status, and optional agent hint supplied by the event, and the resolver returns the canonical agent id, current status, and pane revision without treating the optional hint as sole authority.
+- Then the decoder returns only the validated event name, workspace id, pane id, status, and optional agent hint supplied by the event, and the resolver returns the canonical agent id, current status, pane revision, and `state_change_seq` without treating the optional hint as sole authority.
 
 ### AT-101 - Malformed or oversized event
 
@@ -161,6 +161,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given a supported source pane in `working`
 - When the event is processed
 - Then one fingerprint generation is atomically stored for that pane and no raw pane text is written.
+- And lifecycle ordering uses the authoritative `agent.get` `state_change_seq`, not the pane metadata revision.
 - And the socket request uses the protocol enum `recent_unwrapped`, not the CLI spelling `recent-unwrapped`.
 
 ### AT-104 - Duplicate working is idempotent
@@ -240,7 +241,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 
 - Priority: P0
 - Evidence: Unit, Contract, Integration
-- Given a valid status event but `pane.get` reports a missing pane, no current agent, a different workspace, an optional event agent that disagrees with the current agent, or a current status that no longer matches the event
+- Given a valid status event but `pane.get` or `agent.get` reports a missing pane, no current agent, a different workspace, an optional event agent that disagrees with the current agent, or a current status that no longer matches the event
 - When the worker resolves the event source
 - Then it returns a stable fail-closed result, creates no baseline, performs no render or viewer operation, and does not use a previous occupant's agent identity.
 

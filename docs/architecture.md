@@ -132,7 +132,7 @@ Responsibilities:
 - Reject malformed, oversized, or unrelated events
 - Pass the validated pane id to the Herdr client for authoritative source resolution
 
-The decoder does not infer agent identity, read panes, or perform rendering. The event's optional agent field is a hint, not sole authority. The Herdr client calls `pane.get` after decoding to resolve the current canonical agent id, workspace id, status, and pane revision. A missing pane, missing agent, workspace mismatch, optional-agent mismatch, or status mismatch is stale input and fails closed before state mutation.
+The decoder does not infer agent identity, read panes, or perform rendering. The event's optional agent field is a hint, not sole authority. The Herdr client calls `pane.get` to resolve the current pane and `agent.get` to resolve the canonical agent id, workspace id, status, pane revision, and lifecycle `state_change_seq`. The worker cross-checks both responses. A missing pane, missing agent, disagreement, workspace mismatch, optional-agent mismatch, or status mismatch is stale input and fails closed before state mutation.
 
 ### 2. State machine
 
@@ -325,7 +325,7 @@ create a terminal compatibility claim or require Ghostty.
 
 ```text
 decode event
-  -> resolve current agent/status/revision with pane.get
+  -> resolve and cross-check pane.get with agent.get state_change_seq
   -> confirm supported agent and source pane
   -> acquire per-pane lock
   -> read bounded baseline
@@ -334,7 +334,7 @@ decode event
   -> release lock and exit
 ```
 
-Repeated `working` events with the same sequence and content digest are idempotent. A later working event creates a new generation and invalidates older completion work.
+Repeated `working` events with the same `state_change_seq` and content digest are idempotent. A later working event has a newer sequence, creates a new generation, and invalidates older completion work even when the pane metadata revision is unchanged.
 
 ### Blocked event
 
@@ -344,7 +344,7 @@ Repeated `working` events with the same sequence and content digest are idempote
 
 ```text
 decode event
-  -> resolve current agent/status/revision with pane.get
+  -> resolve and cross-check pane.get with agent.get state_change_seq
   -> acquire per-pane lock
   -> load unexpired generation
   -> wait bounded debounce interval

@@ -320,7 +320,7 @@ Risks:
 2. Confirm the canonical `claude`, `codex`, `pi`, and `opencode` ids and their lifecycle authorities against the selected minimum Herdr version.
 3. Implement strict event decoding for the event-provided name, workspace id, pane id, status, and optional agent hint in `HERDR_PLUGIN_EVENT_JSON`; do not treat the optional agent hint as sole authority.
 4. Implement a bounded newline-delimited JSON socket client.
-5. Resolve the current canonical agent id, workspace id, status, and revision with `pane.get`, and fail closed when the pane is missing, has no agent, has moved workspaces, disagrees with an optional event agent hint, or has already changed status.
+5. Resolve the current pane with `pane.get`, then resolve the canonical agent id, workspace id, status, revision, and lifecycle `state_change_seq` with `agent.get`; fail closed when the methods disagree or the pane is missing, has moved workspaces, disagrees with an optional event agent hint, or has already changed status.
 6. Map Herdr timeouts and errors into stable plugin errors.
 7. Implement the `working`, `blocked`, `done`, `idle`, and `unknown` state machine.
 8. Implement stable completion reads and a bounded debounce.
