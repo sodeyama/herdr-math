@@ -121,11 +121,11 @@ The raw socket API is used where the CLI does not provide an equivalent graphics
 Responsibilities:
 
 - Parse `HERDR_PLUGIN_EVENT_JSON` with a strict schema
-- Extract event name, source pane id, agent label, status, session identity, and sequence fields when present
+- Extract only the event name, workspace id, source pane id, status, and optional agent hint supplied by the current Herdr event schema
 - Reject malformed, oversized, or unrelated events
-- Route events to the state machine
+- Pass the validated pane id to the Herdr client for authoritative source resolution
 
-The decoder does not read panes or perform rendering.
+The decoder does not infer agent identity, read panes, or perform rendering. The event's optional agent field is a hint, not sole authority. The Herdr client calls `pane.get` after decoding to resolve the current canonical agent id, workspace id, status, and pane revision. A missing pane, missing agent, workspace mismatch, optional-agent mismatch, or status mismatch is stale input and fails closed before state mutation.
 
 ### 2. State machine
 
@@ -299,6 +299,7 @@ Diagnostics report no pane text or formula text. Human-readable output is paired
 
 ```text
 decode event
+  -> resolve current agent/status/revision with pane.get
   -> confirm supported agent and source pane
   -> acquire per-pane lock
   -> read bounded baseline
@@ -317,6 +318,7 @@ Repeated `working` events with the same sequence and content digest are idempote
 
 ```text
 decode event
+  -> resolve current agent/status/revision with pane.get
   -> acquire per-pane lock
   -> load unexpired generation
   -> wait bounded debounce interval

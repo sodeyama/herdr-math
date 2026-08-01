@@ -46,9 +46,9 @@
   - Commit: `chore(repo): add quality and build tooling`
 
 - [ ] **T-104: Capture and validate the Herdr manifest contract**
-  - Scope: Export the schema from the proposed minimum Herdr version; confirm event names, manifest fields, canonical `claude`/`codex`/`pi`/`opencode` ids, lifecycle authorities, and minimum integration versions; add schema-compatible public fixtures without machine paths.
+  - Scope: Export the schema from the proposed minimum Herdr version; confirm that `pane.agent_status_changed` carries required workspace id/pane id/status and an optional agent hint; confirm manifest fields, canonical `claude`/`codex`/`pi`/`opencode` ids, lifecycle authorities, and minimum integration versions; add schema-compatible public fixtures without machine paths.
   - Dependencies: T-103
-  - Acceptance tests: AT-002, AT-003, AT-100, AT-112
+  - Acceptance tests: AT-002, AT-003, AT-100, AT-112, AT-113
   - Commit: `test(herdr): add manifest and event contract fixtures`
 
 - [ ] **T-105: Add the public plugin manifest skeleton**
@@ -168,27 +168,27 @@
 ## Phase 5 - Herdr Protocol and One-Shot Workers
 
 - [ ] **T-501: Implement strict Herdr event decoding**
-  - Scope: Parse bounded `HERDR_PLUGIN_EVENT_JSON`, allow canonical Claude Code, Codex, Pi, and OpenCode event/status shapes, reject malformed or unsupported agent ids and oversized payloads, and avoid logging full events.
+  - Scope: Parse bounded `HERDR_PLUGIN_EVENT_JSON`, accept only the schema-compatible event name, workspace id, pane id, status, and optional agent hint, reject malformed ids and oversized payloads, and avoid logging full events. Agent allowlisting occurs only after an authoritative pane lookup.
   - Dependencies: T-104, T-107, T-204
   - Acceptance tests: AT-100 through AT-102, AT-112, AT-609
   - Commit: `feat(herdr): decode bounded plugin events`
 
 - [ ] **T-502: Implement the bounded Herdr socket client**
-  - Scope: Add opaque socket-path handling, unique ids, response-size limits, method timeouts, JSON framing, disconnect behavior, and stable error mapping.
+  - Scope: Add opaque socket-path handling, unique ids, response-size limits, method timeouts, JSON framing, disconnect behavior, `pane.get` support, and stable error mapping.
   - Dependencies: T-104, T-204
-  - Acceptance tests: AT-002, AT-101, AT-608, AT-609
+  - Acceptance tests: AT-002, AT-100, AT-101, AT-113, AT-608, AT-609
   - Commit: `feat(herdr): add bounded socket client`
 
 - [ ] **T-503: Build the fake Herdr server harness**
   - Scope: Simulate pane reads, pane lifecycle, layout, metadata, plugin pane opening, graphics capability, graphics updates, errors, delays, disconnects, and request recording.
   - Dependencies: T-502
-  - Acceptance tests: Supports AT-100 through AT-112 and AT-500 through AT-511
+  - Acceptance tests: Supports AT-100 through AT-113 and AT-500 through AT-511
   - Commit: `test(herdr): add fake socket integration server`
 
 - [ ] **T-504: Implement the agent-status event worker**
-  - Scope: Connect event decoding, lifecycle state, baseline capture, stable completion reads, boundary resolution, scanning, rendering, generation checks, and processed digests in a bounded process.
+  - Scope: Connect event decoding, authoritative `pane.get` agent/status/revision resolution, supported-agent allowlisting, lifecycle state, baseline capture, stable completion reads, boundary resolution, scanning, rendering, generation checks, and processed digests in a bounded process.
   - Dependencies: T-305, T-404, T-501, T-503
-  - Acceptance tests: AT-103 through AT-112, AT-200 through AT-208, AT-511, AT-601
+  - Acceptance tests: AT-103 through AT-113, AT-200 through AT-208, AT-511, AT-601
   - Commit: `feat(events): process agent completion hooks`
 
 - [ ] **T-505: Implement one-shot startup cleanup**

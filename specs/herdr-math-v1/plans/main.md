@@ -105,6 +105,7 @@ The target flow is:
 ```text
 pane.agent_status_changed event
   -> strict event decoder
+  -> authoritative pane.get agent/status resolution
   -> per-pane atomic state machine
   -> working: store boundary fingerprint
   -> done/idle: prove answer delta
@@ -315,24 +316,25 @@ Risks:
 
 ### Work
 
-1. Capture `herdr api schema --json` for contract-test generation without committing machine-specific paths.
+1. Capture `herdr api schema --output <temporary-path>` for contract-test generation without committing machine-specific paths.
 2. Confirm the canonical `claude`, `codex`, `pi`, and `opencode` ids and their lifecycle authorities against the selected minimum Herdr version.
-3. Implement strict event decoding for `HERDR_PLUGIN_EVENT_JSON`.
+3. Implement strict event decoding for the event-provided name, workspace id, pane id, status, and optional agent hint in `HERDR_PLUGIN_EVENT_JSON`; do not treat the optional agent hint as sole authority.
 4. Implement a bounded newline-delimited JSON socket client.
-5. Map Herdr timeouts and errors into stable plugin errors.
-6. Implement the `working`, `blocked`, `done`, `idle`, and `unknown` state machine.
-7. Implement stable completion reads and a bounded debounce.
-8. Add generation checks immediately before renderer and graphics commit points.
-9. Implement one-shot startup cleanup.
-10. Implement pane-closed cleanup.
-11. Build a fake Herdr socket server for deterministic integration tests.
+5. Resolve the current canonical agent id, workspace id, status, and revision with `pane.get`, and fail closed when the pane is missing, has no agent, has moved workspaces, disagrees with an optional event agent hint, or has already changed status.
+6. Map Herdr timeouts and errors into stable plugin errors.
+7. Implement the `working`, `blocked`, `done`, `idle`, and `unknown` state machine.
+8. Implement stable completion reads and a bounded debounce.
+9. Add generation checks immediately before renderer and graphics commit points.
+10. Implement one-shot startup cleanup.
+11. Implement pane-closed cleanup.
+12. Build a fake Herdr socket server for deterministic integration tests.
 
 The v1 allowlist starts from the already evidenced Claude Code and Codex paths. Add Pi and OpenCode only after the Phase 1 lifecycle evidence has been converted into passing public fixtures; do not infer their behavior from another agent.
 
 ### Tests
 
 - AT-002
-- AT-100 through AT-112
+- AT-100 through AT-113
 - AT-601 through AT-604
 - AT-606
 - AT-608 and AT-609

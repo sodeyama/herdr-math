@@ -134,15 +134,15 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 
 - Priority: P0
 - Evidence: Unit, Contract
-- Given a schema-compatible `pane.agent_status_changed` event for Claude Code, Codex, Pi, or OpenCode
-- When the event decoder runs
-- Then it returns the authoritative pane id, agent, status, available sequence/context, and no unvalidated extra fields.
+- Given a schema-compatible `pane.agent_status_changed` event containing workspace id, pane id, status, and an optional agent hint, and `pane.get` reports that pane as Claude Code, Codex, Pi, or OpenCode with matching current values
+- When the event decoder and authoritative pane resolver run
+- Then the decoder returns only the validated event name, workspace id, pane id, status, and optional agent hint supplied by the event, and the resolver returns the canonical agent id, current status, and pane revision without treating the optional hint as sole authority.
 
 ### AT-101 - Malformed or oversized event
 
 - Priority: P0
 - Evidence: Unit, Integration
-- Given missing ids, invalid JSON, an unknown status, wrong types, path-like pane ids, or an event larger than the configured limit
+- Given missing required ids, invalid JSON, an unrecognized status such as `paused`, wrong types, path-like pane ids, or an event larger than the configured limit
 - When the worker runs
 - Then it returns `event_invalid`, performs no pane read or state mutation outside a bounded diagnostic, and exits safely.
 
@@ -150,7 +150,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 
 - Priority: P0
 - Evidence: Unit, Integration
-- Given a valid status event for an agent outside the v1 allowlist
+- Given a valid status event whose authoritative `pane.get` result identifies an agent outside the v1 allowlist
 - When the worker runs
 - Then it records `agent_unsupported` at debug level and performs no baseline, rendering, or viewer action.
 
@@ -234,6 +234,14 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - When that coding agent completes a response containing valid `$...$` or `$$...$$` LaTeX
 - Then Herdr Math accepts the authoritative lifecycle event, proves the current-answer boundary, renders the detected formulas locally, and creates or updates exactly one owned viewer without changing source focus.
 - And release evidence records the detected agent id, lifecycle authority, integration version when installed, observed status sequence, and render result separately for all four agents.
+
+### AT-113 - Stale or unresolved event pane
+
+- Priority: P0
+- Evidence: Unit, Contract, Integration
+- Given a valid status event but `pane.get` reports a missing pane, no current agent, a different workspace, an optional event agent that disagrees with the current agent, or a current status that no longer matches the event
+- When the worker resolves the event source
+- Then it returns a stable fail-closed result, creates no baseline, performs no render or viewer operation, and does not use a previous occupant's agent identity.
 
 ## C. Answer Boundary
 
