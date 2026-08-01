@@ -151,6 +151,12 @@
   - Acceptance tests: AT-207, AT-208, AT-212, AT-309, AT-608, AT-609
   - Commit: `fix(boundary): resolve OpenCode prefix replacements`
 
+- [ ] **T-310: Resolve OpenCode fixed-header suffix replacements**
+  - Scope: Store bounded baseline-suffix formula HMACs on eligible anchors, resolve an OpenCode-only suffix region after the latest unique same-row anchor with matching bidirectional context, require textual tool and completion chrome during presentation, and exclude baseline formulas before rendering.
+  - Dependencies: T-309
+  - Acceptance tests: AT-207, AT-208, AT-213, AT-309, AT-608, AT-609
+  - Commit: `fix(boundary): resolve OpenCode suffix replacements`
+
 ## Phase 4 - Renderer Decision and Implementation
 
 - [x] **T-401: Freeze the release formula corpus**

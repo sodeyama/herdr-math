@@ -226,8 +226,8 @@ The work is ordered so that pure deterministic logic and privacy invariants are 
 
 1. Define and version the fingerprint schema.
 2. Generate a local keyed-fingerprint secret with restrictive permissions.
-3. Implement full-baseline digest, prefix checkpoints, suffix-window digests, and contextual tail-anchor digests with baseline offsets, bidirectional context, adjacent-gap formula HMACs, and bounded baseline-prefix formula HMACs.
-4. Implement resolution against current pane text without loading a persisted baseline, including an OpenCode-only fixed-footer prefix replacement when one unique anchor retains its line-from-bottom position and bidirectional context.
+3. Implement full-baseline digest, prefix checkpoints, suffix-window digests, and contextual tail-anchor digests with baseline offsets, bidirectional context, adjacent-gap formula HMACs, and bounded baseline-prefix and baseline-suffix formula HMACs.
+4. Implement resolution against current pane text without loading a persisted baseline, including OpenCode-only fixed-footer prefix and fixed-header suffix replacements when one unique anchor retains its line-from-bottom position and bidirectional context.
 5. Run a parity suite comparing the fingerprint resolver with the prototype reference algorithm.
 6. Implement safe session and pane key encoding.
 7. Implement atomic state writes, exclusive per-pane locks, generation guards, expiry, stale-lock recovery, and corruption handling.
@@ -237,14 +237,14 @@ The work is ordered so that pure deterministic logic and privacy invariants are 
 ### Tests
 
 - AT-103 through AT-111
-- AT-200 through AT-212
+- AT-200 through AT-213
 - AT-600 through AT-605
 - AT-608 through AT-610
 
 ### Exit gate
 
 - Fingerprint resolution reaches parity on the fixed corpus.
-- The repeated-prompt, sliding-window, alternate-screen middle-insertion, middle-replacement, and OpenCode fixed-footer prefix-replacement regressions pass.
+- The repeated-prompt, sliding-window, alternate-screen middle-insertion, middle-replacement, and OpenCode fixed-anchor replacement regressions pass.
 - No state file contains answer or formula text.
 - Concurrent workers cannot corrupt state or render twice.
 
@@ -371,7 +371,7 @@ The v1 allowlist starts from the already evidenced Claude Code and Codex paths. 
 2. Validate stored pane ids against current plugin ownership before use.
 3. Recover viewer ownership from metadata when state is missing or stale.
 4. Open the viewer through the manifest entrypoint as a right split with focus disabled.
-5. Read bounded text and ANSI snapshots, normalize only safe SGR state, and isolate the final visible answer using recorded Claude Code, Codex, Pi, and OpenCode structures. Require full snapshot equality by default. For Pi only, permit an exact line-aligned suffix after an earlier Herdr unwrapping mismatch when the suffix still proves a styled reasoning or tool boundary, the complete final response, and the footer separator. For OpenCode only, permit the fingerprint-proven plain delta or fixed-footer prefix region without style metadata when textual tool and completion boundaries enclose the complete final response.
+5. Read bounded text and ANSI snapshots, normalize only safe SGR state, and isolate the final visible answer using recorded Claude Code, Codex, Pi, and OpenCode structures. Require full snapshot equality by default. For Pi only, permit an exact line-aligned suffix after an earlier Herdr unwrapping mismatch when the suffix still proves a styled reasoning or tool boundary, the complete final response, and the footer separator. For OpenCode only, permit the fingerprint-proven plain delta or fixed-anchor prefix or suffix region without style metadata when textual tool and completion boundaries enclose the complete final response.
 6. Normalize terminal soft wraps into plain paragraphs while retaining lists, display-math boundaries, Unicode, and formula offsets.
 7. Implement graphics capability diagnostics.
 8. Compute the current viewer pixel viewport from cell and layout dimensions.

@@ -361,6 +361,18 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - And missing, ambiguous, moved, context-mismatched, truncated, oversized, or unscannable evidence fails closed without rendering.
 - And no formula source, delimiter contents, or reversible transcript data is persisted.
 
+### AT-213 - OpenCode fixed-header suffix replacement
+
+- Priority: P0
+- Evidence: Unit, Integration, Runtime
+- Given OpenCode replaces the working region after a fixed alternate-screen header while preserving the bounded line count
+- When one baseline anchor remains unique at the same line index from the bottom, both its preceding and following contexts match, and its stored baseline-suffix formula digests remain non-reversible
+- Then the resolver returns only the bounded region after the latest qualifying anchor with strategy `anchored_suffix_replacement`.
+- And presentation accepts the region only when an OpenCode textual tool boundary and a later completion boundary enclose the complete final response after the anchor.
+- And formulas already present in the baseline suffix are excluded by keyed formula digest before rendering.
+- And missing, ambiguous, moved, context-mismatched, truncated, oversized, or unscannable evidence fails closed without rendering.
+- And no formula source, delimiter contents, or reversible transcript data is persisted.
+
 ## D. LaTeX Scanner
 
 ### AT-300 - Inline formula
