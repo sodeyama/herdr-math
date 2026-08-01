@@ -150,7 +150,26 @@ describe("agent status worker", () => {
     });
   });
 
-  it("fails closed before state mutation for invalid, unresolved, stale, and unsupported events", async () => {
+  it("ignores panes without a supported agent before reading or mutating state", async () => {
+    const rig = await createRig({ agent: null, agent_session: null, agent_status: "working" });
+    expect(await process(rig, statusEvent("w1", "w1:p1", "working"))).toEqual({
+      ok: true,
+      value: { kind: "ignored", status: "working", reason: "no_agent" }
+    });
+
+    rig.server.updatePane("w1:p1", { agent: "cursor", agent_session: null, agent_status: "working" });
+    expect(await process(rig, statusEvent("w1", "w1:p1", "working", "cursor"))).toEqual({
+      ok: true,
+      value: { kind: "ignored", status: "working", reason: "agent_unsupported" }
+    });
+
+    expect(rig.server.requests.map(({ method }) => method)).toEqual(["pane.get", "pane.get"]);
+    expect(rig.renders).toHaveLength(0);
+    expect(rig.publications).toHaveLength(0);
+    expect(await readdir(rig.directory)).toEqual([]);
+  });
+
+  it("fails closed before state mutation for invalid, unresolved, and stale events", async () => {
     const rig = await createRig();
     let calls = 0;
     const rejectingClient: AgentStatusHerdrClient = {
@@ -174,13 +193,8 @@ describe("agent status worker", () => {
     const cases: Array<{
       pane: Partial<Omit<FakePaneState, "pane_id">>;
       event: FakeStatusEvent;
-      code: "event_invalid" | "agent_unsupported";
+      code: "event_invalid";
     }> = [
-      {
-        pane: { agent: null, agent_session: null, agent_status: "working" },
-        event: statusEvent("w1", "w1:p1", "working"),
-        code: "event_invalid"
-      },
       {
         pane: { agent: "codex", agent_session: null, agent_status: "working" },
         event: statusEvent("w2", "w1:p1", "working", "codex"),
@@ -195,11 +209,6 @@ describe("agent status worker", () => {
         pane: { agent: "codex", agent_session: null, agent_status: "working" },
         event: statusEvent("w1", "w1:p1", "done", "codex"),
         code: "event_invalid"
-      },
-      {
-        pane: { agent: "cursor", agent_session: null, agent_status: "working" },
-        event: statusEvent("w1", "w1:p1", "working", "cursor"),
-        code: "agent_unsupported"
       }
     ];
     for (const testCase of cases) {

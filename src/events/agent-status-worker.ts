@@ -60,6 +60,11 @@ export interface AgentStatusWorkerDependencies {
 }
 
 export type AgentStatusWorkerOutcome =
+  | {
+      kind: "ignored";
+      status: DecodedAgentStatusEvent["status"];
+      reason: "no_agent" | "agent_unsupported";
+    }
   | { kind: "baseline_stored"; status: "working"; agent: SupportedAgent; generation: number }
   | {
       kind: "preserved";
@@ -83,6 +88,8 @@ export type AgentStatusWorkerOutcome =
       formulaCount: number;
       viewerPaneId: string;
     };
+
+type IgnoredAgentStatusOutcome = Extract<AgentStatusWorkerOutcome, { kind: "ignored" }>;
 
 interface ResolvedEvent {
   decoded: DecodedAgentStatusEvent;
@@ -120,6 +127,7 @@ export async function processDecodedAgentStatusEvent(
     const timing = resolveTiming(dependencies.timing);
     const resolved = await resolveEvent(decoded, dependencies);
     if (!resolved.ok) return failure(resolved.error);
+    if (isIgnoredOutcome(resolved.value)) return success(resolved.value);
     const sessionKey = deriveStateKey("session", dependencies.sessionIdentity, dependencies.secret);
     const paths = createPaneStatePaths(
       dependencies.stateDirectory,
@@ -141,20 +149,20 @@ export async function processDecodedAgentStatusEvent(
 async function resolveEvent(
   decoded: DecodedAgentStatusEvent,
   dependencies: AgentStatusWorkerDependencies
-): Promise<OperationResult<ResolvedEvent>> {
+): Promise<OperationResult<ResolvedEvent | IgnoredAgentStatusOutcome>> {
   const result = await dependencies.client.paneGet(decoded.sourcePaneId);
   if (!result.ok) return failure(result.error);
   const pane = result.value;
-  if (
-    pane.paneId !== decoded.sourcePaneId ||
-    pane.workspaceId !== decoded.workspaceId ||
-    pane.status !== decoded.status ||
-    pane.agent === null ||
-    (decoded.agentHint !== undefined && decoded.agentHint !== pane.agent)
-  ) {
+  if (pane.paneId !== decoded.sourcePaneId || pane.workspaceId !== decoded.workspaceId) {
     return safeFailure("event_invalid");
   }
-  if (!isSupportedAgent(pane.agent)) return safeFailure("agent_unsupported");
+  if (pane.agent === null) return success({ kind: "ignored", status: decoded.status, reason: "no_agent" });
+  if (!isSupportedAgent(pane.agent)) {
+    return success({ kind: "ignored", status: decoded.status, reason: "agent_unsupported" });
+  }
+  if (pane.status !== decoded.status || (decoded.agentHint !== undefined && decoded.agentHint !== pane.agent)) {
+    return safeFailure("event_invalid");
+  }
   const authority = AGENT_AUTHORITIES[pane.agent];
   const occupantIdentity = buildOccupantIdentity(pane, pane.agent, authority);
   if (occupantIdentity === undefined) return safeFailure("event_invalid");
@@ -194,7 +202,9 @@ async function processWorking(
     if (!readMatchesEvent(read.value, resolved)) return safeFailure("event_invalid");
     const confirmed = await resolveEvent(resolved.decoded, dependencies);
     if (!confirmed.ok) return failure(confirmed.error);
-    if (!sameResolvedEvent(resolved, confirmed.value)) return safeFailure("event_invalid");
+    if (isIgnoredOutcome(confirmed.value) || !sameResolvedEvent(resolved, confirmed.value)) {
+      return safeFailure("event_invalid");
+    }
 
     const candidate = buildBaselineFingerprint(
       read.value.text,
@@ -276,7 +286,9 @@ async function processCompletion(
   if (!stable.ok) return failure(stable.error);
   const confirmed = await resolveEvent(resolved.decoded, dependencies);
   if (!confirmed.ok) return failure(confirmed.error);
-  if (!sameResolvedEvent(resolved, confirmed.value)) return safeFailure("event_invalid");
+  if (isIgnoredOutcome(confirmed.value) || !sameResolvedEvent(resolved, confirmed.value)) {
+    return safeFailure("event_invalid");
+  }
 
   const boundary = resolveAnswerFromFingerprint(phase.state, stable.value.snapshot.text, dependencies.secret, {
     readTruncated: stable.value.snapshot.truncated
@@ -375,7 +387,9 @@ async function commitFinal(
     const current = await loadPaneState(paths, now);
     const confirmed = await resolveEvent(resolved.decoded, dependencies);
     if (!confirmed.ok) return failure(confirmed.error);
-    if (!sameResolvedEvent(resolved, confirmed.value)) return safeFailure("event_invalid");
+    if (isIgnoredOutcome(confirmed.value) || !sameResolvedEvent(resolved, confirmed.value)) {
+      return safeFailure("event_invalid");
+    }
     const commit = { ...authorization, contentDigest, processedAt: now };
     const preliminary = commitCompletion(current, commit);
     if (preliminary.kind === "reject") return safeFailure(preliminary.code);
@@ -448,6 +462,10 @@ function sameResolvedEvent(left: ResolvedEvent, right: ResolvedEvent): boolean {
     left.pane.revision === right.pane.revision &&
     left.pane.status === right.pane.status
   );
+}
+
+function isIgnoredOutcome(value: ResolvedEvent | IgnoredAgentStatusOutcome): value is IgnoredAgentStatusOutcome {
+  return "kind" in value && value.kind === "ignored";
 }
 
 function resolveTiming(overrides: AgentStatusWorkerTiming | undefined): Required<AgentStatusWorkerTiming> {
