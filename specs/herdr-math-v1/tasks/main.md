@@ -211,7 +211,7 @@
   - Acceptance tests: AT-500, AT-506, AT-510, AT-706
   - Commit: `feat(viewer): report plugin pane ownership`
 
-- [ ] **T-602: Implement viewer discovery and reuse**
+- [x] **T-602: Implement viewer discovery and reuse**
   - Scope: Validate stored ids, recover by metadata, open one right split without focus, reuse it, and recreate after closure.
   - Dependencies: T-503, T-601
   - Acceptance tests: AT-500 through AT-502, AT-505, AT-506, AT-511
