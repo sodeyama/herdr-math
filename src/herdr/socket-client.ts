@@ -14,6 +14,7 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 export const HERDR_CLIENT_LIMITS = Object.freeze({
   socketPathBytes: 4096,
+  pingTimeoutMs: 2000,
   paneGetTimeoutMs: 2000,
   paneReadTimeoutMs: 2000,
   paneListTimeoutMs: 2000,
@@ -44,6 +45,11 @@ export interface HerdrPaneSnapshot {
   tokens?: Readonly<Record<string, string>>;
 }
 
+export interface HerdrServerInfo {
+  version: string;
+  protocol: number;
+}
+
 export interface HerdrPaneReadSnapshot {
   paneId: string;
   workspaceId: string;
@@ -53,6 +59,7 @@ export interface HerdrPaneReadSnapshot {
 }
 
 export interface HerdrSocketClientOptions {
+  pingTimeoutMs?: number;
   paneGetTimeoutMs?: number;
   paneReadTimeoutMs?: number;
   paneListTimeoutMs?: number;
@@ -125,6 +132,7 @@ export interface HerdrGraphicsSetRequest {
 }
 
 type HerdrRequest =
+  | { id: string; method: "ping"; params: Record<string, never> }
   | { id: string; method: "pane.get"; params: { pane_id: string } }
   | { id: string; method: "pane.list"; params: { workspace_id: string } }
   | { id: string; method: "pane.layout"; params: { pane_id: string } }
@@ -163,6 +171,7 @@ type HerdrRequest =
     };
 
 export class HerdrSocketClient {
+  readonly #pingTimeoutMs: number;
   readonly #paneGetTimeoutMs: number;
   readonly #paneReadTimeoutMs: number;
   readonly #paneListTimeoutMs: number;
@@ -176,6 +185,7 @@ export class HerdrSocketClient {
     readonly socketPath: string,
     options: HerdrSocketClientOptions = {}
   ) {
+    this.#pingTimeoutMs = boundedOverride(options.pingTimeoutMs, HERDR_CLIENT_LIMITS.pingTimeoutMs, "pingTimeoutMs");
     this.#paneGetTimeoutMs = boundedOverride(
       options.paneGetTimeoutMs,
       HERDR_CLIENT_LIMITS.paneGetTimeoutMs,
@@ -212,6 +222,12 @@ export class HerdrSocketClient {
       "pluginPaneOpenTimeoutMs"
     );
     this.#responseBytes = boundedOverride(options.responseBytes, POLICY_LIMITS.socketResponseBytes, "responseBytes");
+  }
+
+  ping(): Promise<OperationResult<HerdrServerInfo>> {
+    if (!isSocketPath(this.socketPath)) return Promise.resolve(protocolFailure());
+    const outbound: HerdrRequest = { id: randomUUID(), method: "ping", params: {} };
+    return this.#request(outbound, this.#pingTimeoutMs, parsePingResult);
   }
 
   paneGet(paneId: string): Promise<OperationResult<HerdrPaneSnapshot>> {
@@ -479,6 +495,20 @@ function parseResponse<T>(
     throw new HerdrMathError("herdr_protocol_error");
   }
   return parseResult(value.result);
+}
+
+function parsePingResult(value: unknown): HerdrServerInfo {
+  if (
+    !isRecord(value) ||
+    value.type !== "pong" ||
+    typeof value.version !== "string" ||
+    value.version.length > 64 ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value.version) ||
+    !isUint32(value.protocol)
+  ) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  return Object.freeze({ version: value.version, protocol: value.protocol });
 }
 
 function parsePaneGetResult(value: unknown): HerdrPaneSnapshot {

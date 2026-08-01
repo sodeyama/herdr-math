@@ -43,6 +43,31 @@ afterEach(async () => {
 });
 
 describe("HerdrSocketClient", () => {
+  it("requests and validates bounded server version information", async () => {
+    let calls = 0;
+    const requests: WireRequest[] = [];
+    const server = await startServer((socket, request) => {
+      requests.push(request);
+      calls += 1;
+      const result =
+        calls === 1
+          ? { type: "pong", version: "0.7.5", protocol: 17 }
+          : { type: "pong", version: "SECRET_INVALID_VERSION", protocol: 17 };
+      socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+    });
+    const client = new HerdrSocketClient(server.path);
+
+    expect(await client.ping()).toEqual({ ok: true, value: { version: "0.7.5", protocol: 17 } });
+    expect(await client.ping()).toEqual({
+      ok: false,
+      error: { code: "herdr_protocol_error", retryable: false }
+    });
+    expect(requests).toMatchObject([
+      { method: "ping", params: {} },
+      { method: "ping", params: {} }
+    ]);
+  });
+
   it("requests and validates authoritative pane snapshots for all supported agents", async () => {
     const fixtures = JSON.parse(
       await readFile(new URL("../fixtures/herdr/pane-info-responses.json", import.meta.url), "utf8")
@@ -233,6 +258,9 @@ describe("HerdrSocketClient", () => {
   });
 
   it("rejects test overrides that weaken production policy", () => {
+    expect(() => new HerdrSocketClient("socket", { pingTimeoutMs: HERDR_CLIENT_LIMITS.pingTimeoutMs + 1 })).toThrow(
+      TypeError
+    );
     expect(
       () => new HerdrSocketClient("socket", { paneGetTimeoutMs: HERDR_CLIENT_LIMITS.paneGetTimeoutMs + 1 })
     ).toThrow(TypeError);

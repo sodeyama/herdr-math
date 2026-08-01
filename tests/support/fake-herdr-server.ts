@@ -248,6 +248,8 @@ export class FakeHerdrServer {
   #dispatch(socket: Socket, request: RecordedHerdrRequest): void {
     const paneId = stringParam(request.params, "pane_id");
     switch (request.method) {
+      case "ping":
+        return this.#sendResult(socket, request.id, { type: "pong", version: "0.7.5", protocol: 17 });
       case "pane.get": {
         const pane = paneId === null ? undefined : this.#panes.get(paneId);
         if (pane === undefined) return this.#sendError(socket, request.id, "not_found", "pane not found");
