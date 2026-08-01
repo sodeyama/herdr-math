@@ -17,6 +17,8 @@ export interface PolicyLimits {
   imagePixels: number;
   rawPngBytes: number;
   base64PayloadBytes: number;
+  viewerTransportBytes: number;
+  viewerTransportTimeoutMs: number;
   scrollFrameCount: number;
   scrollFrameIntervalMs: number;
   scrollAnimationDurationMs: number;
@@ -48,6 +50,8 @@ export const POLICY_LIMITS: Readonly<PolicyLimits> = Object.freeze({
   imagePixels: 32 * 1024 * 1024,
   rawPngBytes: 512 * 1024,
   base64PayloadBytes: 700 * 1024,
+  viewerTransportBytes: 768 * 1024,
+  viewerTransportTimeoutMs: 6000,
   scrollFrameCount: 64,
   scrollFrameIntervalMs: 40,
   scrollAnimationDurationMs: 2600,

@@ -43,6 +43,7 @@ export type SafeLimitKind =
   | "image_pixels"
   | "raw_png_bytes"
   | "base64_payload_bytes"
+  | "viewer_transport_bytes"
   | "scroll_frame_count"
   | "scroll_animation_duration_ms"
   | "scroll_frame_aggregate_bytes"
@@ -84,6 +85,7 @@ const SAFE_LIMIT_KINDS = new Set<SafeLimitKind>([
   "image_pixels",
   "raw_png_bytes",
   "base64_payload_bytes",
+  "viewer_transport_bytes",
   "scroll_frame_count",
   "scroll_animation_duration_ms",
   "scroll_frame_aggregate_bytes",
