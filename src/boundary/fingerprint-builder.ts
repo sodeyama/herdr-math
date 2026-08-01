@@ -119,7 +119,8 @@ function buildTailAnchors(input: string, secret: Uint8Array) {
     const lineStart = newline === -1 ? 0 : newline + 1;
     const line = input.slice(lineStart, lineEnd);
     if (line.trim().length >= 24) {
-      const contextStart = Math.max(0, lineStart - FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters);
+      const previousNewline = input.lastIndexOf("\n", Math.max(0, lineStart - 2));
+      const contextStart = Math.max(previousNewline + 1, lineStart - FINGERPRINT_SCHEMA_LIMITS.maxContextCharacters);
       const context = input.slice(contextStart, lineStart);
       anchors.push({
         line_characters: line.length,

@@ -109,6 +109,25 @@ describe("baseline fingerprint builder", () => {
     expect(identityChanged.occupant_key).not.toBe(first.occupant_key);
   });
 
+  it("binds a tail anchor to its immediately preceding line", () => {
+    const secret = Buffer.alloc(32, 4);
+    const anchor = "Synthetic repeated prompt with unique value 1234567890";
+    const first = buildBaselineFingerprint(`old history A\nmatching context\n${anchor}`, metadata(), secret);
+    const olderHistoryChanged = buildBaselineFingerprint(
+      `old history B\nmatching context\n${anchor}`,
+      metadata(),
+      secret
+    );
+    const contextChanged = buildBaselineFingerprint(`old history A\ndifferent context\n${anchor}`, metadata(), secret);
+
+    expect(olderHistoryChanged.baseline.tail_anchors[0]?.context_digest).toBe(
+      first.baseline.tail_anchors[0]?.context_digest
+    );
+    expect(contextChanged.baseline.tail_anchors[0]?.context_digest).not.toBe(
+      first.baseline.tail_anchors[0]?.context_digest
+    );
+  });
+
   it("derives path-safe non-reversible state keys", () => {
     const secret = Buffer.alloc(32, 1);
     const key = deriveStateKey("pane", "session/path\\pane", secret);
