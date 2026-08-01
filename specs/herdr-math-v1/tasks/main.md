@@ -115,7 +115,7 @@
   - Acceptance tests: AT-200 through AT-208
   - Commit: `feat(boundary): resolve answers from fingerprints`
 
-- [ ] **T-304: Implement atomic session-scoped state**
+- [x] **T-304: Implement atomic session-scoped state**
   - Scope: Add state paths, exclusive locks, generation guards, atomic writes, size/version validation, corruption handling, expiry, and temporary-file cleanup.
   - Dependencies: T-302
   - Acceptance tests: AT-600 through AT-605, AT-610
