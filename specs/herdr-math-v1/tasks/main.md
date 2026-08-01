@@ -145,6 +145,12 @@
   - Acceptance tests: AT-207 through AT-211, AT-608, AT-609
   - Commit: `feat(boundary): resolve alternate-screen replacements`
 
+- [ ] **T-309: Resolve OpenCode fixed-footer prefix replacements**
+  - Scope: Store bounded baseline-prefix formula HMACs on eligible anchors, resolve an OpenCode-only prefix region before one unique same-row anchor with matching bidirectional context, require textual tool and completion chrome during presentation, and exclude baseline formulas before rendering.
+  - Dependencies: T-308, T-605
+  - Acceptance tests: AT-207, AT-208, AT-212, AT-309, AT-608, AT-609
+  - Commit: `fix(boundary): resolve OpenCode prefix replacements`
+
 ## Phase 4 - Renderer Decision and Implementation
 
 - [x] **T-401: Freeze the release formula corpus**

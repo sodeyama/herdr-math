@@ -349,6 +349,18 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - And absent, ambiguous, reordered, oversized, or unscannable evidence fails closed without rendering.
 - And no formula source, delimiter contents, or reversible transcript data is persisted.
 
+### AT-212 - OpenCode fixed-footer prefix replacement
+
+- Priority: P0
+- Evidence: Unit, Integration, Runtime
+- Given OpenCode replaces the working region before a fixed alternate-screen footer while preserving the bounded line count
+- When one baseline anchor remains unique at the same line index from the bottom, both its preceding and following contexts match, and its stored baseline-prefix formula digests remain non-reversible
+- Then the resolver returns only the bounded region before that anchor with strategy `anchored_prefix_replacement`.
+- And presentation accepts the region only when an OpenCode textual tool boundary and a later completion boundary enclose the complete final response before the anchor.
+- And formulas already present in the baseline prefix are excluded by keyed formula digest before rendering.
+- And missing, ambiguous, moved, context-mismatched, truncated, oversized, or unscannable evidence fails closed without rendering.
+- And no formula source, delimiter contents, or reversible transcript data is persisted.
+
 ## D. LaTeX Scanner
 
 ### AT-300 - Inline formula
