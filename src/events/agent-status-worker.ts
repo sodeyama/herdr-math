@@ -329,22 +329,28 @@ async function processCompletion(
 
   const answerEndOffset = boundary.value.startOffset + boundary.value.answer.length;
   const styledStartOffset = stable.value.styledSnapshot.lines[0]?.startOffset;
-  const answerStartOffset = stable.value.usesAnsiSuffix ? styledStartOffset : boundary.value.startOffset;
-  if (
-    answerStartOffset === undefined ||
-    answerStartOffset < boundary.value.startOffset ||
-    answerStartOffset >= answerEndOffset
-  ) {
+  const answerStartOffset =
+    stable.value.usesAnsiSuffix && styledStartOffset !== undefined
+      ? Math.max(boundary.value.startOffset, styledStartOffset)
+      : boundary.value.startOffset;
+  const presentationEndOffset = stable.value.usesAnsiSuffix ? stable.value.snapshot.text.length : answerEndOffset;
+  if (styledStartOffset === undefined || answerStartOffset >= answerEndOffset) {
     return safeFailure("conclusion_boundary_failed");
   }
   const finalResponse = extractFinalResponse({
     agent: resolved.agent,
-    answer: stable.value.snapshot.text.slice(answerStartOffset, answerEndOffset),
+    answer: stable.value.snapshot.text.slice(answerStartOffset, presentationEndOffset),
     answerStartOffset,
     snapshot: stable.value.styledSnapshot,
     ...(stable.value.usesAnsiSuffix ? { requirePiFooter: true } : {})
   });
   if (!finalResponse.ok) return failure(finalResponse.error);
+  if (
+    finalResponse.value.sourceStartOffset < boundary.value.startOffset ||
+    finalResponse.value.sourceEndOffset > answerEndOffset
+  ) {
+    return safeFailure("conclusion_boundary_failed");
+  }
 
   let formulas: ReturnType<typeof scanLatex>;
   try {

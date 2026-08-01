@@ -142,15 +142,15 @@ describe("agent status worker", () => {
       agent: "pi",
       agent_session: { source: "herdr:pi", agent: "pi", kind: "id", value: "session-pi-ansi-suffix" }
     });
-    const baseline = "Synthetic Pi baseline before an unwrap mismatch.";
+    const before = "Synthetic Pi anchor before an unwrap mismatch.";
+    const stableFooter = "\n────────────────────────\nstatus with stable footer context";
+    const baseline = `${before}\nworking row${stableFooter}`;
     rig.server.setPaneOutput("w1:p1", baseline);
     expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
 
-    const plain =
-      "plain historical tool row\nReasoning checks $r=1$.\n\nFinal answer is $E=mc^2$.\n\n────────────────────────\nstatus";
-    const ansi =
-      "different ANSI tool row\n\u001b[3mReasoning checks $r=1$.\u001b[0m\n\nFinal answer is $E=mc^2$.\n\n────────────────────────\nstatus";
-    rig.server.setPaneOutput("w1:p1", `${baseline}\n${plain}`, false, `${baseline}\n${ansi}`);
+    const plain = `${before}\nplain historical tool row\nReasoning checks $r=1$.\n\nFinal answer is $E=mc^2$.${stableFooter}`;
+    const ansi = `${before}\ndifferent ANSI tool row\n\u001b[3mReasoning checks $r=1$.\u001b[0m\n\nFinal answer is $E=mc^2$.${stableFooter}`;
+    rig.server.setPaneOutput("w1:p1", plain, false, ansi);
 
     expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
       ok: true,
