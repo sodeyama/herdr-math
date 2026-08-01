@@ -185,19 +185,21 @@ describe("agent status worker", () => {
       agent: "opencode",
       agent_session: { source: "herdr:opencode", agent: "opencode", kind: "id", value: "session-opencode-plain" }
     });
-    const baseline = "Synthetic OpenCode baseline before a plain snapshot recovery.";
+    const anchor = "Synthetic fixed OpenCode footer anchor with unique value 1234567890";
+    const suffix = `\n\n${anchor}\n\nok`;
+    const baseline = `Short prompt\n→ Read source\n\nWorking $u$.\n\n▣ Working${suffix}`;
     rig.server.setPaneOutput("w1:p1", baseline);
     expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
 
-    const plain = `${baseline}\n→ Read source\n\nFinal response is $x=1$.\n\n▣ Done`;
-    const ansi = `${baseline}\n→ Read changed source\n\nFinal response is $x=1$.\n\n▣ Done`;
+    const plain = `A longer submitted prompt\n→ Read package.json\n\nFinal response keeps $u$ and adds $x=1$.\n\n▣ Done${suffix}`;
+    const ansi = `A longer submitted prompt\n→ Read changed package.json\n\nFinal response keeps $u$ and adds $x=1$.\n\n▣ Done${suffix}`;
     rig.server.setPaneOutput("w1:p1", plain, false, ansi);
 
     expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
       ok: true,
       value: { kind: "image_published", formulaCount: 1 }
     });
-    expect(rig.renderedTexts).toEqual(["Final response is $x=1$."]);
+    expect(rig.renderedTexts).toEqual(["Final response keeps $u$ and adds $x=1$."]);
     expect(rig.renders).toEqual([[{ latex: "x=1", display: false }]]);
   });
 

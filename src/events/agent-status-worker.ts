@@ -344,7 +344,9 @@ async function processCompletion(
     answerStartOffset,
     snapshot: stable.value.styledSnapshot,
     ...(stable.value.snapshotMode === "pi_suffix" ? { requirePiFooter: true } : {}),
-    ...(stable.value.snapshotMode === "opencode_plain" ? { requireOpenCodeChrome: true } : {})
+    ...(stable.value.snapshotMode === "opencode_plain" || boundary.value.proof.kind === "anchored_prefix_replacement"
+      ? { requireOpenCodeChrome: true }
+      : {})
   });
   if (!finalResponse.ok) return failure(finalResponse.error);
   if (
@@ -357,7 +359,10 @@ async function processCompletion(
   let formulas: ReturnType<typeof scanLatex>;
   try {
     formulas = scanLatex(finalResponse.value.text);
-    if (boundary.value.proof.kind === "middle_replacement") {
+    if (
+      boundary.value.proof.kind === "middle_replacement" ||
+      boundary.value.proof.kind === "anchored_prefix_replacement"
+    ) {
       const baselineFormulaDigests = boundary.value.proof.baselineFormulaDigests;
       formulas = formulas.filter((formula) => {
         const digest = formulaFingerprintDigest(formula, dependencies.secret);

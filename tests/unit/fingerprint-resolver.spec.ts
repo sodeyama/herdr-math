@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { buildBaselineFingerprint } from "../../src/boundary/fingerprint-builder.js";
+import { formulaFingerprintDigest } from "../../src/boundary/fingerprint-digest.js";
 import { resolveAnswerFromFingerprint } from "../../src/boundary/fingerprint-resolver.js";
 import { FINGERPRINT_SCHEMA_LIMITS, isFingerprintDigest } from "../../src/boundary/fingerprint-schema.js";
 import { POLICY_LIMITS } from "../../src/core/limits.js";
@@ -198,6 +199,45 @@ describe("fingerprint answer resolver", () => {
     const baselineOnlyCompletion = `${before}\nupdated prose $u$\n${after}${following}`;
     const baselineOnlyResult = resolveAnswerFromFingerprint(fingerprint(testCase), baselineOnlyCompletion, secret);
     expect(baselineOnlyResult.ok && baselineOnlyResult.value.strategy).toBe("middle_replacement");
+  });
+
+  it("resolves an OpenCode prefix replacement before a fixed same-row anchor", () => {
+    const anchor = "Synthetic fixed OpenCode footer anchor with unique value 1234567890";
+    const suffix = `\n\n${anchor}\n\nok`;
+    const baselinePrefix = "Short prompt\n→ Read source\n\nWorking $u$.\n\n▣ Working";
+    const currentPrefix =
+      "A longer submitted prompt\n→ Read package.json\n\nFinal response keeps $u$ and adds $x=1$.\n\n▣ Done";
+    const testCase: BoundaryCase = {
+      id: "opencode-anchored-prefix-replacement",
+      agent: "opencode",
+      baseline: baselinePrefix + suffix,
+      completion: currentPrefix + suffix,
+      expectedAnswer: currentPrefix,
+      expectedStrategy: "contextual_anchor",
+      readTruncated: false
+    };
+
+    const result = resolveAnswerFromFingerprint(fingerprint(testCase), testCase.completion, secret);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.strategy).toBe("anchored_prefix_replacement");
+    expect(result.value.answer).toBe(currentPrefix + "\n\n");
+    expect(result.value.proof).toMatchObject({
+      kind: "anchored_prefix_replacement",
+      lineIndexFromEnd: 2,
+      replacementGrowthCharacters: currentPrefix.length - baselinePrefix.length
+    });
+    expect(result.value.proof).toHaveProperty("baselineFormulaDigests", [
+      formulaFingerprintDigest({ latex: "u", display: false }, secret)
+    ]);
+    expect(JSON.stringify(result.value.proof)).not.toContain("$u$");
+
+    const contextChanged = `${currentPrefix}\n\n${anchor}\nchanged\nok`;
+    expect(resolveAnswerFromFingerprint(fingerprint(testCase), contextChanged, secret)).toEqual({
+      ok: false,
+      error: { code: "boundary_failed", retryable: false }
+    });
   });
 
   it("fails closed for a replacement with unscannable delimiters", () => {

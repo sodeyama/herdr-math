@@ -56,6 +56,19 @@ export function resolveAnswerFromFingerprint(
         result(current, replacement.startOffset, replacement.proof, currentDigest, readTruncated, replacement.endOffset)
       );
     }
+    const anchoredPrefix = resolveAnchoredPrefixReplacement(state, current, secret);
+    if (anchoredPrefix.status === "resolved") {
+      return success(
+        result(
+          current,
+          anchoredPrefix.startOffset,
+          anchoredPrefix.proof,
+          currentDigest,
+          readTruncated,
+          anchoredPrefix.endOffset
+        )
+      );
+    }
     const stable = resolveStablePrefix(state, current, secret);
     if (stable !== null) {
       return success(result(current, stable.startOffset, stable.proof, currentDigest, readTruncated));
@@ -68,6 +81,9 @@ export function resolveAnswerFromFingerprint(
     const sliding = resolveSlidingWindow(state, current, secret);
     if (sliding !== null) {
       return success(result(current, sliding.startOffset, sliding.proof, currentDigest, readTruncated));
+    }
+    if (anchoredPrefix.status === "conflict") {
+      return failure(serializeError(new HerdrMathError(readTruncated ? "answer_truncated" : "boundary_failed")));
     }
 
     const contextual = resolveContextualAnchor(state, current, secret);
@@ -115,6 +131,15 @@ type MiddleReplacementResult =
       startOffset: number;
       endOffset: number;
       proof: Extract<BoundaryProof, { kind: "middle_replacement" }>;
+    };
+
+type AnchoredPrefixReplacementResult =
+  | { status: "none" | "conflict" }
+  | {
+      status: "resolved";
+      startOffset: 0;
+      endOffset: number;
+      proof: Extract<BoundaryProof, { kind: "anchored_prefix_replacement" }>;
     };
 
 function resolveMiddleInsertion(
@@ -279,6 +304,106 @@ function resolveMiddleReplacement(
   }
   if (fallback !== undefined) return fallback;
   return { status: conflict ? "conflict" : "none" };
+}
+
+function resolveAnchoredPrefixReplacement(
+  state: FingerprintStateV1,
+  current: string,
+  secret: Uint8Array
+): AnchoredPrefixReplacementResult {
+  if (state.agent !== "opencode" || countLines(current) !== state.baseline.line_count) return { status: "none" };
+  const lines = collectRecentLines(current, POLICY_LIMITS.paneReadLines);
+  const candidates: Array<{
+    match: LineRange;
+    growth: number;
+    lineIndexFromEnd: number;
+    baselineFormulaDigests: string[];
+  }> = [];
+  let candidatesExamined = 0;
+  let conflictingAnchor = false;
+
+  for (const anchor of state.baseline.tail_anchors) {
+    if (
+      anchor.end_offset === undefined ||
+      anchor.prefix_formula_digests === undefined ||
+      anchor.forward_context_characters === undefined ||
+      anchor.forward_context_digest === undefined ||
+      anchor.context_characters === 0 ||
+      anchor.forward_context_characters === 0
+    ) {
+      continue;
+    }
+    const rawMatches: LineRange[] = [];
+    for (const line of lines) {
+      if (line.end - line.start !== anchor.line_characters) continue;
+      candidatesExamined += 1;
+      if (candidatesExamined > POLICY_LIMITS.anchorOccurrences) return { status: "conflict" };
+      if (
+        fingerprintDigestsEqual(
+          fingerprintDigest("anchor-line", current.slice(line.start, line.end), secret),
+          anchor.line_digest
+        )
+      ) {
+        rawMatches.push(line);
+      }
+      if (rawMatches.length > 1) break;
+    }
+    if (rawMatches.length === 0) continue;
+    if (rawMatches.length > 1) {
+      conflictingAnchor = true;
+      continue;
+    }
+    const match = rawMatches[0];
+    if (match === undefined) continue;
+    const lineIndexFromEnd = lines.length - 1 - lines.indexOf(match);
+    if (
+      lineIndexFromEnd !== anchor.line_index_from_end ||
+      !anchorContextMatches(anchor, match, current, secret) ||
+      !anchorForwardContextMatches(anchor, match, current, secret)
+    ) {
+      conflictingAnchor = true;
+      continue;
+    }
+    const baselineMatchStart = anchor.end_offset - anchor.line_characters;
+    const growth = match.start - baselineMatchStart;
+    if (growth <= 0) continue;
+    candidates.push({
+      match,
+      growth,
+      lineIndexFromEnd: anchor.line_index_from_end,
+      baselineFormulaDigests: anchor.prefix_formula_digests
+    });
+  }
+  if (candidates.length === 0) return { status: conflictingAnchor ? "conflict" : "none" };
+  const growth = candidates[0]?.growth;
+  if (growth === undefined || candidates.some((candidate) => candidate.growth !== growth))
+    return { status: "conflict" };
+  const candidate = [...candidates].sort((left, right) => left.match.start - right.match.start)[0];
+  if (candidate === undefined) return { status: "none" };
+
+  let formulas: ReturnType<typeof scanLatex>;
+  try {
+    formulas = scanLatex(current.slice(0, candidate.match.start));
+  } catch {
+    return { status: "conflict" };
+  }
+  const hasNewFormula = formulas.some((formula) => {
+    const digest = formulaFingerprintDigest(formula, secret);
+    return !candidate.baselineFormulaDigests.some((baselineDigest) => fingerprintDigestsEqual(digest, baselineDigest));
+  });
+  if (!hasNewFormula) return { status: "none" };
+  return {
+    status: "resolved",
+    startOffset: 0,
+    endOffset: candidate.match.start,
+    proof: {
+      kind: "anchored_prefix_replacement",
+      anchorMatchStartOffset: candidate.match.start,
+      lineIndexFromEnd: candidate.lineIndexFromEnd,
+      replacementGrowthCharacters: growth,
+      baselineFormulaDigests: candidate.baselineFormulaDigests
+    }
+  };
 }
 
 type AnchorMatchContext = "line" | "preceding" | "following";
@@ -474,6 +599,15 @@ function collectRecentLines(input: string, limit: number): LineRange[] {
     end = newline;
   }
   return lines.reverse();
+}
+
+function countLines(input: string): number {
+  if (input.length === 0) return 0;
+  let count = 1;
+  for (const character of input) {
+    if (character === "\n") count += 1;
+  }
+  return count;
 }
 
 function assertCurrentInput(current: string): void {

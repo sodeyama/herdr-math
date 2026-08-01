@@ -10,7 +10,13 @@ export interface Formula {
 }
 
 export type BoundaryStrategy =
-  "exact_prefix" | "middle_insertion" | "middle_replacement" | "stable_prefix" | "sliding_window" | "contextual_anchor";
+  | "exact_prefix"
+  | "middle_insertion"
+  | "middle_replacement"
+  | "anchored_prefix_replacement"
+  | "stable_prefix"
+  | "sliding_window"
+  | "contextual_anchor";
 
 export type BoundaryProof =
   | { kind: "exact_prefix"; baselineCharacters: number }
@@ -27,6 +33,13 @@ export type BoundaryProof =
       afterMatchStartOffset: number;
       baselineGapCharacters: number;
       replacementCharacters: number;
+      baselineFormulaDigests: readonly string[];
+    }
+  | {
+      kind: "anchored_prefix_replacement";
+      anchorMatchStartOffset: number;
+      lineIndexFromEnd: number;
+      replacementGrowthCharacters: number;
       baselineFormulaDigests: readonly string[];
     }
   | { kind: "stable_prefix"; checkpointOffset: number }
