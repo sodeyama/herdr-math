@@ -158,7 +158,9 @@ type HerdrRequest =
   | {
       id: string;
       method: "pane.read";
-      params: { pane_id: string; source: "recent_unwrapped"; format: "text"; lines: number; strip_ansi: true };
+      params:
+        | { pane_id: string; source: "recent_unwrapped"; format: "text"; lines: number; strip_ansi: true }
+        | { pane_id: string; source: "recent_unwrapped"; format: "ansi"; lines: number; strip_ansi: false };
     }
   | { id: string; method: "pane.report_metadata"; params: { pane_id: string } & HerdrPaneMetadataReport }
   | {
@@ -333,7 +335,25 @@ export class HerdrSocketClient {
         strip_ansi: true
       }
     };
-    return this.#request(outbound, this.#paneReadTimeoutMs, parsePaneReadResult);
+    return this.#request(outbound, this.#paneReadTimeoutMs, (value) => parsePaneReadResult(value, "text"));
+  }
+
+  paneReadAnsi(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(paneId)) {
+      return Promise.resolve(protocolFailure());
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "pane.read",
+      params: {
+        pane_id: paneId,
+        source: "recent_unwrapped",
+        format: "ansi",
+        lines: POLICY_LIMITS.paneReadLines,
+        strip_ansi: false
+      }
+    };
+    return this.#request(outbound, this.#paneReadTimeoutMs, (value) => parsePaneReadResult(value, "ansi"));
   }
 
   async paneReportMetadata(
@@ -682,7 +702,7 @@ function parseGraphicsRemoteError(error: HerdrWireError): never {
   throw new HerdrMathError("herdr_protocol_error");
 }
 
-function parsePaneReadResult(value: unknown): HerdrPaneReadSnapshot {
+function parsePaneReadResult(value: unknown, expectedFormat: "text" | "ansi"): HerdrPaneReadSnapshot {
   if (!isRecord(value) || value.type !== "pane_read" || !isRecord(value.read)) {
     throw new HerdrMathError("herdr_protocol_error");
   }
@@ -692,7 +712,7 @@ function parsePaneReadResult(value: unknown): HerdrPaneReadSnapshot {
     !isIdentifier(read.workspace_id) ||
     !isIdentifier(read.tab_id) ||
     read.source !== "recent_unwrapped" ||
-    read.format !== "text" ||
+    read.format !== expectedFormat ||
     typeof read.text !== "string" ||
     !Number.isSafeInteger(read.revision) ||
     (read.revision as number) < 0 ||

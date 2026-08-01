@@ -26,6 +26,7 @@ export interface FakePaneState {
 
 export interface FakePaneOutput {
   text: string;
+  ansiText: string;
   truncated: boolean;
 }
 

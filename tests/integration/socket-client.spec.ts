@@ -205,6 +205,40 @@ describe("HerdrSocketClient", () => {
     });
   });
 
+  it("requests one bounded ANSI pane read without server-side stripping", async () => {
+    let captured: WireRequest | undefined;
+    const server = await startServer((socket, request) => {
+      captured = request;
+      socket.end(
+        `${JSON.stringify({
+          id: request.id,
+          result: {
+            type: "pane_read",
+            read: {
+              pane_id: "w1:p1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              source: "recent_unwrapped",
+              format: "ansi",
+              text: "\u001b[3mreasoning\u001b[0m",
+              revision: 9,
+              truncated: false
+            }
+          }
+        })}\n`
+      );
+    });
+
+    expect(await new HerdrSocketClient(server.path).paneReadAnsi("w1:p1")).toMatchObject({
+      ok: true,
+      value: { text: "\u001b[3mreasoning\u001b[0m" }
+    });
+    expect(captured).toMatchObject({
+      method: "pane.read",
+      params: { pane_id: "w1:p1", source: "recent_unwrapped", format: "ansi", lines: 1000, strip_ansi: false }
+    });
+  });
+
   it.each(["not_found", "pane_not_found"])("maps %s to an absent optional pane", async (code) => {
     const server = await startServer((socket, request) => {
       socket.end(`${JSON.stringify({ id: request.id, error: { code, message: "pane absent" } })}\n`);

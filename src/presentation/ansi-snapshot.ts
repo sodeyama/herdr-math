@@ -51,8 +51,7 @@ export function parseMatchingAnsiSnapshot(
   try {
     assertBoundedInput(plainText);
     assertBoundedInput(ansiText);
-    const snapshot = parseAnsiSnapshot(ansiText);
-    if (snapshot.text !== plainText) throw new HerdrMathError("conclusion_boundary_failed");
+    const snapshot = parseAnsiSnapshot(ansiText, plainText);
     return success(snapshot);
   } catch (error) {
     return failure(
@@ -61,15 +60,26 @@ export function parseMatchingAnsiSnapshot(
   }
 }
 
-function parseAnsiSnapshot(source: string): StyledTerminalSnapshot {
+function parseAnsiSnapshot(source: string, expectedText: string): StyledTerminalSnapshot {
   const style = defaultStyle();
   const lines: StyledTerminalLine[] = [];
+  const expectedLines = expectedText.split("\n");
+  const expectedLineCount = expectedText.endsWith("\n") ? expectedLines.length - 1 : expectedLines.length;
   let line = emptyLine();
   let text = "";
+  let lineIndex = 0;
 
   const finishLine = (withNewline: boolean): void => {
-    while (line.characters.at(-1) === " " || line.characters.at(-1) === "\t") line.characters.pop();
-    const lineText = line.characters.join("");
+    const rawLine = line.characters.join("");
+    const expectedLine = expectedLines[lineIndex];
+    if (
+      expectedLine === undefined ||
+      (rawLine !== expectedLine &&
+        (!rawLine.startsWith(expectedLine) || !/^[ \t]*$/u.test(rawLine.slice(expectedLine.length))))
+    ) {
+      throw new HerdrMathError("conclusion_boundary_failed");
+    }
+    const lineText = expectedLine;
     const startOffset = text.length;
     text += lineText;
     const endOffset = text.length;
@@ -91,6 +101,7 @@ function parseAnsiSnapshot(source: string): StyledTerminalSnapshot {
     );
     if (withNewline) text += "\n";
     line = emptyLine();
+    lineIndex += 1;
   };
 
   for (let index = 0; index < source.length;) {
@@ -116,6 +127,9 @@ function parseAnsiSnapshot(source: string): StyledTerminalSnapshot {
     index += 1;
   }
   if (line.characters.length > 0 || source.endsWith("\n") === false) finishLine(false);
+  if (lineIndex !== expectedLineCount || text !== expectedText) {
+    throw new HerdrMathError("conclusion_boundary_failed");
+  }
   return Object.freeze({ text, lines: Object.freeze(lines) });
 }
 

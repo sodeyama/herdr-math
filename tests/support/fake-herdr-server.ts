@@ -97,7 +97,7 @@ export class FakeHerdrServer {
     const copy = clonePane(pane);
     if (copy.focused) this.#clearTabFocus(copy.tab_id);
     this.#panes.set(copy.pane_id, copy);
-    this.#outputs.set(copy.pane_id, { text: "", truncated: false });
+    this.#outputs.set(copy.pane_id, { text: "", ansiText: "", truncated: false });
     this.#paneSequence += 1;
   }
 
@@ -143,9 +143,9 @@ export class FakeHerdrServer {
     return true;
   }
 
-  setPaneOutput(paneId: string, text: string, truncated = false): void {
+  setPaneOutput(paneId: string, text: string, truncated = false, ansiText = text): void {
     this.#requirePane(paneId);
-    this.#outputs.set(paneId, { text, truncated });
+    this.#outputs.set(paneId, { text, ansiText, truncated });
   }
 
   setPaneRect(paneId: string, rect: FakeLayoutRect): void {
@@ -282,7 +282,8 @@ export class FakeHerdrServer {
         if (!READ_SOURCES.has(String(request.params.source))) {
           return this.#sendError(socket, request.id, "invalid_params", "invalid pane read source");
         }
-        const output = this.#outputs.get(pane.pane_id) ?? { text: "", truncated: false };
+        const output = this.#outputs.get(pane.pane_id) ?? { text: "", ansiText: "", truncated: false };
+        const format = stringParam(request.params, "format") ?? "text";
         return this.#sendResult(socket, request.id, {
           type: "pane_read",
           read: {
@@ -290,8 +291,8 @@ export class FakeHerdrServer {
             workspace_id: pane.workspace_id,
             tab_id: pane.tab_id,
             source: stringParam(request.params, "source") ?? "recent",
-            format: stringParam(request.params, "format") ?? "text",
-            text: output.text,
+            format,
+            text: format === "ansi" ? output.ansiText : output.text,
             revision: pane.revision,
             truncated: output.truncated
           }
