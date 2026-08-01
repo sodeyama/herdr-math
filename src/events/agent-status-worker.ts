@@ -16,6 +16,8 @@ import {
 } from "./lifecycle.js";
 import { decodeAgentStatusEvent, type DecodedAgentStatusEvent } from "../herdr/event-decoder.js";
 import type { HerdrAgentSnapshot, HerdrPaneReadSnapshot, HerdrPaneSnapshot } from "../herdr/socket-client.js";
+import { parseMatchingAnsiSnapshot, type StyledTerminalSnapshot } from "../presentation/ansi-snapshot.js";
+import { extractFinalResponse } from "../presentation/final-response.js";
 import type { RendererFormula } from "../renderer/render.js";
 import { scanLatex } from "../scanner/scan-latex.js";
 import { acquirePaneLock } from "../state/pane-lock.js";
@@ -33,6 +35,7 @@ export interface AgentStatusHerdrClient {
   paneGet(paneId: string): Promise<OperationResult<HerdrPaneSnapshot>>;
   agentGet(paneId: string): Promise<OperationResult<HerdrAgentSnapshot>>;
   paneRead(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>>;
+  paneReadAnsi(paneId: string): Promise<OperationResult<HerdrPaneReadSnapshot>>;
 }
 
 export interface ImagePublishRequest {
@@ -114,7 +117,9 @@ interface CompletionPhase {
 
 interface StableRead {
   snapshot: HerdrPaneReadSnapshot;
+  styledSnapshot: StyledTerminalSnapshot;
   digest: string;
+  styledDigest: string;
 }
 
 export async function processAgentStatusEvent(
@@ -313,9 +318,17 @@ async function processCompletion(
   });
   if (!boundary.ok) return failure(boundary.error);
 
+  const finalResponse = extractFinalResponse({
+    agent: resolved.agent,
+    answer: boundary.value.answer,
+    answerStartOffset: boundary.value.startOffset,
+    snapshot: stable.value.styledSnapshot
+  });
+  if (!finalResponse.ok) return failure(finalResponse.error);
+
   let formulas: ReturnType<typeof scanLatex>;
   try {
-    formulas = scanLatex(boundary.value.answer);
+    formulas = scanLatex(finalResponse.value.text);
     if (boundary.value.proof.kind === "middle_replacement") {
       const baselineFormulaDigests = boundary.value.proof.baselineFormulaDigests;
       formulas = formulas.filter((formula) => {
@@ -376,17 +389,37 @@ async function readStableCompletion(
   intervalMs: number
 ): Promise<OperationResult<StableRead>> {
   let previous: StableRead | undefined;
+  let snapshotMismatch = false;
   for (let attempt = 0; attempt < AGENT_STATUS_TIMING.stableReadAttempts; attempt += 1) {
     const read = await dependencies.client.paneRead(resolved.decoded.sourcePaneId);
     if (!read.ok) return failure(read.error);
     if (!readMatchesEvent(read.value, resolved)) return safeFailure("event_invalid");
+    const ansiRead = await dependencies.client.paneReadAnsi(resolved.decoded.sourcePaneId);
+    if (!ansiRead.ok) return failure(ansiRead.error);
+    if (!readMatchesEvent(ansiRead.value, resolved)) return safeFailure("event_invalid");
+    if (ansiRead.value.revision !== read.value.revision || ansiRead.value.truncated !== read.value.truncated) {
+      snapshotMismatch = true;
+      previous = undefined;
+      if (attempt + 1 < AGENT_STATUS_TIMING.stableReadAttempts) await sleep(intervalMs);
+      continue;
+    }
+    const styledSnapshot = parseMatchingAnsiSnapshot(read.value.text, ansiRead.value.text);
+    if (!styledSnapshot.ok) {
+      snapshotMismatch = true;
+      previous = undefined;
+      if (attempt + 1 < AGENT_STATUS_TIMING.stableReadAttempts) await sleep(intervalMs);
+      continue;
+    }
     const candidate: StableRead = {
       snapshot: read.value,
-      digest: fingerprintDigest("stable-pane-read", read.value.text, dependencies.secret)
+      styledSnapshot: styledSnapshot.value,
+      digest: fingerprintDigest("stable-pane-read", read.value.text, dependencies.secret),
+      styledDigest: fingerprintDigest("stable-pane-ansi", ansiRead.value.text, dependencies.secret)
     };
     if (
       previous !== undefined &&
       previous.digest === candidate.digest &&
+      previous.styledDigest === candidate.styledDigest &&
       previous.snapshot.truncated === candidate.snapshot.truncated
     ) {
       return success(candidate);
@@ -394,6 +427,7 @@ async function readStableCompletion(
     previous = candidate;
     if (attempt + 1 < AGENT_STATUS_TIMING.stableReadAttempts) await sleep(intervalMs);
   }
+  if (previous === undefined && snapshotMismatch) return safeFailure("conclusion_boundary_failed");
   return safeFailure("herdr_timeout", true);
 }
 

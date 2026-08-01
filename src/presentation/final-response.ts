@@ -30,7 +30,7 @@ export function extractFinalResponse(request: FinalResponseRequest): OperationRe
   try {
     validateRequest(request);
     const lines = answerLines(request);
-    const selected = selectFinalLines(request.agent, lines);
+    const selected = trimKnownTailChrome(request.agent, selectFinalLines(request.agent, lines));
     const trimmed = trimBlankLines(selected);
     if (trimmed.length === 0) throw new HerdrMathError("conclusion_boundary_failed");
     const text = normalizeResponseLines(trimmed);
@@ -95,16 +95,16 @@ function selectPi(lines: readonly ResponseLine[]): ResponseLine[] {
 
 function selectOpenCode(lines: readonly ResponseLine[]): ResponseLine[] {
   const summary = findLastIndex(lines, ({ text }) => /^\s*▣\s+\S/u.test(text));
-  const hasOpenCodeChrome = lines.some(({ text }) => /^\s*(?:→|┃|╹)\s*/u.test(text));
+  const hasToolChrome = lines.some(({ text }) => /^\s*→\s*/u.test(text));
   if (summary === -1) {
-    if (hasOpenCodeChrome) throw new HerdrMathError("conclusion_boundary_failed");
-    return [...lines];
+    if (hasToolChrome) throw new HerdrMathError("conclusion_boundary_failed");
+    return stripOpenCodeAnswerMarker([...lines]);
   }
   const beforeSummary = lines.slice(0, summary);
   const lastTool = findLastIndex(beforeSummary, ({ text }) => /^\s*→\s+\S/u.test(text));
-  if (lastTool !== -1) return beforeSummary.slice(lastTool + 1);
+  if (lastTool !== -1) return stripOpenCodeAnswerMarker(beforeSummary.slice(lastTool + 1));
   const lastPromptChrome = findLastIndex(beforeSummary, ({ text }) => /^\s*[┃╹]/u.test(text));
-  return beforeSummary.slice(lastPromptChrome + 1);
+  return stripOpenCodeAnswerMarker(beforeSummary.slice(lastPromptChrome + 1));
 }
 
 function normalizeResponseLines(source: readonly ResponseLine[]): string {
@@ -113,7 +113,9 @@ function normalizeResponseLines(source: readonly ResponseLine[]): string {
   let prose: string[] = [];
   let list: string[] = [];
   let display: string[] = [];
+  let code: string[] = [];
   let insideDisplay = false;
+  let codeFence: string | undefined;
 
   const flushProse = (): void => {
     if (prose.length > 0) blocks.push(joinSoftWrappedLines(prose));
@@ -127,9 +129,30 @@ function normalizeResponseLines(source: readonly ResponseLine[]): string {
     if (display.length > 0) blocks.push(display.join("\n"));
     display = [];
   };
+  const flushCode = (): void => {
+    if (code.length > 0) blocks.push(code.join("\n"));
+    code = [];
+  };
 
   for (const rawLine of lines) {
     const line = rawLine.trimEnd();
+    const fence = line.trim().match(/^(`{3,}|~{3,})/u)?.[1];
+    if (codeFence !== undefined) {
+      code.push(line.trim());
+      if (fence !== undefined && fence[0] === codeFence[0] && fence.length >= codeFence.length) {
+        codeFence = undefined;
+        flushCode();
+      }
+      continue;
+    }
+    if (fence !== undefined) {
+      flushProse();
+      flushList();
+      flushDisplay();
+      codeFence = fence;
+      code.push(line.trim());
+      continue;
+    }
     if (insideDisplay) {
       display.push(line.trim());
       if (countDoubleDollarRuns(line) % 2 === 1) {
@@ -163,6 +186,7 @@ function normalizeResponseLines(source: readonly ResponseLine[]): string {
   flushProse();
   flushList();
   flushDisplay();
+  flushCode();
   return blocks.filter(Boolean).join("\n\n").trim();
 }
 
@@ -234,6 +258,28 @@ function stripCodexAnswerMarker(lines: ResponseLine[]): ResponseLine[] {
   if (line === undefined || !/^\s*•\s+/u.test(line.text)) return lines;
   const text = line.text.replace(/^\s*•\s+/u, "");
   return lines.map((value, index) => (index === first ? { ...value, text } : value));
+}
+
+function stripOpenCodeAnswerMarker(lines: ResponseLine[]): ResponseLine[] {
+  const first = lines.findIndex(({ text }) => text.trim() !== "");
+  if (first === -1) return lines;
+  const line = lines[first];
+  if (line === undefined || !/^\s*┃\s*answer:\s*/iu.test(line.text)) return lines;
+  const text = line.text.replace(/^\s*┃\s*answer:\s*/iu, "");
+  return lines.map((value, index) => (index === first ? { ...value, text } : value));
+}
+
+function trimKnownTailChrome(agent: SupportedAgent, lines: readonly ResponseLine[]): ResponseLine[] {
+  const pattern =
+    agent === "claude"
+      ? /^\s*❯(?:\s|$)/u
+      : agent === "codex"
+        ? /^\s*›(?:\s|$)/u
+        : agent === "pi"
+          ? /^\s*(?:Current prompt\s*>|└)/u
+          : /^\s*┃\s*prompt\s*:/iu;
+  const end = lines.findIndex(({ text }) => pattern.test(text));
+  return end === -1 ? [...lines] : lines.slice(0, end);
 }
 
 function removeCommonIndent(lines: readonly string[]): string[] {

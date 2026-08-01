@@ -74,7 +74,7 @@ describe("agent status worker", () => {
       });
       expect(rig.renders).toEqual([[{ latex: "E=mc^2", display: false }]]);
       expect(rig.publications).toHaveLength(1);
-      expect(rig.server.requests.filter(({ method }) => method === "pane.read")).toHaveLength(3);
+      expect(rig.server.requests.filter(({ method }) => method === "pane.read")).toHaveLength(5);
 
       const state = await loadState(rig);
       expect(state?.agent).toBe(agent);
@@ -88,6 +88,27 @@ describe("agent status worker", () => {
       expect(stateBytes).not.toContain("E=mc^2");
       expect(stateBytes).not.toContain(`session-${agent}`);
     }
+  });
+
+  it("does not publish a formula that appears only in Pi reasoning", async () => {
+    const rig = await createRig({
+      agent: "pi",
+      agent_session: { source: "herdr:pi", agent: "pi", kind: "id", value: "session-pi" }
+    });
+    const baseline = "Synthetic Pi baseline before the response.";
+    rig.server.setPaneOutput("w1:p1", baseline);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+
+    const completion = `${baseline}\nReasoning checks $r=1$.\n\nFinal response has no equation.\n\n────────────────────────`;
+    const ansiCompletion = `${baseline}\n\u001b[3mReasoning checks $r=1$.\u001b[0m\n\nFinal response has no equation.\n\n────────────────────────`;
+    rig.server.setPaneOutput("w1:p1", completion, false, ansiCompletion);
+
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "done"))).toMatchObject({
+      ok: true,
+      value: { kind: "completion_recorded", formulaCount: 0 }
+    });
+    expect(rig.renders).toHaveLength(0);
+    expect(rig.publications).toHaveLength(0);
   });
 
   it("publishes a completed formula through the owned graphics viewer", async () => {
@@ -291,6 +312,10 @@ describe("agent status worker", () => {
       paneRead: () => {
         calls += 1;
         return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
+      },
+      paneReadAnsi: () => {
+        calls += 1;
+        return Promise.resolve(failure(serializeError(new HerdrMathError("herdr_protocol_error"))));
       }
     };
     const invalid = await processAgentStatusEvent("not-json", { ...rig.dependencies, client: rejectingClient });
@@ -336,6 +361,7 @@ describe("agent status worker", () => {
         client: {
           paneGet: (paneId) => baseClient.paneGet(paneId),
           paneRead: (paneId) => baseClient.paneRead(paneId),
+          paneReadAnsi: (paneId) => baseClient.paneReadAnsi(paneId),
           agentGet: async (paneId) => {
             const resolved = await baseClient.agentGet(paneId);
             return resolved.ok ? success({ ...resolved.value, status: "done" }) : resolved;
@@ -426,6 +452,7 @@ describe("agent status worker", () => {
     rig.dependencies.client = {
       paneGet: (paneId) => baseClient.paneGet(paneId),
       agentGet: (paneId) => baseClient.agentGet(paneId),
+      paneReadAnsi: (paneId) => baseClient.paneReadAnsi(paneId),
       paneRead: (paneId) => {
         readNumber += 1;
         rig.server.setPaneOutput(paneId, `${baseline}\nChanging answer ${readNumber}: $x_${readNumber}$.`);
