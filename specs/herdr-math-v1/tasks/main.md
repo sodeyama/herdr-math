@@ -135,7 +135,7 @@
 
 ## Phase 4 - Renderer Decision and Implementation
 
-- [ ] **T-401: Freeze the release formula corpus**
+- [x] **T-401: Freeze the release formula corpus**
   - Scope: Add powers, fractions, roots, sums, integrals, aligned equations, matrices, Greek letters, Unicode, multiline, invalid, oversized, and link-capable inputs.
   - Dependencies: T-204
   - Acceptance tests: AT-400 through AT-405
