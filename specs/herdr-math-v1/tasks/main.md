@@ -297,7 +297,7 @@
   - Acceptance tests: AT-309, AT-310, AT-411 through AT-413, AT-503, AT-504, AT-509, AT-511 through AT-513
   - Commit: `test(integration): cover final response presentation`
 
-- [ ] **T-707: Re-run the automated release suite**
+- [x] **T-707: Re-run the automated release suite**
   - Scope: Execute the complete clean automated release suite after the presentation architecture change, refresh bounded performance/security evidence, and require a no-retry pass.
   - Dependencies: T-706
   - Acceptance tests: Every automated P0 case

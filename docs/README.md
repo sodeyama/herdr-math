@@ -14,6 +14,7 @@ This directory separates product intent, target design, and historical evidence 
 - [Renderer candidate measurements](evidence/2026-08-01-renderer-candidates.md) records the fixed-corpus comparison used by the renderer decision.
 - [Performance evidence](evidence/2026-08-01-performance.md) records worker, boundary, renderer, memory, image, and cleanup regression budgets.
 - [Automated release evidence](evidence/2026-08-01-automated-release.md) records the clean-checkout automated P0 suite and reproducible build comparison.
+- [Presentation automated release evidence](evidence/2026-08-02-presentation-automated-release.md) records the refreshed clean-checkout suite for conclusion-only rendering, transparent output, private transport, and scrolling.
 - [Ghostty runtime evidence](evidence/2026-08-01-ghostty-runtime.md) records the four-agent, viewer, resize, failure, and graphics-capability matrix.
 - [Named-session restart evidence](evidence/2026-08-01-session-restart.md) records state isolation, stale-lock cleanup, and restart recovery.
 - [macOS arm64 evidence](evidence/2026-08-01-platform-macos-arm64.md) records fresh installation and native artifact verification.
