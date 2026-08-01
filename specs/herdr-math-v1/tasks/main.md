@@ -217,7 +217,7 @@
   - Acceptance tests: AT-500 through AT-502, AT-505, AT-506, AT-511
   - Commit: `feat(viewer): reuse one pane per source agent`
 
-- [ ] **T-603: Implement graphics capability and placement**
+- [x] **T-603: Implement graphics capability and placement**
   - Scope: Read cell/layout dimensions, validate capability, compute bounded placement, enforce raw/encoded/dimension limits, and update through one `pane.graphics.set` call.
   - Dependencies: T-404, T-503, T-602
   - Acceptance tests: AT-407, AT-408, AT-503, AT-504, AT-507 through AT-509

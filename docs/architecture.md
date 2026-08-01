@@ -281,14 +281,13 @@ The manager verifies ownership before updating or closing a pane. It never treat
 
 Before updating the viewer, the placer:
 
-1. Calls `pane.graphics.info` for pixel cell dimensions.
-2. Rejects disabled graphics, missing client dimensions, zero values, or unsupported responses.
-3. Reads viewer layout dimensions.
-4. Computes bounded grid columns and rows.
-5. Verifies raw image bytes and base64 expansion against limits.
-6. Calls `pane.graphics.set` once with the complete image.
+1. Revalidates PNG signature, declared dimensions, pixel count, raw bytes, and base64 expansion independently of the renderer.
+2. Calls `pane.graphics.info` on the source before viewer discovery, so disabled graphics or unavailable client dimensions cannot create a useless viewer.
+3. Resolves the owned viewer, calls `pane.graphics.info` again for that pane, and reads its current `pane.layout` rectangle.
+4. Converts image pixels to natural cell columns and rows, then scales both dimensions by one bounded factor so the placement remains within the current viewer rectangle.
+5. Calls `pane.graphics.set` once with the complete PNG and placement. Graphics and layout calls have two-second timeouts.
 
-The existing graphics layer is not cleared first. This preserves the last valid image if the new render or API call fails.
+The existing graphics layer is not cleared first. Invalid or oversized images, missing cell dimensions, stale ownership, and graphics API failure leave the last valid image intact. A successful completion records the viewer id only after `pane.graphics.set` succeeds.
 
 ### 10. Diagnostics
 
