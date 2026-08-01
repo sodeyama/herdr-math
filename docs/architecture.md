@@ -303,6 +303,16 @@ The `diagnose` action checks:
 
 Diagnostics report no pane text or formula text. Human-readable output is paired with stable machine codes.
 
+The implemented action reads only explicitly named Herdr environment variables and extracts only the focused pane and
+workspace ids from the bounded action context. Its JSON output is restricted to plugin and Herdr versions, protocol
+numbers, fixed check ids, fixed status values, stable codes, and fixed English messages and actions. It never reports
+directory paths, pane ids, selected text, environment secrets, remote error messages, or exception objects.
+
+`graphics_disabled` instructs the user to set `[experimental].kitty_graphics = true` and run
+`herdr server reload-config`. `cell_size_unavailable` separately instructs the user to reconnect Herdr from a compatible
+graphics-capable terminal. Available cell dimensions still produce `terminal_unverified`; they do not by themselves
+create a terminal compatibility claim or require Ghostty.
+
 ## Event Lifecycle
 
 ### Working event

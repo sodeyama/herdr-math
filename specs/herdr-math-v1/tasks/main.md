@@ -223,7 +223,7 @@
   - Acceptance tests: AT-407, AT-408, AT-503, AT-504, AT-507 through AT-509
   - Commit: `feat(graphics): place validated images in viewers`
 
-- [ ] **T-604: Implement privacy-safe diagnostics**
+- [x] **T-604: Implement privacy-safe diagnostics**
   - Scope: Check versions, authoritative environment presence, directories, renderer, graphics flag, cell size, and ownership using allowlisted output and stable error codes.
   - Dependencies: T-502, T-603
   - Acceptance tests: AT-507, AT-508, AT-608, AT-609, AT-705
