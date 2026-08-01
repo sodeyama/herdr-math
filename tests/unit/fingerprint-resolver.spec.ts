@@ -194,14 +194,16 @@ describe("fingerprint answer resolver", () => {
     const dynamicCompletion = `${before}${currentGap}${after}\n\nChanged dynamic footer context 1234567890`;
     const dynamicResult = resolveAnswerFromFingerprint(fingerprint(testCase), dynamicCompletion, secret);
     expect(dynamicResult.ok && dynamicResult.value.strategy).toBe("middle_replacement");
+
+    const baselineOnlyCompletion = `${before}\nupdated prose $u$\n${after}${following}`;
+    const baselineOnlyResult = resolveAnswerFromFingerprint(fingerprint(testCase), baselineOnlyCompletion, secret);
+    expect(baselineOnlyResult.ok && baselineOnlyResult.value.strategy).toBe("middle_replacement");
   });
 
-  it.each([
-    ["only a baseline formula", "\nupdated prose $u$\n"],
-    ["unscannable delimiters", "\n$$$$$$$$$\n"]
-  ])("fails closed for a replacement with %s", (_name, currentGap) => {
+  it("fails closed for a replacement with unscannable delimiters", () => {
     const before = "Synthetic working anchor with unique value 1234567890";
     const baselineGap = "\nworking $u$\n";
+    const currentGap = "\n$$$$$$$$$\n";
     const after = "Synthetic footer anchor with unique value abcdefghij";
     const following = "\n\nSynthetic stable footer context with unique value 9876543210";
     const testCase: BoundaryCase = {

@@ -151,6 +151,19 @@ describe("agent status worker", () => {
       value: { kind: "image_published", formulaCount: 1 }
     });
     expect(rig.renders).toEqual([[{ latex: "x^2+y^2=z^2", display: true }]]);
+
+    const nextBefore = "Synthetic next working anchor with unique value 9876543210";
+    const nextGap = "\nworking without a formula\n";
+    const nextAfter = "Synthetic next footer anchor with unique value zyxwvutsrq";
+    rig.server.setPaneOutput("w1:p1", `${nextBefore}${nextGap}${nextAfter}${following}`);
+    expect((await process(rig, rig.server.transitionPane("w1:p1", "working"))).ok).toBe(true);
+    rig.server.setPaneOutput("w1:p1", `${nextBefore}\nno equation here\n${nextAfter}${following}`);
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "idle"))).toMatchObject({
+      ok: true,
+      value: { kind: "completion_recorded", formulaCount: 0 }
+    });
+    expect(rig.renders).toHaveLength(1);
+    expect(rig.publications).toHaveLength(1);
   });
 
   it("processes a later turn when the agent sequence advances without a pane revision change", async () => {

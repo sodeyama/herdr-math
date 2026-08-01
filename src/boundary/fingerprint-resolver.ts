@@ -205,6 +205,7 @@ function resolveMiddleReplacement(
   const lines = collectRecentLines(current, POLICY_LIMITS.boundaryCandidates);
   let candidatesExamined = 0;
   let conflict = false;
+  let fallback: Extract<MiddleReplacementResult, { status: "resolved" }> | undefined;
 
   for (let index = 0; index < anchors.length - 1; index += 1) {
     const before = anchors[index];
@@ -260,12 +261,7 @@ function resolveMiddleReplacement(
       const digest = formulaFingerprintDigest(formula, secret);
       return !baselineFormulaDigests.some((baselineDigest) => fingerprintDigestsEqual(digest, baselineDigest));
     });
-    if (!hasNewFormula) {
-      conflict = true;
-      continue;
-    }
-
-    return {
+    const resolved: Extract<MiddleReplacementResult, { status: "resolved" }> = {
       status: "resolved",
       startOffset: beforeMatch.end,
       endOffset: afterMatch.start,
@@ -278,7 +274,10 @@ function resolveMiddleReplacement(
         baselineFormulaDigests
       }
     };
+    if (hasNewFormula) return resolved;
+    fallback = resolved;
   }
+  if (fallback !== undefined) return fallback;
   return { status: conflict ? "conflict" : "none" };
 }
 
