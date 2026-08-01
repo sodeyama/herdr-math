@@ -231,7 +231,7 @@
 
 ## Phase 7 - Integrated Hardening
 
-- [ ] **T-701: Add the full lifecycle integration matrix**
+- [x] **T-701: Add the full lifecycle integration matrix**
   - Scope: Run Claude Code, Codex, Pi, and OpenCode through valid-math and completion cases, then run no-formula, code, price, variable, multiple, invalid, limits, timeout, recovery, repeated prompt, truncation, duplicate status, viewer close, and resize sequences through the fake server.
   - Dependencies: T-504, T-506, T-603
   - Acceptance tests: All applicable P0 Integration cases
