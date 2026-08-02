@@ -87,9 +87,7 @@ describe("one-shot render subprocess transport", () => {
   });
 
   it("rejects an unsupported protocol", async () => {
-    const response = await renderSubprocess(
-      JSON.stringify({ protocol: "other/9", kind: "document", text: "ok $a$" })
-    );
+    const response = await renderSubprocess(JSON.stringify({ protocol: "other/9", kind: "document", text: "ok $a$" }));
     expect(response.ok).toBe(false);
     if (response.ok) return;
     expect(response.error.code).toBe("renderer_input_limit");

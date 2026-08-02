@@ -49,18 +49,10 @@ describe("render IPC contract", () => {
   });
 
   it("validates protocol, kind, and required content", () => {
-    expect(
-      validateRequest({ protocol: IPC_PROTOCOL, kind: "document", text: "hi" })
-    ).toBeUndefined();
-    expect(
-      validateRequest({ protocol: "other/9", kind: "document", text: "hi" })
-    ).toMatch(/Unsupported protocol/);
-    expect(validateRequest({ protocol: IPC_PROTOCOL, kind: "document", text: "  " })).toBe(
-      "No source text"
-    );
-    expect(validateRequest({ protocol: IPC_PROTOCOL, kind: "formulas", formulas: [] })).toBe(
-      "No formulas"
-    );
+    expect(validateRequest({ protocol: IPC_PROTOCOL, kind: "document", text: "hi" })).toBeUndefined();
+    expect(validateRequest({ protocol: "other/9", kind: "document", text: "hi" })).toMatch(/Unsupported protocol/);
+    expect(validateRequest({ protocol: IPC_PROTOCOL, kind: "document", text: "  " })).toBe("No source text");
+    expect(validateRequest({ protocol: IPC_PROTOCOL, kind: "formulas", formulas: [] })).toBe("No formulas");
   });
 
   it("rejects an oversized response", () => {
