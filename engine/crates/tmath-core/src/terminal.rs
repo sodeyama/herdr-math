@@ -563,8 +563,8 @@ mod tests {
             },
         );
         let mut term = Terminal::new(tty, 4).unwrap();
+        assert!(term.probe_graphics_support().unwrap());
         let out = String::from_utf8(term.io.writes.clone()).unwrap();
         assert!(out.contains("a=q,f=32,s=1,v=1"));
-        assert!(term.probe_graphics_support().unwrap());
     }
 }

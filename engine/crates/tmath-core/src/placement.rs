@@ -513,4 +513,24 @@ mod tests {
             Err(PlacementError::InvalidImage { .. })
         ));
     }
+
+    #[test]
+    fn fail_closed_emits_nothing_when_a_block_is_rejected() {
+        let mut tracker = PlacementTracker::new(PlacementLimits {
+            max_concurrent_placements: 1,
+            max_total_pixels: 100,
+        });
+        let cell = CellSize {
+            width: 10,
+            height: 10,
+        };
+        let block = tracker.reserve(10, 10, cell).unwrap();
+        assert!(matches!(
+            tracker.reserve(10, 10, cell),
+            Err(PlacementError::TooManyPlacements { .. })
+        ));
+        // A rejected reserve must not have mutated the tracker.
+        assert_eq!(tracker.active().len(), 1);
+        assert_eq!(tracker.home_row_for_next(), block.rows + 1);
+    }
 }
