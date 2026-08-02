@@ -385,13 +385,49 @@ the input/mouse/escape parsers and the scanner must withstand adversarial input.
 Progress: T-601 through T-603 complete via commits `a70a5d1`, `a6f104c`, `b7d6741` (plus
 `1e9b118` docs). Evidence: `docs/evidence/2026-08-02-tmath-v2-phase5.md`.
 
-## Phase 6 - Compatibility and Documentation (outline)
+## Phase 6 - Compatibility and Documentation
 
-- **T-701**: Remove `herdr-plugin.toml`, `src/herdr`, `src/viewer`, `src/graphics`,
-  `src/manifest`, `src/on-*.ts`, `src/startup.ts`, and all `HERDR_*` reads; fix dangling imports.
-- **T-702**: Update `AGENTS.md`, `docs/concept.md`, `docs/architecture.md`, README, and
-  security/privacy docs to the standalone product; mark V1 superseded.
-- **T-703**: Record Ghostty evidence; mark kitty/WezTerm as P1.
+The goal of Phase 6 is to make the repository a self-consistent standalone product: remove every
+Herdr-plugin artifact and `HERDR_*` read, update all source-of-truth and public docs to the
+standalone identity, and record real-terminal compatibility evidence. V1 stays tagged for
+rollback and its spec is marked superseded, never deleted.
+
+### T-701: Remove the Herdr plugin contract
+
+- Scope: Delete `herdr-plugin.toml`, `src/herdr`, `src/viewer`, `src/viewer.ts`, `src/graphics`,
+  `src/manifest`, `src/on-agent-status.ts`, `src/on-pane-closed.ts`, `src/startup.ts`,
+  `src/diagnose.ts`, `src/index.ts`, and the Herdr-coupled `src/boundary`, `src/state`,
+  `src/config`, `src/events`, `src/presentation`, `src/diagnostics` trees, plus their tests,
+  support rigs, reference oracles, and fixtures. Keep `answer-corpus.json` (scanner spec depends on
+  it). Rewrite `package.json` scripts/files/keywords and the security gate so no `HERDR_*` key or
+  deleted path remains, leaving no dangling imports.
+- Dependencies: T-103 (check/build tooling)
+- Acceptance: `AT-2-705`
+- Evidence: Static, Contract
+- Commit: `chore(v2): remove the herdr plugin contract`
+
+### T-702: Document the standalone product and mark V1 superseded
+
+- Scope: Update `AGENTS.md`, `docs/concept.md`, `docs/architecture.md`, `README.md`,
+  `SECURITY.md`, `PRIVACY.md`, `getting-started`, CHANGELOG, and the V1 spec status to the
+  standalone `tmath` identity. No public doc may claim Herdr plugin behavior; V1 is explicitly
+  superseded, its tag remains for rollback.
+- Dependencies: T-701
+- Acceptance: `AT-2-702`, `AT-2-703`
+- Evidence: Static
+- Commit: `docs(v2): publish the standalone terminal math identity`
+
+### T-703: Record Ghostty compatibility evidence
+
+- Scope: In a real Kitty-graphics terminal (Ghostty primary), render multi-block documents and
+  record placement, scrollback scroll, mouse wheel, keyboard fallback, replace, invalid
+  preservation, and clean-exit results. Kitty/WezTerm stay P1 until the same matrix passes.
+- Dependencies: T-702, T-302, T-400
+- Acceptance: `AT-2-700`, `AT-2-701`
+- Evidence: Runtime
+- Commit: `docs(compat): record ghostty standalone evidence`
+
+Progress (T-701): See `docs/evidence/2026-08-02-tmath-v2-phase6.md`.
 
 ## Phase 7 - Release Gate (outline)
 
