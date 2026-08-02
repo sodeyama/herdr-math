@@ -5,6 +5,7 @@
 //! parsing, and the scroll state machine. This crate never touches a socket,
 //! manifest, or plugin runtime.
 
+pub mod agent;
 pub mod input;
 pub mod ipc;
 pub mod kitty;
