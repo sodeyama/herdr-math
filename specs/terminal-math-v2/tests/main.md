@@ -499,6 +499,88 @@ structured log where appropriate.
 - Then installation and runtime pass without a development checkout, unpublished files, a
   Herdr runtime, or another repository's dependencies.
 
+## I. Agent Integration (tmux viewer)
+
+Agent integration is a P1 extension to the standalone CLI, not part of the
+`0.2.0` release gate. `tmath agent` watches a tmux pane running a coding agent
+(Claude Code, Codex, opencode, Cursor, pi, and similar) and shows each
+finished answer as a rendered Markdown + math image in a separate viewer pane.
+
+### AT-2-800 - Agent pane split and channel
+
+- Priority: P1
+- Evidence: Contract, Integration, Runtime
+- Given `tmath agent` running inside a tmux session
+- When it starts
+- Then it opens one right-side viewer pane running `tmath agent-viewer`, binds
+  a bounded Unix socket in the platform temp directory, and emits a one-line
+  banner naming the source and viewer panes.
+
+### AT-2-801 - Answer boundary detection
+
+- Priority: P1
+- Evidence: Unit
+- Given consecutive `tmux capture-pane` snapshots of a pane running a coding
+  agent
+- When the newest answer is captured
+- Then the detector returns that answer's display text (`$...$`/`$$...$$` math
+  and prose), strips a trailing prompt glyph and repainted working frames, and
+  rejects prompt-only, pure-repaint, and unrecoverable rewrites with no answer.
+
+### AT-2-802 - Bounded message channel
+
+- Priority: P1
+- Evidence: Unit, Integration
+- Given a document larger than the renderer request limit or a malformed frame
+- When it crosses the Unix socket
+- Then the frame is rejected with a stable error, the buffer stays bounded, and
+  the viewer keeps its previous image (fail closed).
+
+### AT-2-803 - Viewer render and replace
+
+- Priority: P1
+- Evidence: Unit, Render, Runtime
+- Given a new answer document
+- When the viewer receives it
+- Then it renders through the one-shot renderer subprocess, replaces the
+  previous placement by image id, and keeps the previous image intact on any
+  render, limit, or decode failure.
+
+### AT-2-804 - Viewer scroll and clean exit
+
+- Priority: P1
+- Evidence: Unit, Integration
+- Given a rendered answer taller than the viewer pane
+- When the user scrolls with the wheel or arrow keys in the viewer pane
+- Then the placement is re-emitted at a shifted home row, and `q`/`Ctrl-C`
+  close the viewer cleanly.
+
+### AT-2-805 - tmux passthrough envelope
+
+- Priority: P1
+- Evidence: Unit
+- Given the process runs with `$TMUX` set
+- When any Kitty sequence or placement is written
+- Then it is wrapped in the tmux DCS passthrough envelope
+  (`ESC P ... ESC \\`), and unmodified otherwise.
+
+### AT-2-806 - Ghostty tmux image relay
+
+- Priority: P1
+- Evidence: Runtime
+- Given a Ghostty-attached tmux session with `allow-passthrough` enabled
+- When an answer renders in the viewer pane
+- Then a real image is displayed; until recorded, image display inside tmux
+  remains a verified limitation with a clear fail-closed diagnostic.
+
+### AT-2-807 - No-content logging
+
+- Priority: P1
+- Evidence: Static, Integration
+- Given watcher/viewer success and every error path
+- Then logs contain only event names, pane ids, counts, byte sizes, and hashes;
+  never answer text, formulas, or document bytes.
+
 ## Release Acceptance Rule
 
 Release `0.2.0` only when:

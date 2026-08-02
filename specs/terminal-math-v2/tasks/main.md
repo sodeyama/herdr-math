@@ -473,3 +473,77 @@ completed.
 - Commit: `docs(release): record the post-v2 backlog`
 
 Progress (T-801/T-802/T-803): see `docs/evidence/2026-08-02-tmath-v2-phase7.md`.
+
+---
+
+## Phase 8 - Agent Integration (tmux viewer)
+
+The goal of Phase 8 is a P1 standalone extension: `tmath agent` watches a tmux
+pane running a coding agent (Claude Code, Codex, opencode, Cursor, pi, and
+similar), proves the newest answer boundary from `capture-pane` snapshots, and
+sends the answer document over a bounded Unix socket to `tmath agent-viewer`,
+which renders Markdown + math through the existing one-shot renderer and shows
+it as a scrollback-anchored image in a right-side viewer pane. This phase is
+not part of the `0.2.0` release gate.
+
+### T-901: Detect agent answer boundaries from pane snapshots
+
+- Scope: Add `tmath-core::agent::boundary` — `find_answer(baseline, completion)`
+  returning display text for a new answer, with trailing-prompt and repainted
+  working-frame stripping, and `None` for prompt-only, pure-repaint, and
+  unrecoverable rewrites. Mirrors the strategies in `answer-corpus.json`; assert
+  corpus-derived cases in Rust unit tests.
+- Dependencies: none
+- Acceptance: `AT-2-801`
+- Evidence: Unit
+- Commit: `feat(agent): detect agent answer boundaries from pane snapshots`
+
+### T-902: Build tmux commands and the bounded message channel
+
+- Scope: Add `tmath-core::agent::tmux` (validated `PaneId`, `split-window`
+  with pane-id capture, `capture-pane` with bounded history, pane-kill and
+  pane-existence commands) and `tmath-core::agent::codec` (length-prefixed JSON
+  frames: `document`/`quit`, bounded decoder with resync). No shell evaluation
+  of agent content.
+- Dependencies: T-901
+- Acceptance: `AT-2-802`
+- Evidence: Unit
+- Commit: `feat(agent): build tmux commands and bounded message channel`
+
+### T-903: Add `tmath agent` and `tmath agent-viewer` commands
+
+- Scope: `tmath agent` binds a temp-dir Unix socket, splits one viewer pane
+  running `tmath agent-viewer <socket>`, polls the source pane, detects and
+  debounces the newest answer, and sends it. `tmath agent-viewer` connects,
+  renders each document through the one-shot renderer, replaces the previous
+  placement, maps wheel/arrows to a shifted re-placement, and closes on
+  `q`/`Ctrl-C`. Both fail closed and log no content. Extract the shared
+  renderer-spawn helpers first.
+- Dependencies: T-902
+- Acceptance: `AT-2-800`, `AT-2-803`, `AT-2-804`
+- Evidence: Unit, Contract, Integration
+- Commit: `feat(cli): add tmath agent watcher and agent-viewer commands`
+
+### T-904: Add tmux DCS passthrough and Ghostty evidence
+
+- Scope: Wrap all Kitty emit bytes in `ESC P ... ESC \\` when `$TMUX` is set
+  (`kitty::wrapped_for_tty`). Record `scripts/smoke-agent-tmux.sh` results and
+  direct-Ghostty placement evidence; record the tmux image-relay limitation
+  (AT-2-806) with the fail-closed diagnostic it produces. Rewrite
+  `docs/getting-started.md` and the compatibility matrix for the tmux setup
+  and its limitation.
+- Dependencies: T-903
+- Acceptance: `AT-2-805`, `AT-2-806`, `AT-2-807`
+- Evidence: Unit, Static, Runtime
+- Commit: `docs(agent): record tmux passthrough and ghostty evidence`
+
+### T-905: Probe real agents and record the boundary matrix
+
+- Scope (P1, not release-gated): Run Claude Code, Codex, opencode, Cursor, and
+  pi under `tmath agent`, record the completed-answer boundary and render
+  result per agent, and extend the boundary rules for prompt styles not yet
+  recognized (plain-text inline markers such as pi's `Current prompt > ...`).
+- Dependencies: T-904
+- Acceptance: `AT-2-801`, `AT-2-803` for each recorded agent
+- Evidence: Runtime
+- Commit: `test(agent): record real-agent boundary matrix`

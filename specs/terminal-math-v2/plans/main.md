@@ -2,7 +2,9 @@
 
 ## Status
 
-- Plan state: In progress — Phases 0-6 (terminal surface, render transport, placement, input loop, CLI and composition, hardening, Herdr removal and docs) complete; Phase 7 (release gate) next
+- Plan state: Phases 0-7 (release-gate prep) complete; **Phase 8 (agent
+  integration, P1) in progress** — `tmath agent`/`agent-viewer` implemented and
+  unit/integration-serviced; Ghostty tmux image relay recorded as a limitation.
 - Target release: `0.2.0` (first standalone release without a Herdr runtime)
 - Last updated: August 2, 2026
 - Acceptance contract: `../tests/main.md`
@@ -195,13 +197,58 @@ The Rust crate owns: stdout transmission, stdin reading (poll + buffered parse),
 
 ```
 tmath render <path | ->
-tmath watch <path>            # re-render on file change (P1)
-tmath ls                      # list active placements in this terminal (P1)
+tmath agent [--source-pane <id>] [--percent <p>] [--wait-ms <ms>]   # P1
+tmath agent-viewer <socket-path>                                    # P1
+tmath watch <path>            # re-render on file change (P2)
+tmath ls                      # list active placements in this terminal (P2)
 tmath --help / --version
 ```
 
 Place planned command names in `package.json`/Cargo manifests only once they exist; do not document
 unbuilt commands as working.
+
+## Phase 8 - Agent Integration (tmux viewer)
+
+A P1 extension for the standalone product: show the finished output of a coding
+agent (Claude Code, Codex, opencode, Cursor, pi, ...) in a separate tmux
+viewer pane as rendered Markdown + math. This reuses the proven
+`tmath-render/1` pipeline and the scrollback-anchored placement model; tmux
+replaces the deprecated Herdr pane owner.
+
+```text
+[ agent running in a tmux source pane ]
+        │  tmux capture-pane (bounded history)
+        ▼
+[ tmath agent (long-running watcher) ]
+        │  answer boundary proven from snapshots (exact/stable prefix,
+        │  working-frame repaint, prompt strip), debounce, fail closed
+        │  Unix socket: length-prefixed JSON (document/quit), bounded
+        ▼
+[ tmath agent-viewer (in the viewer pane) ]
+        │  one-shot tmath-render subprocess (KaTeX + allowlisted Markdown)
+        ▼
+[ viewer pane: scrollback-anchored Kitty placement, one per answer,
+  replaced by image id, scrolled by wheel/arrows, q/Ctrl-C closes ]
+```
+
+Key behaviors:
+
+- The watcher owns tmux only through a fixed allowlisted `tmux` CLI surface
+  (split/capture/display/kill) with validated pane ids; no agent content ever
+  reaches a shell.
+- Under `$TMUX`, every Kitty sequence and placement is wrapped in the tmux DCS
+  passthrough envelope (`ESC P ... ESC \`) so tmux forwards it to the outer
+  terminal.
+- The viewer fails closed on graphics-unavailable, over-limit, malformed, and
+  render-error paths, keeping the previous image.
+- Privacy: logs carry event names, pane ids, counts, and byte sizes only;
+  sockets live under the platform temp directory.
+
+Recorded limitation: on the verified Ghostty 1.3.1 + tmux 3.5a setup, the
+`a=q` probe reply is not relayed back through tmux, so images inside a tmux
+pane are not yet displayed and the connection fails closed with a clear
+diagnostic. Resolving the Ghostty tmux reply relay (and recording kitty/
+WezTerm) is a P1 follow-up (AT-2-806).
 
 ## Repository Layout (target)
 
@@ -248,6 +295,9 @@ Remove `herdr-plugin.toml`, the `src/herdr`, `src/viewer`, `src/graphics`, `src/
   standalone product; port or re-run the V2 acceptance tests.
 - **Phase 7** — release gate: clean build, install, validation; no local paths; reproducible build;
   version tags agree; P1/P2 post-V2 backlog (Linux, Windows, `watch`, additional terminals).
+- **Phase 8** — agent integration (P1): `tmath agent` tmux watcher + `tmath agent-viewer`
+  (boundary detection, bounded socket channel, viewer render/replace/scroll, DCS passthrough);
+  record real-agent boundary matrix. Not part of the `0.2.0` gate.
 
 ## Advisory / Rollback
 
@@ -271,6 +321,10 @@ Remove `herdr-plugin.toml`, the `src/herdr`, `src/viewer`, `src/graphics`, `src/
   reset the terminal on any exit path.
 - **Payload transport**: large PNGs through a pipe are slow; add `t=s`/`t=f` shared-memory/file
   media in a later phase if needed, keeping the bounded-size invariants.
+- **tmux image relay**: Kitty sequences reach a tmux pane only through the DCS passthrough
+  envelope and an outer terminal that relays both directions; Ghostty 1.3.1 + tmux 3.5a does not
+  relay the `a=q` reply back (recorded limitation). The viewer fails closed with a clear
+  diagnostic rather than guessing.
 
 ## Definition of Done (for the refactor)
 
