@@ -255,3 +255,59 @@ fn oversized_document_is_rejected_before_the_renderer() {
         "oversized text must be rejected at the boundary"
     );
 }
+
+#[test]
+fn cli_error_paths_never_leak_document_content_when_built() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    let Some(worker) = worker_path() else {
+        eprintln!("skipping: render subprocess not built (set TMATH_RENDER_WORKER)");
+        return;
+    };
+    let binary = env!("CARGO_BIN_EXE_tmath");
+    // A sentinel that must never appear in stdout/stderr on any path.
+    let sentinel = "SENTINEL_SODENWHEEL_7f3c";
+    let over_limit = format!(
+        "{} {}",
+        sentinel,
+        (0..21)
+            .map(|i| format!("math here $x_{i}$"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+
+    let mut child = std::process::Command::new(binary)
+        .arg("render")
+        .arg("-")
+        .env("TMATH_RENDER_WORKER", &worker)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(over_limit.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.code().is_some(),
+        "over-limit CLI run must terminate (status {})",
+        output.status
+    );
+    assert!(
+        output.status.code().unwrap() != 2,
+        "over-limit CLI uses a stable, non-usage error code (status {})",
+        output.status
+    );
+    assert!(
+        !stdout.contains(sentinel) && !stderr.contains(sentinel),
+        "document content must not leak into CLI output"
+    );
+}

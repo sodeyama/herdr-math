@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const ignoredDirectories = new Set([".git", "node_modules", "coverage", "target"]);
-const textExtensions = new Set([".css", ".html", ".js", ".json", ".md", ".mjs", ".toml", ".ts", ".txt"]);
+const textExtensions = new Set([".css", ".html", ".js", ".json", ".md", ".mjs", ".rs", ".swift", ".toml", ".ts", ".txt"]);
 const textNames = new Set([".editorconfig", ".gitignore", "LICENSE"]);
 const allowedEnvironmentKeys = new Set([
   "HERDR_BIN_PATH",
