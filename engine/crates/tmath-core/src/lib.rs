@@ -6,6 +6,7 @@
 //! never touches a socket, manifest, or plugin runtime.
 
 pub mod kitty;
+pub mod mouse;
 pub mod terminal;
 
 /// Returns the crate version from the package manifest.
