@@ -149,6 +149,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmath"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "tmath-core",
+]
+
+[[package]]
 name = "tmath-core"
 version = "0.2.0"
 dependencies = [
