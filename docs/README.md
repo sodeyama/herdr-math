@@ -1,35 +1,33 @@
 # Documentation
 
-This directory separates product intent, target design, and historical evidence so that planned behavior is not confused with verified behavior.
+This directory separates product intent, target design, and historical evidence so that planned
+behavior is not confused with verified behavior.
 
 ## Documents
 
-- [Concept](concept.md) explains the user problem, product promise, scope, naming, compatibility boundary, privacy model, and success criteria.
-- [Architecture](architecture.md) defines the target v1 components, event lifecycle, state model, viewer ownership, rendering boundary, failure behavior, and packaging model.
-- [Getting started](getting-started.md) documents verified local setup, first use, diagnostics, update, unlink, and release-pending tagged commands.
-- [Compatibility](compatibility.md) records the verified Herdr, macOS architecture, terminal, and coding-agent release-candidate scope.
-- [Experiment report](experiment-report.md) records what was tested on August 1, 2026, what passed, what failed, and which prototype decisions must change before release.
-- [Coding-agent lifecycle evidence](evidence/2026-08-01-agent-lifecycle.md) records redacted real-session results for Claude Code, Codex, Pi, and OpenCode.
-- [Renderer decision](decisions/0001-v1-renderer.md) selects the v0.1 local rendering backend from measured candidates and records its security, packaging, and compatibility constraints.
-- [Renderer candidate measurements](evidence/2026-08-01-renderer-candidates.md) records the fixed-corpus comparison used by the renderer decision.
-- [Performance evidence](evidence/2026-08-01-performance.md) records worker, boundary, renderer, memory, image, and cleanup regression budgets.
-- [Automated release evidence](evidence/2026-08-01-automated-release.md) records the clean-checkout automated P0 suite and reproducible build comparison.
-- [Presentation automated release evidence](evidence/2026-08-02-presentation-automated-release.md) records the refreshed clean-checkout suite for conclusion-only rendering, transparent output, private transport, and scrolling.
-- [Presentation runtime evidence](evidence/2026-08-02-presentation-runtime.md) records the four-agent conclusion pipeline, OpenCode anchor recovery, viewer behavior, and the remaining direct-visual gate.
-- [Ghostty runtime evidence](evidence/2026-08-01-ghostty-runtime.md) records the four-agent, viewer, resize, failure, and graphics-capability matrix.
-- [Named-session restart evidence](evidence/2026-08-01-session-restart.md) records state isolation, stale-lock cleanup, and restart recovery.
-- [macOS arm64 evidence](evidence/2026-08-01-platform-macos-arm64.md) records fresh installation and native artifact verification.
-- [GitHub Actions evidence](evidence/2026-08-01-github-actions.md) records the pinned macOS arm64 workflow and its first passing run.
-- [Licensing and notices](licensing.md) defines the project license, prototype boundary, dependency policy, and release notice gate.
-- [Privacy](../PRIVACY.md), [security](../SECURITY.md), [support](../SUPPORT.md), [contributing](../CONTRIBUTING.md), and the [changelog](../CHANGELOG.md) define the public maintenance policies.
+- [Concept](concept.md) explains the user problem, product promise, scope, naming, compatibility
+  boundary, privacy model, and success criteria.
+- [Architecture](architecture.md) defines the target two-process design: the Rust terminal
+  frontend, the one-shot TypeScript render subprocess, the `tmath-render/1` IPC, placement,
+  input decoding, scroll, and the fail-closed error model.
+- [Getting started](getting-started.md) documents build, first use, diagnostics, and known
+  limits.
+- [Compatibility](compatibility.md) records the verified macOS, terminal, and platform scope.
+- [Experiment report](experiment-report.md) records what was tested and which prototype decisions
+  must change.
+- [Phase evidence](evidence/) records per-phase results for the terminal surface, render
+  transport, placement, input loop, CLI and composition, and hardening.
 
 ## Specification
 
 The implementation contract lives outside this directory:
 
-- [Acceptance tests](../specs/herdr-math-v1/tests/main.md)
-- [Implementation plan](../specs/herdr-math-v1/plans/main.md)
-- [Task list](../specs/herdr-math-v1/tasks/main.md)
+- [Acceptance tests](../specs/terminal-math-v2/tests/main.md)
+- [Implementation plan](../specs/terminal-math-v2/plans/main.md)
+- [Task list](../specs/terminal-math-v2/tasks/main.md)
+
+The superseded V1 Herdr plugin contract remains under
+[`../specs/herdr-math-v1/`](../specs/herdr-math-v1/) as historical reference.
 
 When these documents disagree, follow the precedence in [AGENTS.md](../AGENTS.md).
 
@@ -37,9 +35,10 @@ When these documents disagree, follow the precedence in [AGENTS.md](../AGENTS.md
 
 The documents use four labels:
 
-- **Verified**: observed in the August 1, 2026 prototype or in a later recorded test.
+- **Verified**: observed in the recorded implementation run.
 - **Target**: required behavior for the public implementation.
-- **Planned**: work accepted into the v1 plan but not yet implemented.
+- **Planned**: work accepted into the V2 plan but not yet implemented.
 - **Open**: a decision or compatibility claim that still requires evidence.
 
-Do not convert a planned or open claim into a release statement without updating the acceptance tests and attaching evidence.
+Do not convert a planned or open claim into a release statement without updating the acceptance
+tests and attaching evidence.

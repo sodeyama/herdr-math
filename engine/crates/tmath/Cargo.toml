@@ -1,0 +1,18 @@
+[package]
+name = "tmath"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Standalone terminal math/document renderer CLI (placeholder)."
+
+[[bin]]
+name = "tmath"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+tmath-core = { path = "../tmath-core" }
+base64 = { workspace = true }
+serde_json = { workspace = true }

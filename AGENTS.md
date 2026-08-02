@@ -2,102 +2,131 @@
 
 ## Scope
 
-These instructions apply to the entire `herdr-math` repository. More specific `AGENTS.md` files may add rules for a subdirectory, but they must not weaken the safety, privacy, testing, or release requirements defined here.
+These instructions apply to the entire `terminal-math` repository. More specific `AGENTS.md`
+files may add rules for a subdirectory, but they must not weaken the safety, privacy, testing,
+or release requirements defined here.
 
 ## Mission
 
-Herdr Math is a public Herdr plugin that detects LaTeX equations in completed AI-agent responses and renders them as images in a reusable side pane.
+Terminal Math (`tmath`) is a standalone terminal renderer: it renders `$...$` and `$$...$$`
+equations plus a strict allowlisted Markdown subset as transparent images, transmits them with
+the Kitty graphics protocol, and anchors them to terminal cells so they scroll with the shell
+scrollback. It needs no plugin runtime (no Herdr, no browser, no daemon).
 
 The public identity is:
 
-- Product name: `Herdr Math`
-- Repository: `sodeyama/herdr-math`
-- Planned plugin id: `io.github.sodeyama.herdr-math`
-- One-line description: `Render LaTeX from AI agent responses in a side pane.`
+- Product name: `Terminal Math` (binary: `tmath`)
+- Repository: `sodeyama/herdr-math` (kept; product migrated to a standalone identity)
+- One-line description: `Render Markdown and LaTeX as scrollable terminal images.`
 
-The repository is intended for international users. Treat portability, predictable installation, privacy, and clear English documentation as product requirements.
+The repository is intended for international users. Treat portability, predictable installation,
+privacy, and clear English documentation as product requirements.
 
 ## Language
 
-- Write all public documentation, specifications, UI text, log messages, code comments, commit subjects, release notes, and issue text in English.
+- Write all public documentation, specifications, UI text, log messages, code comments, commit
+  subjects, release notes, and issue text in English.
 - Use plain, concise English. Prefer direct technical wording over idioms or wordplay.
 - Keep identifiers in English.
-- Test fixtures may contain non-English text only when the test explicitly verifies Unicode or multilingual behavior.
+- Test fixtures may contain non-English text only when the test explicitly verifies Unicode or
+  multilingual behavior.
 
 ## Sources of Truth
 
 Use the following precedence when requirements disagree:
 
 1. `AGENTS.md`
-2. `specs/herdr-math-v1/tests/main.md`
-3. `specs/herdr-math-v1/plans/main.md`
-4. `specs/herdr-math-v1/tasks/main.md`
-5. Current official Herdr documentation and the schema emitted by the minimum supported Herdr version
+2. `specs/terminal-math-v2/tests/main.md`
+3. `specs/terminal-math-v2/plans/main.md`
+4. `specs/terminal-math-v2/tasks/main.md`
+5. Current official Kitty graphics protocol documentation
 6. `docs/architecture.md` and `docs/concept.md`
 7. `docs/experiment-report.md`
 8. Existing implementation and tests
 
-The experiment report is evidence, not a permanent API contract. When the prototype conflicts with current Herdr plugin semantics, follow the official API and update the specifications before implementing.
+The experiment report is evidence, not a permanent API contract. When the implementation
+conflicts with current Kitty graphics semantics, follow the official protocol and update the
+specifications before implementing.
+
+The V1 Herdr plugin spec (`specs/herdr-math-v1/`) is superseded and kept only as historical
+reference. Do not treat it as current product guidance.
 
 ## Product Boundaries
 
-- Build a Herdr plugin, not a Ghostty plugin, shell integration, browser extension, or standalone terminal emulator.
-- Do not call Ghostty-specific CLI, AppleScript, configuration, or application APIs.
-- Image display may depend on Herdr's experimental Kitty graphics support. Ghostty is one verified outer terminal, not a required application dependency.
-- The first public release targets the platforms explicitly declared in `herdr-plugin.toml`. Do not claim support for an untested platform or terminal.
-- Support detected Claude Code and Codex panes first. Add another agent only with recorded lifecycle evidence and tests.
-- Parse `$...$` and `$$...$$` math delimiters for v1. Render common Markdown structure (headings, emphasis, lists, quotes, tables, and code blocks) for the final response prose through a strict local renderer that never executes raw HTML, links, or scripts. Do not expand into arbitrary HTML or a fully general Markdown engine, and do not allow user-provided CSS or color directives.
-- Do not execute LaTeX, shell commands, user-provided JavaScript, remote resources, or TeX binaries.
-- Do not upload pane contents, equations, images, logs, or telemetry to a network service.
+- Build a standalone terminal renderer, not a plugin, browser extension, shell integration, or
+  standalone terminal emulator.
+- Do not call Ghostty-specific CLI, AppleScript, configuration, or application APIs. Ghostty is
+  one verified outer terminal, not a required application dependency.
+- Image display uses the Kitty graphics protocol. Ghostty is the verified primary terminal;
+  kitty and WezTerm are P1 until recorded evidence passes the same matrix.
+- Parse `$...$` and `$$...$$` math delimiters first; `\(...\)` and `\[...\]` are retained from
+  V1. Render a strict allowlisted Markdown subset (headings, emphasis, lists, quotes, tables,
+  code blocks, inert links) through a local renderer that never executes raw HTML, links, or
+  scripts. Do not expand into arbitrary HTML or a fully general Markdown engine, and do not allow
+  user-provided CSS or color directives.
+- Do not execute LaTeX, shell commands, user-provided JavaScript, remote resources, or TeX
+  binaries.
+- Do not upload document contents, equations, images, logs, or telemetry to a network service.
 
 ## Required Architecture
 
-- Use `herdr-plugin.toml` as the installation and runtime contract.
-- Use Herdr-provided `HERDR_*` environment variables. Never add user-specific absolute paths or assume a default socket location.
-- Treat `[[startup]]` as a one-shot hook. Do not launch an unsupervised long-running controller from a startup hook.
-- Use manifest event hooks and short-lived workers for agent lifecycle events unless an updated, documented Herdr API provides a supervised service primitive.
-- Use `HERDR_PLUGIN_STATE_DIR` for runtime state and `HERDR_PLUGIN_CONFIG_DIR` for user-editable configuration. Never store durable state in `HERDR_PLUGIN_ROOT`.
-- Namespace state by Herdr session or socket identity and source pane. Use atomic writes and per-pane locks so concurrent `done` and `idle` events cannot create duplicate work.
-- Fail closed when the current answer boundary cannot be established. Never render an uncertain slice of historical pane content.
-- Reuse one viewer pane per source pane. Preserve source focus, replace the existing graphics layer, and recreate the viewer only after it has been closed.
-- Keep the parser, boundary detector, renderer, Herdr client, event handler, state store, and viewer lifecycle as separate modules with narrow interfaces.
+- Use `Cargo.toml` and `package.json` as the build and runtime contract.
+- The Rust `tmath` binary owns the terminal: raw mode, Kitty negotiation, mouse/keyboard input,
+  scroll state machine, and scrollback-anchored placement in the main screen buffer (never the
+  alternate screen).
+- The TypeScript `tmath-render` subprocess is one-shot: it reads one bounded JSON request on
+  stdin, renders with KaTeX/Chromium/sharp, writes one bounded JSON response on stdout, and exits.
+- Use the versioned JSON IPC (`tmath-render/1`) between Rust and the renderer; enforce size,
+  timeout, and trust limits at that boundary.
+- Keep the parser, renderer transport, placement tracker, input decoder, scroll driver, and CLI
+  as separate modules with narrow interfaces.
+- Never store durable state in the repository; runtime artifacts live in a platform state
+  directory. Never add user-specific absolute paths.
 
 ## Privacy and Security Invariants
 
-- Never persist raw pane output, answer text, selected text, or LaTeX source in logs or durable state.
-- Logs may contain event names, pane ids, status values, bounded counts, byte sizes, timing, non-reversible hashes, and stable error codes.
-- Use a cryptographic hash when content identity is needed. Do not use a hash as a substitute for an authorization or boundary check.
-- Render with remote resource loading disabled and an explicit trust policy equivalent to KaTeX `trust: false`.
-- Keep strict limits for formula count, per-formula length, aggregate length, render duration, image dimensions, raw PNG bytes, and base64 payload size.
-- Invalid input, timeouts, and payload rejection must leave the previous valid image intact.
-- Never introduce `child_process`, shell evaluation, `eval`, dynamic imports from user input, or executable TeX engines without first updating the threat model and obtaining explicit approval.
-- Do not commit secrets, tokens, private pane output, local usernames, home-directory paths, or unsanitized screenshots.
+- Never persist raw document text, formula source, rendered bytes, or local paths in logs or
+  durable state.
+- Logs may contain event/status names, bounded counts, byte sizes, timing, non-reversible
+  hashes, and stable error codes.
+- Use a cryptographic hash when content identity is needed. Do not use a hash as a substitute
+  for an authorization or boundary check.
+- Render with remote resource loading disabled and a trust policy equivalent to KaTeX
+  `trust: false`.
+- Keep strict limits for formula count, per-formula length, aggregate length, scan input bytes,
+  render duration, image dimensions, raw PNG bytes, base64 payload size, and placement
+  concurrency/pixel totals.
+- Invalid input, timeouts, and payload rejection must leave earlier valid placements intact and
+  fail closed.
+- Never introduce `spawn` of user-controlled commands, shell evaluation, `eval`, dynamic imports
+  from user input, or executable TeX engines without first updating the threat model and
+  obtaining explicit approval.
+- Do not commit secrets, tokens, private output, local usernames, home-directory paths, or
+  unsanitized screenshots.
 
 ## Target Repository Layout
 
 ```text
-herdr-plugin.toml
+Cargo.toml                     # Rust workspace
+engine/crates/tmath-core/      # terminal surface: kitty, terminal, mouse, input, scroll, native
+engine/crates/tmath/           # tmath CLI binary
 src/
-  boundary/
-  events/
-  herdr/
-  renderer/
+  renderer/                    # TS renderer pipeline (one-shot subprocess)
   scanner/
-  state/
-  viewer/
+  core/                        # contracts, errors, limits
 tests/
   unit/
   integration/
   fixtures/
 scripts/
 docs/
-specs/herdr-math-v1/
-  tests/main.md
-  plans/main.md
-  tasks/main.md
+specs/herdr-math-v1/           # superseded V1, kept for reference
+specs/terminal-math-v2/        # current specification triad
 ```
 
-Keep generated output under `dist/`, coverage output under `coverage/`, and local runtime artifacts outside the repository. Add generated and local files to `.gitignore` before producing them.
+Keep generated output under `dist/` and `target/`, coverage under `coverage/`, and local runtime
+artifacts outside the repository. Add generated and local files to `.gitignore` before producing
+them.
 
 ## Development Workflow
 
@@ -105,23 +134,32 @@ Keep generated output under `dist/`, coverage output under `coverage/`, and loca
 2. Identify the task id and acceptance-test ids covered by the change.
 3. Update a false or incomplete specification before implementing against it.
 4. Implement one logical change at a time.
-5. Run the narrowest relevant tests during development, then the full required validation before declaring the task complete.
-6. Update the task checklist and documentation in a separate documentation commit immediately after the implementation commit when progress tracking changes.
+5. Run the narrowest relevant tests during development, then the full required validation before
+   declaring the task complete.
+6. Update the task checklist and documentation in a separate documentation commit immediately
+   after the implementation commit when progress tracking changes.
 7. Inspect `git status` and `git diff` before every commit. Preserve unrelated user changes.
 
-Do not mark a task complete because code exists. Mark it complete only when its stated acceptance tests pass with the required evidence.
+Do not mark a task complete because code exists. Mark it complete only when its stated
+acceptance tests pass with the required evidence.
 
 ## Testing Requirements
 
 - Pure parser, boundary, state-machine, and limit logic must have deterministic unit tests.
-- Herdr protocol code must have contract tests against recorded or generated schema-compatible fixtures.
-- Integration tests must cover duplicate delivery, out-of-order lifecycle events, viewer reuse, viewer closure, stale locks, invalid LaTeX, timeout recovery, truncation, and focus preservation.
-- Rendering tests must compare dimensions, byte limits, and meaningful image snapshots or pixel hashes. Avoid fragile full-byte equality when encoder metadata can vary.
-- Installation tests must use a clean checkout and the same build commands declared in `herdr-plugin.toml`.
-- Runtime release evidence must include a real Herdr session and a graphics-capable outer terminal. CI-only mocks are not sufficient for the release gate.
+- Kitty escape construction and probes must have contract tests against recorded or generated
+  schema-compatible fixtures, run through a fake-tty harness with no real terminal required.
+- Integration tests must cover duplicate and out-of-order input, placement replacement/removal,
+  stale placement state, invalid LaTeX, timeout recovery, truncation, and fail-closed behavior.
+- Rendering tests must compare dimensions, byte limits, and meaningful image snapshots or pixel
+  hashes. Avoid fragile full-byte equality when encoder metadata can vary.
+- Installation tests must use a clean checkout and the same build commands declared in
+  `Cargo.toml`/`package.json`.
+- Runtime release evidence must include a real Kitty-graphics terminal (Ghostty primary).
+  CI-only mocks are not sufficient for the release gate.
 - A failed, skipped, retried, or unimplemented acceptance case is not a pass.
 
-Planned command names belong in `package.json`. Until they exist, do not document them as working commands. Once implemented, the expected top-level validation surface is:
+Planned command names belong in `package.json`/Cargo manifests until they exist. The expected
+top-level validation surface is:
 
 ```sh
 npm ci
@@ -130,39 +168,48 @@ npm test
 npm run test:integration
 npm run build
 npm run smoke:render
+cargo test
+cargo clippy --all-targets
 ```
 
 ## Documentation Rules
 
 - Keep `README.md` concise and user-oriented.
-- Put product intent in `docs/concept.md`, target technical design in `docs/architecture.md`, and historical evidence in `docs/experiment-report.md`.
-- Clearly label prototype behavior, target behavior, verified behavior, and planned behavior. Do not present planned functionality as released.
-- Link to primary Herdr documentation for plugin lifecycle and socket behavior.
-- Update documentation in the same change that modifies a public command, configuration key, compatibility claim, limit, error code, or lifecycle contract.
+- Put product intent in `docs/concept.md`, target technical design in `docs/architecture.md`,
+  and historical evidence in `docs/experiment-report.md`.
+- Clearly label prototype behavior, target behavior, verified behavior, and planned behavior. Do
+  not present planned functionality as released.
+- Link to primary Kitty graphics protocol documentation for placement, probe, and input
+  sequences.
+- Update documentation in the same change that modifies a public command, configuration key,
+  compatibility claim, limit, error code, or lifecycle contract.
 
 ## Commit and Pull Request Discipline
 
-- One commit must contain one logical change. Aim for no more than 300 changed source lines and 2-6 files, excluding lockfiles, generated output, and test fixtures.
-- Separate feature or fix work from refactoring and from specification or documentation progress updates.
-- Use English Conventional Commit subjects such as `feat(events): handle agent completion hooks`.
+- One commit must contain one logical change. Aim for no more than 300 changed source lines and
+  2-6 files, excluding lockfiles, generated output, and test fixtures.
+- Separate feature or fix work from refactoring and from specification or documentation progress
+  updates.
+- Use English Conventional Commit subjects such as `feat(placement): anchor image blocks`.
 - Do not use vague subjects such as `WIP`, `fix`, or `updates`.
-- Keep one pull request focused on one issue or one cohesive release phase. Split unrelated bugs into separate branches or pull requests.
-- Include acceptance-test ids, commands run, runtime evidence, compatibility scope, and remaining limitations in the pull request description.
+- Keep one pull request focused on one issue or one cohesive release phase. Split unrelated bugs
+  into separate branches or pull requests.
+- Include acceptance-test ids, commands run, runtime evidence, compatibility scope, and remaining
+  limitations in the pull request description.
 
 ## Release Gate
 
-Do not publish a release or add the `herdr-plugin` GitHub topic until all v1 release-gate tasks are complete.
+Do not publish a release until all v2 `0.2.0` release-gate tasks are complete.
 
 At minimum, verify:
 
-- Clean GitHub installation through `herdr plugin install sodeyama/herdr-math --ref <tag>`
-- Manifest validation against the minimum supported Herdr version
+- Clean build and install of the standalone artifact with no Herdr runtime present
 - No absolute local paths or undeclared runtime dependencies
-- Fresh dependency installation and build
-- Unit, integration, rendering, security, and real Herdr smoke tests
+- Fresh dependency installation and build for both Rust and TypeScript
+- Unit, integration, rendering, security, and real Ghostty smoke tests
 - Correct behavior when Kitty graphics is disabled or unavailable
 - Accurate platform and terminal compatibility statements
 - English README, setup, troubleshooting, security, license, and release notes
-- No secrets, pane content, private paths, or unredacted local screenshots
+- No secrets, document content, private paths, or unredacted local screenshots
 
-Version tags and `herdr-plugin.toml` versions must agree.
+Version tags, `Cargo.toml` versions, and `package.json` versions must agree.

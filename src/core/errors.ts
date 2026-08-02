@@ -1,10 +1,4 @@
 export const ERROR_CODES = [
-  "event_invalid",
-  "agent_unsupported",
-  "baseline_missing",
-  "boundary_failed",
-  "answer_truncated",
-  "conclusion_boundary_failed",
   "formula_not_found",
   "scanner_input_limit",
   "invalid_latex",
@@ -12,23 +6,12 @@ export const ERROR_CODES = [
   "renderer_timeout",
   "renderer_failed",
   "image_too_large",
-  "graphics_disabled",
-  "cell_size_unavailable",
-  "viewer_open_failed",
-  "viewer_ownership_failed",
-  "herdr_timeout",
-  "herdr_protocol_error",
-  "state_locked",
-  "state_corrupt",
-  "plugin_config_invalid",
   "internal_error"
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export type SafeLimitKind =
-  | "event_json_bytes"
-  | "pane_read_bytes"
   | "input_bytes"
   | "delimiter_runs"
   | "delimiter_run_length"
@@ -43,13 +26,7 @@ export type SafeLimitKind =
   | "image_height_px"
   | "image_pixels"
   | "raw_png_bytes"
-  | "base64_payload_bytes"
-  | "viewer_transport_bytes"
-  | "scroll_frame_count"
-  | "scroll_animation_duration_ms"
-  | "scroll_frame_aggregate_bytes"
-  | "state_file_bytes"
-  | "socket_response_bytes";
+  | "base64_payload_bytes";
 
 export interface SafeErrorDetails {
   limit_kind?: SafeLimitKind;
@@ -69,8 +46,6 @@ export interface SafeErrorRecord {
 }
 
 const SAFE_LIMIT_KINDS = new Set<SafeLimitKind>([
-  "event_json_bytes",
-  "pane_read_bytes",
   "input_bytes",
   "delimiter_runs",
   "delimiter_run_length",
@@ -85,13 +60,7 @@ const SAFE_LIMIT_KINDS = new Set<SafeLimitKind>([
   "image_height_px",
   "image_pixels",
   "raw_png_bytes",
-  "base64_payload_bytes",
-  "viewer_transport_bytes",
-  "scroll_frame_count",
-  "scroll_animation_duration_ms",
-  "scroll_frame_aggregate_bytes",
-  "state_file_bytes",
-  "socket_response_bytes"
+  "base64_payload_bytes"
 ]);
 
 const NUMERIC_DETAIL_KEYS = ["limit", "actual", "duration_ms", "width", "height", "bytes", "formula_count"] as const;

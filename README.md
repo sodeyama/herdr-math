@@ -10,10 +10,11 @@ rendered document.
 
 It runs in any Kitty-graphics-capable terminal such as Ghostty, kitty, or WezTerm.
 
-> **Status: planned.** This repository is transitioning from the Herdr Math plugin (v0.1.0) to
-> the standalone terminal-math renderer. The refactor plan is in
-> [specs/terminal-math-v2/plans/main.md](specs/terminal-math-v2/plans/main.md). Nothing below is
-> released behavior yet; command names are targets, not working commands.
+> **Status: in development.** This repository is transitioning from the Herdr Math plugin
+> (v0.1.0) to the standalone terminal-math renderer. The refactor plan is in
+> [specs/terminal-math-v2/plans/main.md](specs/terminal-math-v2/plans/main.md). Core
+> implementation is complete through Phase 5; release-gate evidence (real Ghostty run,
+> install, and tagged release) is still outstanding.
 
 ## Planned use
 
@@ -39,6 +40,8 @@ terminal-math render -          # read from stdin
 - [Architecture](docs/architecture.md)
 - [Compatibility](docs/compatibility.md)
 - [Getting started and troubleshooting](docs/getting-started.md)
+- [Release checklist](docs/RELEASE.md)
+- [Post-V2 backlog](docs/backlog.md)
 - [Privacy](PRIVACY.md)
 - [Security](SECURITY.md)
 - [Support](SUPPORT.md)

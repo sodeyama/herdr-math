@@ -1,110 +1,100 @@
-# Herdr Math Concept
+# Terminal Math Concept
 
 ## Summary
 
-Herdr Math is a Herdr plugin that presents the visible conclusion of a completed AI-agent response as clean prose and locally rendered math in a side pane.
+Terminal Math (`tmath`) is a standalone terminal renderer: it takes Markdown with `$...$` and
+`$$...$$` math and renders the result as a transparent image placed into the terminal with the
+Kitty graphics protocol. The image is anchored to real terminal cells, so it scrolls with the
+shell's scrollback instead of floating over the viewport. Mouse wheel and keyboard both scroll a
+tall rendered document.
 
-The plugin is designed for people who use coding agents inside terminal multiplexers and regularly discuss mathematics, statistics, machine learning, optimization, physics, or technical documentation. Those conversations often contain `$...$` and `$$...$$` expressions that remain raw terminal text. The source is useful for copying, but it is slower to read than typeset notation.
-
-Herdr Math keeps the original answer untouched and opens a separate visual surface for the conclusion, including its explanatory message and equations.
+It runs from a plain terminal in any Kitty-graphics-capable outer terminal such as Ghostty,
+kitty, or WezTerm. There is no plugin runtime, no browser, and no network rendering service.
 
 ## Product Promise
 
-> Stay in the terminal, keep the original answer, and read its conclusion with rendered notation.
+> Render Markdown and LaTeX as scrollable images, in your terminal, locally.
 
-The target experience is automatic:
+The target experience:
 
-1. A supported agent starts working in a Herdr pane.
-2. Herdr Math records a privacy-preserving baseline for that pane.
-3. The agent reaches a completed state.
-4. Herdr Math isolates only the visible final response, excluding reasoning, tool output, progress, prompts, and terminal chrome.
-5. It scans that response for supported math delimiters.
-6. If equations exist, it renders the response prose and math locally and updates a right-side viewer.
-7. The agent pane keeps focus, and later answers reuse the same viewer.
+1. You run `tmath render ./notes.md` (or pipe a document on stdin).
+2. Terminal Math renders the allowlisted Markdown and math into a transparent PNG locally.
+3. It transmits the image into the main terminal buffer at the cursor row.
+4. The image is glued to real cells, so terminal scrollback carries it.
+5. Mouse wheel and keyboard controls scroll the rendered document.
 
-If no equation exists, nothing opens and the current viewer is not changed.
+## Why Scrollback-Anchored Images
 
-## Why a Side Pane
+Rewriting terminal output in place would be fragile and would interfere with copy, scrollback,
+and the shell. Placing an image over real cells gives three useful properties:
 
-The original terminal transcript remains the canonical conversation record. Rewriting terminal output in place would be fragile, would interfere with copy and scrollback behavior, and would couple the plugin to each agent's terminal UI.
+- The shell transcript stays the canonical record; the image is attached to cells.
+- Scrolling the terminal naturally scrolls the image with the content around it.
+- The renderer never needs to own the application screen, so there is no alternate-screen
+  takeover and no focus loss.
 
-A separate pane provides four useful properties:
-
-- The raw answer and the cleanly formatted conclusion remain visible together.
-- The source pane does not need to understand images.
-- Viewer ownership is explicit and reversible.
-- The plugin can update or close its surface without modifying agent output.
-
-The v1 placement is a split pane. Popup and overlay variants are possible experiments, but they are not part of the initial release contract.
+The v1 placement is one scrollback-anchored virtual placement (`U=1,c,r`) with a placeholder
+grid per document block.
 
 ## Intended Users
 
-### Primary users
-
-- Developers asking coding agents about algorithms, proofs, numerical methods, or model behavior
-- Researchers and students working through equations in Claude Code or Codex
-- Data scientists reviewing statistics and optimization formulas in terminal sessions
-- Technical writers checking LaTeX emitted by an agent
-
-### Secondary users
-
-- Maintainers testing how Herdr plugins can provide visual companion panes
-- Teams that want a local-only math display without a browser service
+- Developers and researchers who want to read `$...$` formulas as typeset notation in the
+  terminal.
+- Technical writers and students reviewing Markdown documents containing math.
+- Anyone who wants a local-only LaTeX/Markdown preview without a browser service.
+- Maintainers building on the Kitty graphics protocol for plain terminals.
 
 ## Jobs to Be Done
 
-- "When an agent explains a formula, let me understand it without mentally parsing LaTeX."
+- "When I have a Markdown file with formulas, let me read them without mentally parsing LaTeX."
 - "Keep the exact LaTeX available for copying while showing me a readable version."
-- "Update the visual automatically when the next answer arrives."
-- "Do not send proprietary terminal output to an online renderer."
-- "Do not create a new split every time the agent uses math."
+- "Let the rendered document live in my terminal scrollback, not in a separate window."
+- "Do not send my document to an online renderer."
+- "Let me scroll a long rendered document with the mouse wheel or the keyboard."
 
 ## Naming
 
-The product name is **Herdr Math**.
+The binary is **`tmath`** (short for terminal math). The product name is **Terminal Math**. The
+repository is kept at `sodeyama/herdr-math`; the product identity no longer references the Herdr
+plugin runtime. The homepage describes the tool as "Render Markdown and LaTeX as scrollable
+terminal images."
 
-- `Herdr` makes the host environment immediately discoverable.
-- `Math` describes the user value rather than one rendering implementation.
-- The name remains valid if the project later adds MathML input, accessibility output, or alternative local renderers.
-
-The repository name is `herdr-math`. The public description should include the more specific terms `LaTeX`, `viewer`, `agent responses`, and `side pane` for searchability.
-
-## V1 Functional Scope
+## Functional Scope
 
 ### Included
 
-- Herdr plugin installation from GitHub
-- Automatic handling of supported agent lifecycle events
-- Claude Code and Codex panes detected by Herdr
-- Inline math delimited by `$...$`
-- Display math delimited by `$$...$$`
-- Multiple equations in one completed answer
-- Visible final-response prose and equations in source order
-- Transparent output with one base size across prose and math
-- A reusable viewer split for each source pane
-- Local PNG generation
-- Safe replacement of the existing viewer image
-- Clear diagnostics for missing graphics support
-- Bounded, privacy-preserving logs
-- Clean recovery after viewer closure and Herdr restart
+- `tmath render <file | ->` over a file or stdin with bounded reads.
+- `tmath diagnose` for local capability checks (renderer subprocess, node, stdout terminal,
+  Kitty graphics probe).
+- `tmath --help` / `tmath --version`.
+- Inline math delimited by `$...$` and display math by `$$...$$`; `\(...\)` and `\[...\]`
+  retained.
+- Strict allowlisted Markdown subset: headings, emphasis, lists, quotes, pipe tables, fenced and
+  inline code, inert links.
+- One scrollback-anchored placement per rendered block, glued to real scrollback cells.
+- Placeholder grid so images scroll with the shell scrollback.
+- Mouse wheel and keyboard scroll states with a smooth easing profile.
+- Local PNG generation through KaTeX and the browser pipeline.
+- `--content-width <px>` and `--font-size <px>` composition options.
+- Bounded, privacy-preserving logs and stable error records.
 
-### Explicitly excluded from v1
+### Explicitly excluded
 
-- Editing or replacing the source terminal transcript
-- General Markdown rendering beyond the strict allowlisted subset (headings, emphasis, lists, quotes, tables, code blocks, inert links); no user HTML, CSS, color directives, images, or scripts
-- TeX document compilation
-- Shell execution or user macros that can run code
-- Remote rendering APIs
-- OCR or image-to-LaTeX conversion
-- Automatic formula solving or symbolic algebra
-- Browser, Ghostty, or editor extensions
-- Popup or overlay as the default viewer
-- Guaranteed support for every terminal emulator
-- Windows support without a dedicated release matrix
+- Editing or replacing the shell transcript.
+- General Markdown rendering beyond the allowlisted subset; no user HTML, CSS, color
+  directives, images, or scripts.
+- TeX document compilation.
+- Shell execution or user macros that can run code.
+- Remote rendering APIs or telemetry.
+- Ghostty-specific APIs, plugins, or configuration.
+- A Herdr plugin runtime, socket, or manifest.
+- Guaranteed support for every terminal emulator.
+- Windows support without a dedicated release matrix.
 
 ## Parsing Philosophy
 
-Terminal answers contain many dollar signs that are not math. Examples include prices, shell variables, and code:
+Documents contain many dollar signs that are not math. Examples include prices, shell variables,
+and code:
 
 ```text
 $10 and $20
@@ -112,65 +102,49 @@ $HOME and $PATH
 echo "$VALUE"
 ```
 
-Herdr Math therefore uses a small stateful scanner rather than a single regular expression. The scanner skips fenced code, inline code, escaped dollar signs, unclosed delimiters, and obvious shell or price patterns.
+Terminal Math therefore uses a small stateful scanner rather than a single regular expression.
+The scanner skips fenced code, inline code, escaped dollar signs, unclosed delimiters, and
+obvious shell or price patterns.
 
-The parser is intentionally conservative. A false negative leaves readable source text in place. A false positive can create a misleading equation or cause the renderer to fail. V1 prefers false negatives when syntax is ambiguous.
+The parser is intentionally conservative. A false negative leaves readable source text in
+place. A false positive can create a misleading equation or cause the renderer to fail. V2
+prefers false negatives when syntax is ambiguous.
 
-## Answer-Boundary Philosophy
+## Placement and Input Model
 
-The plugin must render the current completed answer, not every equation in terminal history.
-
-The target boundary model compares a baseline captured at the start of agent work with a stable read after completion. It may recover a boundary using an exact prefix, a stable prefix, a sliding-window overlap, or a context-qualified tail anchor.
-
-Every recovery strategy must prove that the selected text follows known baseline context. If no strategy can establish that relationship, processing stops without changing the viewer.
-
-This fail-closed rule is more important than rendering every answer.
-
-## Viewer Behavior
-
-The viewer belongs to one source pane.
-
-- First valid math answer: open one split to the right without changing focus.
-- Later valid math answer: replace the image in that same viewer.
-- Long valid response: scroll automatically from the top to the bottom, then keep the bottom visible.
-- Answer without math: leave the viewer unchanged.
-- Invalid or oversized math: leave the previous valid image unchanged.
-- Viewer closed by the user: recreate one viewer on the next valid math answer.
-- Source pane closed: stop retaining ownership state for that source.
-
-The plugin must not take keyboard focus merely to display an image.
+- The Rust CLI owns the terminal: raw mode, Kitty negotiation, mouse/keyboard input, the scroll
+  state machine, and transmission of placements into the main buffer.
+- The TypeScript renderer subprocess is one-shot: stdin request in, stdout response out, then
+  exit. It never stays alive.
+- Placements are tracked with image ids; replacement issues a scoped delete before re-transmit,
+  and removal deletes only that image.
+- `q` and `Ctrl-C` always reset the terminal; any exit path restores it.
 
 ## Dependency Boundary
 
 ### Direct product dependencies
 
-- A compatible Herdr release with plugin event hooks and pane graphics APIs
-- A local JavaScript runtime for the planned v1 implementation
-- Locally installed rendering dependencies declared by this repository
-- Herdr configuration with experimental Kitty graphics enabled
-- An attached terminal path on which Herdr can display those graphics
+- A Rust toolchain for the terminal frontend.
+- A Node.js runtime and the declared npm packages for the one-shot renderer.
+- A Kitty-graphics-capable terminal (Ghostty is the verified primary).
 
 ### Ghostty boundary
 
-Herdr Math is not a Ghostty plugin and does not call Ghostty APIs.
-
-The prototype was tested in Ghostty because Ghostty supports the Kitty graphics protocol and was the available outer terminal. Herdr itself owns the plugin surface and the `pane.graphics.*` calls. Other terminals may work, but each public compatibility claim requires a real smoke test.
-
-The fact that Herdr internally uses a Ghostty-backed terminal engine is an implementation detail of Herdr, not a package dependency owned by Herdr Math.
+Terminal Math is not a Ghostty plugin and does not call Ghostty APIs. Ghostty is one verified
+outer terminal because it supports the Kitty graphics protocol; kitty and WezTerm are P1 until
+the same matrix passes. The tool works with any compatible terminal.
 
 ## Privacy Model
 
 All processing is local by design.
 
-Herdr Math needs temporary access to pane text to identify the latest answer and extract formulas. That data is treated as sensitive:
-
-- Raw pane text is held in memory only for the shortest practical time.
-- Baseline state stores content hashes and structural metadata, not transcripts.
-- Logs never include answer or equation text.
+- Document text is held in memory only for the duration of the render, then discarded.
+- Logs and diagnostics never include document or formula text.
 - Rendering does not fetch remote fonts, CSS, scripts, images, or APIs.
-- The plugin does not include telemetry in v1.
+- The tool has no telemetry.
 
-The plugin cannot make the host terminal or Herdr private by itself. Users must still trust Herdr, the installed agent, local dependencies, and any terminal logging they enable.
+The tool cannot make the host terminal private by itself. Users must still trust the outer
+terminal and any logging the terminal enables.
 
 ## Security Model
 
@@ -178,81 +152,80 @@ LaTeX-like input is untrusted text.
 
 The renderer must:
 
-- Use a non-executable math parser rather than a TeX engine
-- Disable trusted links and remote resources
-- Enforce formula-count and length limits before rendering
-- Enforce a wall-clock timeout
-- Enforce image dimension and byte limits
-- Avoid shell interpolation, dynamic code evaluation, and subprocess execution
-- Return stable error codes without exposing input text
+- Use a non-executable math parser (KaTeX) rather than a TeX engine, with a trust policy
+  equivalent to `trust: false`.
+- Disable remote resources and inert links.
+- Enforce formula-count, per-formula, aggregate, scan-byte, and placement limits before
+  rendering.
+- Enforce a wall-clock timeout.
+- Enforce image dimension and byte limits.
+- Avoid shell interpolation, dynamic code evaluation, and user-driven subprocess execution.
+- Return stable error codes without exposing input text.
 
-The graphics update is transactional from the user's perspective: every frame is validated before animation starts. A failed later frame restores the previous in-memory final frame when available.
+The placement is fail-closed: invalid input, timeouts, and payload rejection leave earlier
+valid placements intact and never emit an uncertain image.
 
 ## Error Philosophy
 
 Errors fall into three categories:
 
-1. **User-input rejection**: invalid LaTeX, ambiguous boundary, or configured limits. Keep the previous viewer and emit a bounded diagnostic.
-2. **Capability failure**: Kitty graphics disabled, no attached client cell size, incompatible Herdr version, or missing runtime dependency. Explain the corrective action and do not retry in a tight loop.
-3. **Transient runtime failure**: event duplication, a viewer closed during update, socket interruption, or renderer timeout. Recover idempotently on the next event.
-
-The plugin should never terminate the agent, write into the agent pane, or close a user-owned pane in response to its own error.
+1. **User-input rejection**: invalid LaTeX or configured limits. Keep earlier placements and
+   emit a bounded diagnostic.
+2. **Capability failure**: no Kitty graphics support, no terminal for stdout, or a missing
+   renderer dependency. `tmath diagnose` explains the corrective action.
+3. **Transient runtime failure**: a render timeout or subprocess failure. Fail closed and do not
+   retry in a tight loop.
 
 ## Compatibility Policy
 
 Compatibility statements are evidence-based.
 
-- `min_herdr_version` is set to the oldest version validated against the exact manifest fields and socket methods used by the release.
-- Platform declarations are limited to platforms with a completed release matrix.
+- macOS is the primary target. Linux and Windows are post-V2 (P1/P2) and are not claimed until
+  a release matrix passes.
 - Terminal documentation distinguishes `verified`, `expected`, and `unsupported`.
-- An outer terminal that supports Kitty graphics in general is not automatically considered compatible through Herdr.
-- Remote and direct-attach behavior is not claimed until graphics have been tested in those paths.
-
-The first public version may remain macOS-only if that is the only fully verified runtime. International availability does not require overstating platform support.
+- An outer terminal that supports Kitty graphics in general is not automatically considered
+  compatible; each claim requires a real smoke test.
 
 ## Product Success Criteria
 
-V1 is successful when a new user can:
+V2 is successful when a new user can:
 
-1. Install the plugin from a tagged GitHub revision using one Herdr command.
-2. Enable the documented Herdr graphics setting.
-3. Start a supported agent inside Herdr.
-4. Receive a math answer and see its clean final message and rendered equations in one companion pane.
-5. Continue the conversation and see that pane update without focus loss or split duplication.
-6. Inspect clear local diagnostics when the environment is unsupported.
-7. Uninstall the plugin without losing unrelated Herdr configuration or panes.
+1. Install `tmath` from a tagged revision.
+2. Run `tmath render ./notes.md` in Ghostty.
+3. See the rendered document anchored in the scrollback with equations typeset.
+4. Scroll the terminal and watch the image move with the content.
+5. Scroll the rendered document with the mouse wheel and the keyboard.
+6. Inspect clear local diagnostics when the terminal lacks Kitty graphics.
 
-Engineering success also requires zero raw transcript content in plugin logs and successful recovery after invalid input, timeout, viewer closure, and server restart.
+Engineering success also requires zero raw document content in logs, and recovery after invalid
+input, timeout, and missing capabilities.
 
 ## Future Directions
 
 Future versions may evaluate:
 
-- MathML input
-- SVG-native rendering
-- Copy actions for equation source
-- Accessible text descriptions
-- User-configurable foreground colors
-- User-controlled placement and sizing
-- Per-agent or per-workspace configuration
-- Linux and Windows support
-- Remote Herdr sessions
-- Popup and overlay placement
+- `tmath watch <file>` re-rendering on change.
+- `tmath ls` listing active placements.
+- Linux and Windows support.
+- Additional verified terminals.
+- Shared-memory/file media to avoid pushing large payloads through a pipe.
 
-These are not v1 commitments. Each requires a specification update and compatibility evidence.
+These are not V2 commitments. Each requires a specification update and compatibility evidence.
 
 ## Terminology
 
-- **Source pane**: the Herdr pane containing the AI agent.
-- **Viewer pane**: the Herdr-managed plugin pane that displays the rendered image.
-- **Baseline**: the known pane state captured when an agent begins working.
-- **Completion**: a transition to `done` or `idle` that may contain a finished answer.
-- **Answer delta**: text proven to have appeared after the baseline.
-- **Graphics layer**: the image owned by Herdr on a viewer pane through `pane.graphics.set`.
+- **Placement**: an image transmitted through the Kitty graphics protocol and anchored to real
+  terminal cells.
+- **Placeholder grid**: the per-cell combining-character text that glues a virtual placement to
+  scrollback cells.
+- **Scroll driver**: the module mapping wheel deltas and fallback keys through a smoothing state
+  machine.
+- **Render subprocess**: the one-shot TypeScript process that turns a bounded JSON request into
+  a transparent PNG.
 
 ## Primary References
 
-- [Herdr plugins](https://herdr.dev/docs/plugins/)
-- [Herdr Socket API](https://herdr.dev/docs/socket-api/)
-- [Herdr marketplace](https://herdr.dev/docs/marketplace/)
-- [Ghostty features](https://ghostty.org/docs/features)
+- [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+- [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/)
+- [xterm controls](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html)
+- [Ghostty](https://ghostty.org/docs/features)

@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["engine/crates/tmath-core", "engine/crates/tmath"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+base64 = "0.22"
+miniz_oxide = "0.8"
+png = "0.18"
+rustix = { version = "1", features = ["termios", "stdio", "event"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = "warn"

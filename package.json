@@ -1,7 +1,7 @@
 {
   "name": "herdr-math",
-  "version": "0.1.0",
-  "description": "Render LaTeX from AI agent responses in a side pane.",
+  "version": "0.2.0",
+  "description": "Render Markdown and LaTeX as scrollable terminal images.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -19,14 +19,12 @@
   },
   "homepage": "https://github.com/sodeyama/herdr-math#readme",
   "keywords": [
-    "herdr-plugin",
     "latex",
     "math",
     "terminal"
   ],
   "files": [
     "dist/",
-    "herdr-plugin.toml",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
@@ -36,7 +34,7 @@
     "audit:browser": "node scripts/audit-runtime.mjs --browser",
     "audit:runtime": "node scripts/audit-runtime.mjs",
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run validate:manifest && npm run audit:runtime && npm run security:check",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run audit:runtime && npm run security:check",
     "format": "prettier --write package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
     "format:check": "prettier --check package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
     "install:browser": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install --only-shell chromium",
@@ -44,12 +42,10 @@
     "postinstall": "npm run install:browser",
     "security:check": "node scripts/security-check.mjs",
     "test": "vitest run",
-    "test:contract": "vitest run tests/integration/herdr-contract.spec.ts tests/integration/fake-herdr-server.spec.ts",
     "test:integration": "vitest run tests/integration",
     "test:performance": "vitest run tests/integration/performance.spec.ts --reporter=verbose",
     "test:unit": "vitest run tests/unit",
     "typecheck": "tsc --noEmit",
-    "validate:manifest": "npm run build --silent && node dist/manifest/validate-cli.js",
     "smoke:render": "vitest run tests/integration/renderer.spec.ts --reporter=verbose"
   },
   "prettier": {

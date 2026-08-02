@@ -3,23 +3,10 @@ import { extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const ignoredDirectories = new Set([".git", "node_modules", "coverage"]);
-const textExtensions = new Set([".css", ".html", ".js", ".json", ".md", ".mjs", ".toml", ".ts", ".txt"]);
+const ignoredDirectories = new Set([".git", "node_modules", "coverage", "target"]);
+const textExtensions = new Set([".css", ".html", ".js", ".json", ".md", ".mjs", ".rs", ".swift", ".toml", ".ts", ".txt"]);
 const textNames = new Set([".editorconfig", ".gitignore", "LICENSE"]);
-const allowedEnvironmentKeys = new Set([
-  "HERDR_BIN_PATH",
-  "HERDR_MATH_SOURCE_TOKEN",
-  "HERDR_PANE_ID",
-  "HERDR_PLUGIN_CONFIG_DIR",
-  "HERDR_PLUGIN_CONTEXT_JSON",
-  "HERDR_PLUGIN_ENTRYPOINT_ID",
-  "HERDR_PLUGIN_EVENT_JSON",
-  "HERDR_PLUGIN_ID",
-  "HERDR_PLUGIN_ROOT",
-  "HERDR_PLUGIN_STATE_DIR",
-  "HERDR_SOCKET_PATH",
-  "HERDR_WORKSPACE_ID"
-]);
+const allowedEnvironmentKeys = new Set();
 
 const runtimeRules = [
   ["child_process", /(?:node:)?child_process/u],
@@ -52,13 +39,14 @@ const repositoryRules = [
 ];
 
 const forbiddenArtifactNames = [/^\.env(?:\..+)?$/u, /\.(?:lock|log|tmp|tgz)$/u, /^\.DS_Store$/u];
+const committedLockfiles = new Set(["Cargo.lock"]);
 const violations = [];
 const files = await collectFiles(root);
 const runtimeFiles = files.filter((path) => path.startsWith("src/") && path.endsWith(".ts"));
 
 for (const path of files) {
   const name = path.split("/").at(-1) ?? path;
-  if (name !== ".env.example" && forbiddenArtifactNames.some((pattern) => pattern.test(name))) {
+  if (name !== ".env.example" && !committedLockfiles.has(name) && forbiddenArtifactNames.some((pattern) => pattern.test(name))) {
     violations.push(`${path}: forbidden generated or local artifact`);
   }
   if (!textExtensions.has(extname(path)) && !textNames.has(name)) continue;
@@ -80,28 +68,8 @@ for (const path of runtimeFiles) {
   for (const match of source.matchAll(/executablePath\s*:\s*([A-Za-z0-9_.$]+)/gu)) {
     if (match[1] !== "BROWSER_EXECUTABLE_PATH") violations.push(`${path}: executable_path_input`);
   }
-  const localSocketFiles = new Set(["src/herdr/socket-client.ts", "src/viewer/transport.ts"]);
-  if (source.includes('from "node:net"') && !localSocketFiles.has(path)) {
-    violations.push(`${path}: network_socket_outside_herdr_client`);
-  }
-  if (path === "src/herdr/socket-client.ts") {
-    const calls = [...source.matchAll(/createConnection\s*\(/gu)].length;
-    if (calls !== 1 || !source.includes("createConnection({ path: this.socketPath })")) {
-      violations.push(`${path}: non_local_socket_connection`);
-    }
-  }
-  if (path === "src/viewer/transport.ts") {
-    const connections = [...source.matchAll(/createConnection\s*\(/gu)].length;
-    const listeners = [...source.matchAll(/\.listen\s*\(/gu)].length;
-    if (
-      connections !== 1 ||
-      listeners !== 1 ||
-      !source.includes("createConnection(socketPath)") ||
-      !source.includes("server.listen(socketPath)") ||
-      !source.includes("chmod(socketPath, 0o600)")
-    ) {
-      violations.push(`${path}: non_local_viewer_transport`);
-    }
+  if (source.includes('from "node:net"')) {
+    violations.push(`${path}: network_socket_import`);
   }
 }
 

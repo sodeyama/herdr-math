@@ -1,7 +1,4 @@
 export interface PolicyLimits {
-  eventJsonBytes: number;
-  paneReadLines: number;
-  paneReadBytes: number;
   scannerInputBytes: number;
   delimiterRuns: number;
   delimiterRunCharacters: number;
@@ -17,24 +14,9 @@ export interface PolicyLimits {
   imagePixels: number;
   rawPngBytes: number;
   base64PayloadBytes: number;
-  viewerTransportBytes: number;
-  viewerTransportTimeoutMs: number;
-  scrollFrameCount: number;
-  scrollFrameIntervalMs: number;
-  scrollAnimationDurationMs: number;
-  scrollFrameAggregateBytes: number;
-  anchorOccurrences: number;
-  boundaryCandidates: number;
-  stateFileBytes: number;
-  socketResponseBytes: number;
-  staleLockAgeMs: number;
-  fingerprintExpiryMs: number;
 }
 
 export const POLICY_LIMITS: Readonly<PolicyLimits> = Object.freeze({
-  eventJsonBytes: 64 * 1024,
-  paneReadLines: 1000,
-  paneReadBytes: 1024 * 1024,
   scannerInputBytes: 1024 * 1024,
   delimiterRuns: 4096,
   delimiterRunCharacters: 8,
@@ -49,17 +31,5 @@ export const POLICY_LIMITS: Readonly<PolicyLimits> = Object.freeze({
   imageHeightPx: 16_384,
   imagePixels: 32 * 1024 * 1024,
   rawPngBytes: 512 * 1024,
-  base64PayloadBytes: 700 * 1024,
-  viewerTransportBytes: 768 * 1024,
-  viewerTransportTimeoutMs: 6000,
-  scrollFrameCount: 64,
-  scrollFrameIntervalMs: 40,
-  scrollAnimationDurationMs: 2600,
-  scrollFrameAggregateBytes: 16 * 1024 * 1024,
-  anchorOccurrences: 256,
-  boundaryCandidates: 2048,
-  stateFileBytes: 64 * 1024,
-  socketResponseBytes: 2 * 1024 * 1024,
-  staleLockAgeMs: 120_000,
-  fingerprintExpiryMs: 24 * 60 * 60 * 1000
+  base64PayloadBytes: 700 * 1024
 });
