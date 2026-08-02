@@ -298,11 +298,47 @@ Progress: T-401 through T-404 complete via commits `d5bcca3`, `3627579`, `dbba4a
 (plus `5133ddf` docs). Real-terminal mouse-wheel verification is part of the manual Ghostty step.
 Evidence: `docs/evidence/2026-08-02-tmath-v2-phase3.md`.
 
-## Phase 4 - CLI and Document Composition (outline)
+---
 
-- **T-501**: Implement `tmath render <path | ->` over file/stdin with bounded reads.
-- **T-502**: Document composition through the scanner and allowlisted Markdown renderer.
-- **T-503**: Add `--help`/`--version` and diagnostics for missing Kitty support.
+## Phase 4 - CLI and Document Composition
+
+The goal of Phase 4 is the user-facing CLI: `tmath render <path | ->` with bounded reads and
+composition options (content width, font size), `tmath diagnose` for capability checks, and
+accurate `--help`/`--version`. Document composition runs the scanner and the allowlisted Markdown
+renderer through the Phase 1 transport.
+
+### T-501: Harden `tmath render` file/stdin reads and composition options
+
+- Scope: Keep `tmath render <path | ->` bounded for both file and stdin (cap at the request
+  byte limit), and add `--content-width <px>` and `--font-size <px>` options that are forwarded
+  through the IPC request to the renderer layout. Add CLI parser unit tests and an oversized-file
+  rejection test.
+- Dependencies: T-204, T-201
+- Acceptance: `AT-2-501`
+- Evidence: Unit, Integration
+- Commit: `feat(cli): add bounded render reads and composition options`
+
+### T-502: Compose prose and math documents through the standalone path
+
+- Scope: Prove a Markdown document containing headings, prose, `$...$` and `$$...$$` math renders
+  in source order through `tmath render` (scanner + allowlisted Markdown renderer via the
+  Phase 1 transport), including a custom `--content-width` composition. Add a CLI integration test
+  rendering such a document and asserting a transparent PNG result.
+- Dependencies: T-501, T-202
+- Acceptance: `AT-2-502`
+- Evidence: Render, Integration
+- Commit: `test(cli): compose prose and math documents end to end`
+
+### T-503: Add `tmath diagnose` and accurate help/version text
+
+- Scope: Add `tmath diagnose` reporting, in this order: renderer subprocess availability, node,
+  a terminal for stdout, Kitty graphics support (probe), and cell size — each with a stable status
+  and exit code. Expand `--help` to list commands and options and `--version` to print the crate
+  version.
+- Dependencies: T-501, T-103
+- Acceptance: `AT-2-304`, `AT-2-706`
+- Evidence: Contract, Integration
+- Commit: `feat(cli): add capability diagnostics and help text`
 
 ## Phase 5 - Hardening and Security (outline)
 
