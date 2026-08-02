@@ -189,6 +189,12 @@
   - Acceptance tests: AT-007, AT-405, AT-406, AT-708
   - Commit: `chore(renderer): lock and audit runtime dependencies`
 
+- [x] **T-406: Render the allowlisted Markdown subset**
+  - Scope: Add a local Markdown parser (markdown-it) with raw HTML disabled and a syntax highlighter (highlight.js), render headings, emphasis, lists, quotes, pipe tables, fenced/inline code, and inert links, interleave math via non-NUL placeholders so formulas render inside table cells and list items, and add the corresponding renderer CSS while keeping transparent output and one base font size.
+  - Dependencies: T-404, T-405
+  - Acceptance tests: AT-411 through AT-418
+  - Commit: `feat(renderer): render allowlisted Markdown response prose`
+
 ## Phase 5 - Herdr Protocol and One-Shot Workers
 
 - [x] **T-501: Implement strict Herdr event decoding**
@@ -260,7 +266,7 @@
   - Commit: `feat(presentation): isolate coding-agent final responses`
 
 - [x] **T-606: Render transparent response documents**
-  - Scope: Replace formula-only composition with escaped prose-and-math spans in source order, preserve paragraph/list/display boundaries, use transparent screenshot output, inherit one base size across prose and KaTeX, and enforce response-document limits without adding general Markdown rendering.
+  - Scope: Replace formula-only composition with escaped prose-and-math spans in source order, preserve paragraph/list/display boundaries, use transparent screenshot output, inherit one base size across prose and KaTeX, enforce response-document limits, and render the allowlisted Markdown subset through a local parser with raw HTML disabled.
   - Dependencies: T-404, T-605
   - Acceptance tests: AT-400 through AT-413, AT-608, AT-609
   - Commit: `feat(renderer): render transparent response documents`

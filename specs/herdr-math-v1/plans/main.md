@@ -50,7 +50,7 @@ The prototype did not establish clean installation, self-contained dependencies,
 7. Startup model: cleanup/restore work that exits; no daemon launcher.
 8. State model: cryptographic fingerprints and metadata only; no durable raw transcript.
 9. Presentation model: prove an agent-specific visible final-answer boundary before scanning math; do not display prompts, reasoning, tools, progress, or terminal chrome.
-10. Document model: render escaped plain prose and `$...$`/`$$...$$` math in source order; do not become a general Markdown renderer.
+10. Document model: render escaped plain prose and `$...$`/`$$...$$` math in source order, plus a strict, allowlisted subset of Markdown (headings, emphasis, lists, quotes, tables, code blocks, and inert links) rendered by a local parser with raw HTML disabled. Do not allow user HTML, CSS, color directives, images, scripts, or a fully general Markdown engine.
 11. Theme model: emit transparent PNG pixels so the terminal supplies the background, and use one inherited base size for prose and KaTeX.
 12. Update model: fully validate a short image or bounded scroll-frame sequence, then call `pane.graphics.set` without clearing first.
 13. Scroll model: the Herdr-managed viewer owns bounded animation and retains only its previous final frame in memory for rollback.
@@ -95,9 +95,10 @@ The table reflects the current official Herdr [Agents](https://herdr.dev/docs/ag
 ### Deferred
 
 - Popup or overlay default placement
-- Full Markdown rendering
+- User themes, custom CSS, and user-controlled text coloring
+- Image rendering inside responses
+- Advanced Markdown (arbitrary HTML, raw HTML passthrough, embedded scripts) beyond the strict allowlisted subset
 - MathML input
-- User themes and custom CSS
 - Remote attach support claims
 - Windows support
 - Telemetry
@@ -300,8 +301,11 @@ Risks:
 
 - Implement a backend-neutral renderer interface.
 - Accept an escaped response document containing prose and formula spans in source order.
+- Render the allowlisted Markdown subset (headings, emphasis, lists, quotes, tables, code blocks, inert links) with a local parser configured with raw HTML disabled, never executing user HTML, images, or scripts.
+- Interleave math with Markdown via non-NUL placeholder tokens so formulas render correctly inside table cells and list items.
+- Syntax-highlight fenced code blocks with a local highlight.js theme.
 - Add explicit trust and remote-resource denial.
-- Use a transparent page, a terminal-readable foreground, and one inherited base font size for prose and KaTeX.
+- Use a transparent page, a terminal-readable foreground, and one inherited base font size for prose, KaTeX, and code.
 - Enforce response-byte, line, block, formula-count, formula-length, aggregate, timeout, dimension, raw-byte, and encoded-byte limits.
 - Normalize backend errors into stable codes.
 - Ensure every success, invalid-input, and timeout path releases resources.

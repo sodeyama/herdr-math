@@ -229,7 +229,7 @@ type RendererDocumentSegment =
   | { kind: "math"; latex: string; display: boolean };
 ```
 
-Text segments are HTML-escaped. Math segments are created only from scanner-proven source offsets, so prose and formulas retain their original order. This is not a general Markdown renderer.
+Text segments are parsed as Markdown and rendered through a local parser (markdown-it) with raw HTML disabled. Only the strict allowlisted subset is produced: headings, emphasis, lists, quotes, pipe tables, fenced and inline code (syntax-highlighted by highlight.js), and inert links. Math segments are created only from scanner-proven source offsets and are re-inserted via non-NUL placeholder tokens, so prose and formulas retain their original order and render correctly even inside table cells and list items. Raw HTML, images, and scripts are never executed; links render as inert visible text without an href.
 
 The backend returns:
 
@@ -292,7 +292,7 @@ The viewer manager owns the one-to-one mapping between a source pane and a viewe
 
 The source token is a domain-separated SHA-256 digest of the Herdr session identity and source pane id. The raw source pane id is not copied into presentation metadata. The managed viewer validates `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ENTRYPOINT_ID`, its pane and workspace ids, and the 64-character source token before reporting the English `Herdr Math` title and the `herdr_math_owner` and `herdr_math_source` tokens. Herdr acknowledges `pane.report_metadata` with `ok`; the client then reads the pane and validates the reported ownership metadata and workspace. Metadata registration and verification each have a two-second timeout.
 
-After registration, the viewer creates one source-token-scoped Unix socket under `HERDR_PLUGIN_STATE_DIR`, sets mode `0600`, and accepts only one bounded newline-framed pixel request at a time. Each request must repeat the exact source token, viewer pane id, workspace id, and bounded generation. The protocol carries PNG pixels and dimensions, never response text or LaTeX. The socket path is removed on normal viewer termination; an existing non-socket path is never replaced. The viewer otherwise does not poll and remains attached to its Herdr pane until stdin closes or Herdr sends `SIGHUP`, `SIGINT`, or `SIGTERM`.
+After registration, the viewer creates one source-token-scoped Unix socket under `HERDR_PLUGIN_STATE_DIR`, sets mode `0600`, and accepts only one bounded newline-framed request at a time. Each request must repeat the exact source token, viewer pane id, workspace id, and bounded generation. The protocol carries the validated PNG (pixels and dimensions) together with the bounded render document (the final prose text and scanned formulas) that the viewer keeps in memory so it can re-render the current response at a new width after the pane is resized. Nothing is written to durable state or logs. The socket path is removed on normal viewer termination; an existing non-socket path is never replaced. The viewer otherwise does not poll and remains attached to its Herdr pane until stdin closes or Herdr sends `SIGHUP`, `SIGINT`, or `SIGTERM`.
 
 Discovery order:
 
@@ -317,6 +317,8 @@ Before updating the viewer, the placer:
 6. The viewer calls `pane.graphics.set` without a preceding clear, waits a bounded interval between long-response frames, and leaves the bottom frame visible.
 
 The existing graphics layer is not cleared first. Invalid or oversized images, missing cell dimensions, stale ownership, and preflight failure leave the last valid image intact. The viewer retains only the previous final frame in process memory; if a later animation fails after starting, it attempts to restore that frame. No response pixels are written to durable state or logs. A successful completion records the viewer id only after the final frame succeeds.
+
+When the viewer pane is resized, Herdr emits a `layout.updated` event. The viewer subscribes to it and, after a short debounce, re-renders the held render document at the new pane pixel width and re-places the replacement image so the drawing tracks the new size. The pane `rect.width` is in columns, so the target content width is `rect.width × cellWidthPx`. The renderer measures the widest unbroken formula and widens the canvas to `max(target width, measured width)` so long formulas are never clipped; the viewer re-render reuses that same rule at resize time.
 
 ### 10. Diagnostics
 

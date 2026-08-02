@@ -21,6 +21,10 @@ The installed packages retain their complete license and notice files under `nod
 | semver                                               |          7.8.5 | ISC                                              | `node_modules/semver/LICENSE`                           |
 | Sharp macOS native addon, arm64 and x64 lock entries |         0.35.3 | Apache-2.0                                       | Native package `LICENSE`                                |
 | Sharp libvips bundle, arm64 and x64 lock entries     |          1.3.2 | LGPL-3.0-or-later and bundled component licenses | Native package `README.md` licensing inventory          |
+| markdown-it                                         |         14.3.0 | MIT                                              | `node_modules/markdown-it/LICENSE`                      |
+| highlight.js                                        |         11.11.1 | BSD-3-Clause                                     | `node_modules/highlight.js/LICENSE`                     |
+
+markdown-it is MIT licensed and parses Markdown text into safe HTML with raw HTML disabled. highlight.js is BSD-3-Clause licensed and provides the code-block syntax highlighting theme used by the renderer.
 
 The npm 10 optional-dependency resolver may also install the locked `@img/sharp-wasm32` 0.35.3 package and its `@emnapi/runtime` and `tslib` dependencies on macOS. They are not selected at runtime when the native macOS addon loads. Their package metadata declares `Apache-2.0 AND LGPL-3.0-or-later AND MIT`, MIT, and 0BSD respectively, and their installed license files are retained.
 

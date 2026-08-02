@@ -7,15 +7,18 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = readJson("package.json");
 const lock = readJson("package-lock.json");
-const expectedDirect = { katex: "0.18.1", playwright: "1.62.1", sharp: "0.35.3" };
+const expectedDirect = { katex: "0.18.1", playwright: "1.62.1", sharp: "0.35.3", "markdown-it": "14.3.0", "highlight.js": "11.11.1" };
 const allowedLicenses = new Set([
   "0BSD",
   "Apache-2.0",
   "Apache-2.0 AND LGPL-3.0-or-later",
   "Apache-2.0 AND LGPL-3.0-or-later AND MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
   "ISC",
   "LGPL-3.0-or-later",
-  "MIT"
+  "MIT",
+  "Python-2.0"
 ]);
 const expectedLockEntries = [
   ["node_modules/katex", "0.18.1", "MIT"],
@@ -30,7 +33,15 @@ const expectedLockEntries = [
   ["node_modules/@img/sharp-darwin-arm64", "0.35.3", "Apache-2.0"],
   ["node_modules/@img/sharp-darwin-x64", "0.35.3", "Apache-2.0"],
   ["node_modules/@img/sharp-libvips-darwin-arm64", "1.3.2", "LGPL-3.0-or-later"],
-  ["node_modules/@img/sharp-libvips-darwin-x64", "1.3.2", "LGPL-3.0-or-later"]
+  ["node_modules/@img/sharp-libvips-darwin-x64", "1.3.2", "LGPL-3.0-or-later"],
+  ["node_modules/markdown-it", "14.3.0", "MIT"],
+  ["node_modules/highlight.js", "11.11.1", "BSD-3-Clause"],
+  ["node_modules/argparse", "2.0.1", "Python-2.0"],
+  ["node_modules/entities", "4.5.0", "BSD-2-Clause"],
+  ["node_modules/linkify-it", "5.0.2", "MIT"],
+  ["node_modules/mdurl", "2.1.0", "MIT"],
+  ["node_modules/punycode.js", "2.3.1", "MIT"],
+  ["node_modules/uc.micro", "2.1.0", "MIT"]
 ];
 const requiredInstalledNotices = [
   "node_modules/katex/LICENSE",
@@ -43,9 +54,10 @@ const requiredInstalledNotices = [
   "node_modules/@img/colour/LICENSE.md",
   "node_modules/detect-libc/LICENSE",
   "node_modules/semver/LICENSE",
-  "node_modules/playwright/node_modules/fsevents/LICENSE"
+  "node_modules/playwright/node_modules/fsevents/LICENSE",
+  "node_modules/markdown-it/LICENSE",
+  "node_modules/highlight.js/LICENSE"
 ];
-
 try {
   auditLockfile();
   auditInstalledPackages();
@@ -63,8 +75,12 @@ function auditLockfile() {
   assert(equalRecords(lock.packages?.[""]?.dependencies, expectedDirect), "lockfile root dependencies changed");
 
   const source = readText("src/renderer/browser-backend.ts");
+  const markdownSource = readText("src/renderer/markdown.ts");
   for (const name of Object.keys(expectedDirect)) {
-    assert(source.includes(`from "${name}"`), `direct dependency is unused: ${name}`);
+    assert(
+      source.includes(`from "${name}"`) || markdownSource.includes(`from "${name}"`),
+      `direct dependency is unused: ${name}`
+    );
   }
 
   for (const [path, entry] of Object.entries(lock.packages ?? {})) {
@@ -109,7 +125,7 @@ function auditFontsAndNotices() {
   for (const font of referenced) assert(installed.has(font), "a referenced KaTeX font is missing");
 
   const notices = readText("THIRD_PARTY_NOTICES.md");
-  for (const name of ["KaTeX", "Playwright", "Chromium", "FFmpeg", "Sharp", "libvips"]) {
+  for (const name of ["KaTeX", "Playwright", "Chromium", "FFmpeg", "Sharp", "libvips", "markdown-it", "highlight.js"]) {
     assert(notices.includes(name), `third-party notice is incomplete: ${name}`);
   }
 }

@@ -460,7 +460,7 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - Given a final response whose terminal cells wrap English, Japanese, or mixed Unicode prose
 - When presentation normalization runs
 - Then soft wraps are joined without inserting spaces inside Japanese text, paragraph breaks and list boundaries remain, display equations remain block boundaries, and formula offsets stay correct.
-- And the result is plain prose with math, not a general Markdown or HTML rendering path.
+- And the result is prose and math in source order rendered only through the strict allowlisted Markdown subset, never raw HTML, images, or scripts.
 
 ## E. Rendering and Image Safety
 
@@ -573,6 +573,46 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 - When composition or rendering runs
 - Then it returns a stable bounded error before graphics commit, logs no response content, and preserves the previous valid viewer image.
 
+### AT-414 - Wide formula fits the canvas
+
+- Priority: P0
+- Evidence: Render
+- Given a formula whose natural width exceeds the requested content width
+- When it is rendered
+- Then the canvas widens to `max(requested width, measured natural width)` (within the image width policy) so the formula is never clipped, and a formula that already fits keeps the requested width.
+
+### AT-415 - Allowlisted Markdown subset renders
+
+- Priority: P0
+- Evidence: Unit, Render
+- Given a final response containing Markdown headings, emphasis, lists, quotes, pipe tables, fenced and inline code blocks, and inert links, interleaved with math
+- When the response document is rendered
+- Then each element renders as structured HTML in source order, math inside table cells and list items remains rendered, fenced code is syntax-highlighted, and output stays within the response-document and image limits.
+
+### AT-416 - Raw HTML, images, and scripts are never executed
+
+- Priority: P0
+- Evidence: Unit, Render, Integration
+- Given Markdown or text containing raw HTML tags, embedded `<script>` or `<img>`/`onerror`, and markdown image syntax `![alt](src)`
+- When the response document renders
+- Then raw tags are escaped and displayed as literal text, no `<script>` or `<img>` element with an active handler enters the rendered output, images render as inert alt text, and no remote request is made.
+
+### AT-417 - Links render as inert text without navigation
+
+- Priority: P0
+- Evidence: Unit, Render
+- Given Markdown links `[text](url)`
+- When the response document renders
+- Then the link renders as inert visible text without an active `href` or navigation, and no remote resource is fetched.
+
+### AT-418 - Denied LaTeX commands in Markdown are rejected
+
+- Priority: P0
+- Evidence: Unit
+- Given an allowlisted Markdown response whose math contains a denied command such as `\href` or `\includegraphics`
+- When rendering runs
+- Then it returns `invalid_latex` and does not emit input text in logs.
+
 ## F. Viewer and Graphics Lifecycle
 
 ### AT-500 - First viewer creation
@@ -655,10 +695,10 @@ Runtime evidence must record the date, Herdr version, operating system, architec
 ### AT-509 - Resize behavior
 
 - Priority: P0
-- Evidence: Runtime
-- Given a visible image
-- When the split ratio changes and another formula is rendered
-- Then placement uses current cell and layout dimensions, remains within the viewer, and does not create a second pane.
+- Evidence: Unit, Integration, Runtime
+- Given a visible image and a stored render document
+- When the viewer pane width changes (a `layout.updated` event) while no new formula is rendered
+- Then the viewer re-renders the current response at the new pane width, re-places it within the viewer, does not create a second pane, and leaves the previous image intact if re-render or placement fails.
 
 ### AT-510 - Source pane closure cleanup
 

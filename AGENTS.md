@@ -46,7 +46,7 @@ The experiment report is evidence, not a permanent API contract. When the protot
 - Image display may depend on Herdr's experimental Kitty graphics support. Ghostty is one verified outer terminal, not a required application dependency.
 - The first public release targets the platforms explicitly declared in `herdr-plugin.toml`. Do not claim support for an untested platform or terminal.
 - Support detected Claude Code and Codex panes first. Add another agent only with recorded lifecycle evidence and tests.
-- Parse `$...$` and `$$...$$` math delimiters for v1. Do not expand into a general Markdown renderer.
+- Parse `$...$` and `$$...$$` math delimiters for v1. Render common Markdown structure (headings, emphasis, lists, quotes, tables, and code blocks) for the final response prose through a strict local renderer that never executes raw HTML, links, or scripts. Do not expand into arbitrary HTML or a fully general Markdown engine, and do not allow user-provided CSS or color directives.
 - Do not execute LaTeX, shell commands, user-provided JavaScript, remote resources, or TeX binaries.
 - Do not upload pane contents, equations, images, logs, or telemetry to a network service.
 

@@ -91,7 +91,7 @@ The repository name is `herdr-math`. The public description should include the m
 ### Explicitly excluded from v1
 
 - Editing or replacing the source terminal transcript
-- Full Markdown rendering
+- General Markdown rendering beyond the strict allowlisted subset (headings, emphasis, lists, quotes, tables, code blocks, inert links); no user HTML, CSS, color directives, images, or scripts
 - TeX document compilation
 - Shell execution or user macros that can run code
 - Remote rendering APIs

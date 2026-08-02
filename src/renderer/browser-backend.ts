@@ -9,9 +9,15 @@ import sharp from "sharp";
 
 import type { RenderedImage } from "../core/contracts.js";
 import { HerdrMathError } from "../core/errors.js";
-import { assertImageDimensions, type RendererBackend, type RendererBackendContext } from "./render.js";
+import {
+  assertImageDimensions,
+  type RendererBackend,
+  type RendererBackendContext,
+  type RendererLimits
+} from "./render.js";
 import type { RendererDocument, RendererDocumentSegment } from "./document.js";
 import { resolveRendererLayout, type RendererLayout } from "./layout.js";
+import { MARKDOWN_CSS_PATH, renderMarkup } from "./markdown.js";
 
 const require = createRequire(import.meta.url);
 const KATEX_CSS_PATH = require.resolve("katex/dist/katex.min.css");
@@ -50,7 +56,12 @@ export class BrowserRendererBackend implements RendererBackend {
     renderContext.signal.addEventListener("abort", abort, { once: true });
     try {
       const css = await readFile(KATEX_CSS_PATH, "utf8");
-      const html = buildRendererHtml(document, css, renderContext.layout);
+      const markdownCss = await readFile(MARKDOWN_CSS_PATH, "utf8");
+      // Build and validate the math-only probe before launching the browser so invalid
+      // input still fails before any browser startup. The probe measures the widest
+      // unbroken math so the final canvas is never made wider than the content needs,
+      // which prevents wide formulas from overflowing (and being clipped).
+      const probeHtml = buildProbeHtml(document, css, renderContext.layout);
       if (BROWSER_EXECUTABLE_PATH === undefined) throw new HerdrMathError("renderer_failed", {}, true);
       await this.assertActive(renderContext);
       this.browser = await chromium.launch({
@@ -70,6 +81,9 @@ export class BrowserRendererBackend implements RendererBackend {
       this.page = await this.context.newPage();
       await this.assertActive(renderContext);
       this.page.setDefaultTimeout(remainingMs(renderContext.deadlineMs));
+      const measuredWidth = await this.measure(probeHtml, renderContext);
+      const layout = fittedLayout(renderContext.layout, renderContext.limits, measuredWidth);
+      const html = buildRendererHtml(document, css, layout, markdownCss);
       await this.page.setContent(html, {
         waitUntil: "load",
         timeout: remainingMs(renderContext.deadlineMs)
@@ -126,6 +140,19 @@ export class BrowserRendererBackend implements RendererBackend {
     return this.page !== undefined || this.context !== undefined || this.browser !== undefined;
   }
 
+  private async measure(probeHtml: string, renderContext: RendererBackendContext): Promise<number> {
+    const page = this.page;
+    if (page === undefined) throw new HerdrMathError("renderer_failed", {}, true);
+    await page.setContent(probeHtml, {
+      waitUntil: "load",
+      timeout: remainingMs(renderContext.deadlineMs)
+    });
+    await page.evaluate("document.fonts.ready");
+    await this.assertActive(renderContext);
+    const box = await page.locator("#render").boundingBox({ timeout: remainingMs(renderContext.deadlineMs) });
+    return Math.max(1, Math.ceil(box?.width ?? 0));
+  }
+
   private async closeCurrentResources(): Promise<void> {
     const page = this.page;
     const context = this.context;
@@ -170,7 +197,7 @@ export class BrowserRendererBackend implements RendererBackend {
   }
 }
 
-function buildMarkup(segments: readonly RendererDocumentSegment[]): string {
+function buildProbeMarkup(segments: readonly RendererDocumentSegment[]): string {
   try {
     return segments
       .map((segment) => {
@@ -198,22 +225,35 @@ function buildMarkup(segments: readonly RendererDocumentSegment[]): string {
   }
 }
 
-function wrapMarkupLines(markup: string): string {
-  return markup
-    .split("\n")
-    .map((line) =>
-      line.length === 0 ? '<div class="gap" aria-hidden="true"></div>' : `<div class="line">${line}</div>`
-    )
-    .join("");
-}
-
 export function buildRendererHtml(
   document: RendererDocument,
   css: string,
-  layout: Readonly<RendererLayout> = resolveRendererLayout()
+  layout: Readonly<RendererLayout> = resolveRendererLayout(),
+  markdownCss = ""
 ): string {
-  const markup = wrapMarkupLines(buildMarkup(document.segments));
-  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${css}\nhtml,body{margin:0;background:transparent}#render{box-sizing:border-box;width:${layout.contentWidthPx}px;min-height:1px;padding:${layout.paddingPx}px;color:#e6edf3;background:transparent;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:${layout.fontSizePx}px;line-height:1.65;word-break:break-word;overflow-wrap:break-word}.line{display:block;min-height:1.65em}.gap{display:block;height:.55em}.katex{font-size:1em;line-height:normal}.math-inline{display:inline-block;max-width:100%;vertical-align:baseline;white-space:nowrap}.math-display{display:block;margin:.65em 0;text-align:center;white-space:normal}.katex-display{margin:0}</style></head><body><div id="render">${markup}</div></body></html>`;
+  const markup = renderMarkup(document.segments);
+  const style = `${css}${markdownCss}\n${baseStyle(layout)}`;
+  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${style}</style></head><body><div id="render">${markup}</div></body></html>`;
+}
+
+function buildProbeHtml(document: RendererDocument, css: string, layout: Readonly<RendererLayout>): string {
+  const probes = document.segments.filter((segment) => segment.kind === "math");
+  const markup = probes.map((segment) => `<div class="probe">${buildProbeMarkup([segment])}</div>`).join("");
+  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${css}\nhtml,body{margin:0;background:transparent}#render{box-sizing:border-box;width:max-content;min-width:1px;padding:${layout.paddingPx}px;color:#e6edf3;background:transparent;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:${layout.fontSizePx}px;line-height:1.65}.probe{display:block;min-height:1.65em;white-space:nowrap}.katex{font-size:1em;line-height:normal}</style></head><body><div id="render">${markup}</div></body></html>`;
+}
+
+function baseStyle(layout: Readonly<RendererLayout>): string {
+  return `html,body{margin:0;background:transparent}#render{box-sizing:border-box;width:${layout.contentWidthPx}px;min-height:1px;padding:${layout.paddingPx}px;color:#e6edf3;background:transparent;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:${layout.fontSizePx}px;line-height:1.65;word-break:break-word;overflow-wrap:break-word}.katex{font-size:1em;line-height:normal}.math-inline{display:inline-block;max-width:100%;vertical-align:baseline;white-space:nowrap}.math-display{display:block;margin:.65em 0;text-align:center;white-space:normal}.katex-display{margin:0}#render h1,#render h2,#render h3,#render h4,#render h5,#render h6{margin:0.9em 0 0.5em;line-height:1.3}#render h1{font-size:1.5em}#render h2{font-size:1.3em}#render h3{font-size:1.15em}#render h4{font-size:1em}#render p{margin:0.45em 0}#render ul,#render ol{padding-left:1.5em;margin:0.45em 0}#render li{margin:0.15em 0}#render blockquote{border-left:3px solid #6e7681;margin:0.45em 0;padding:0.1em 0.8em;color:#8b949e}#render hr{border:none;border-top:1px solid #30363d;margin:0.8em 0}#render code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}#render :not(pre)>code{background:#161b22;border-radius:4px;padding:0.1em 0.35em;font-size:0.9em}#render pre{background:#161b22;border-radius:6px;padding:0.6em 0.8em;overflow-x:auto;line-height:1.45}#render pre code{background:transparent;padding:0;font-size:0.9em}#render table{border-collapse:collapse;margin:0.6em 0;max-width:100%;display:block;overflow-x:auto}#render th,#render td{border:1px solid #30363d;padding:0.3em 0.6em;text-align:left}#render th{background:#161b22;font-weight:600}#render a{color:inherit;text-decoration:none;cursor:default}.markdown-link-url{color:#58a6ff;font-size:0.85em}.markdown-image{color:#8b949e;font-style:italic}`;
+}
+
+function fittedLayout(
+  requested: Readonly<RendererLayout>,
+  limits: Pick<RendererLimits, "imageWidthPx">,
+  probedWidth: number
+): Readonly<RendererLayout> {
+  const top = Math.min(requested.contentWidthPx, limits.imageWidthPx);
+  const contentWidthPx = Math.min(limits.imageWidthPx, Math.max(top, probedWidth));
+  return resolveRendererLayout({ ...requested, contentWidthPx });
 }
 
 function escapeHtml(value: string): string {

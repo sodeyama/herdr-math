@@ -44,7 +44,7 @@ describe("bounded local renderer", () => {
     expect(html).toContain("Before &lt;unsafe&gt;");
     expect(html).not.toContain("Before <unsafe>");
     expect(html).toContain("background:transparent");
-    expect(html).toContain("font-size:13px");
+    expect(html).toContain("font-size:14px");
     expect(html).toContain(".katex{font-size:1em;line-height:normal}");
 
     const result = await renderResponse(text, formulas);
@@ -97,6 +97,37 @@ describe("bounded local renderer", () => {
     expect(result.value.bytes).toBeLessThanOrEqual(POLICY_LIMITS.rawPngBytes);
     expect(alpha?.min).toBe(0);
     expect(alpha?.max).toBe(255);
+  }, 30_000);
+
+  it("widens the canvas so a wide formula is never clipped by the requested width", async () => {
+    const wide =
+      "x_{1}+x_{2}+x_{3}+x_{4}+x_{5}+x_{6}+x_{7}+x_{8}+x_{9}+x_{10}+x_{11}+x_{12}+x_{13}+x_{14}+x_{15}+x_{16}+x_{17}+x_{18}+x_{19}+x_{20}+x_{21}+x_{22}+x_{23}+x_{24}+x_{25}+x_{26}+x_{27}+x_{28}+x_{29}+x_{30}+x_{31}+x_{32}+x_{33}+x_{34}+x_{35}+x_{36}+x_{37}+x_{38}+x_{39}+x_{40}";
+    const result = await renderFormulas([{ latex: wide, display: true }], { layout: { contentWidthPx: 480 } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.width).toBeGreaterThan(480);
+    expect(result.value.width).toBeLessThanOrEqual(POLICY_LIMITS.imageWidthPx);
+  }, 30_000);
+
+  it("renders a Markdown table with interleaved math and code through the real browser", async () => {
+    const text =
+      "## Values\n\n| Name | Formula |\n|---|---|\n| energy | $E=mc^2$ |\n| roots | $x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}$ |\n\n```js\nconst n = 42;\n```\n\nSee [docs](https://example.com).";
+    const result = await renderResponse(text, scanLatex(text));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const metadata = await sharp(result.value.buffer).metadata();
+    const alpha = (await sharp(result.value.buffer).ensureAlpha().stats()).channels[3];
+    expect(metadata.format).toBe("png");
+    expect(result.value.bytes).toBeLessThanOrEqual(POLICY_LIMITS.rawPngBytes);
+    expect(alpha?.min).toBe(0);
+    expect(alpha?.max).toBe(255);
+  }, 30_000);
+
+  it("keeps the requested width when the widest formula already fits", async () => {
+    const result = await renderFormulas([{ latex: "x^2+y^2=z^2", display: true }], { layout: { contentWidthPx: 480 } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.width).toEqual(480);
   }, 30_000);
 
   it("rejects malformed and link-capable input before browser startup without leaking source", async () => {

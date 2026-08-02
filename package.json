@@ -60,6 +60,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "22.20.1",
     "ajv": "8.20.0",
     "eslint": "10.8.0",
@@ -69,7 +70,9 @@
     "vitest": "4.1.10"
   },
   "dependencies": {
+    "highlight.js": "11.11.1",
     "katex": "0.18.1",
+    "markdown-it": "14.3.0",
     "playwright": "1.62.1",
     "sharp": "0.35.3"
   }
