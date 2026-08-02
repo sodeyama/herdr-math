@@ -54,8 +54,8 @@ export type RenderIpcResponse =
     }
   | { protocol: string; ok: false; error: SafeErrorRecord };
 
-export function encodeRequest(request: RenderIpcRequest): Buffer {
-  const payload = Buffer.from(JSON.stringify(request), "utf8");
+export function encodeRequest(message: RenderIpcRequest): Buffer {
+  const payload = Buffer.from(JSON.stringify(message), "utf8");
   if (Buffer.byteLength(payload) > IPC_MAX_REQUEST_BYTES) {
     throw new RangeError(`Request exceeds ${IPC_MAX_REQUEST_BYTES} bytes`);
   }
