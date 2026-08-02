@@ -106,7 +106,11 @@ impl<T: Tty> Terminal<T> {
         if self.cell.is_some() {
             return Ok(self.cell);
         }
-        if !self.cell_query_unsupported {
+        // Inside tmux the `CSI 16t` query is answered by tmux with character
+        // counts (rows;cols), not pixels, so it would corrupt the grid; use
+        // the winsize pixel fallback there instead.
+        let query_usable = !crate::kitty::inside_tmux() && !self.cell_query_unsupported;
+        if query_usable {
             self.io.write_all(b"\x1b[16t")?;
             self.io.flush()?;
             if let Some(cell) =

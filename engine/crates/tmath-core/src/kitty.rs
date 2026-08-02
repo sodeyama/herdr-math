@@ -18,11 +18,12 @@ pub fn inside_tmux() -> bool {
     std::env::var_os("TMUX").is_some()
 }
 
-/// Wraps terminal output in tmux's DCS passthrough envelope when running under
-/// tmux, because tmux only forwards `ESC P ... ESC \\` (DCS) to the attached
-/// client; bare Kitty APC sequences (`ESC _ G`) are otherwise swallowed by
-/// tmux. Passthrough must also be enabled on the tmux window
-/// (`allow-passthrough on`). Outside tmux the bytes are returned unchanged.
+/// Wraps terminal output in tmux's passthrough envelope when running under
+/// tmux. tmux only forwards a DCS opened with its private prefix
+/// (`ESC Ptmux; ... ESC \\`) to the outer terminal; a bare Kitty APC
+/// (`ESC _ G`) or a generic `ESC P` is swallowed. Passthrough must also be
+/// enabled on the tmux window (`allow-passthrough on`). Outside tmux the
+/// bytes are returned unchanged.
 pub fn wrapped_for_tty(bytes: &[u8]) -> Vec<u8> {
     if !inside_tmux() {
         return bytes.to_vec();
@@ -30,10 +31,10 @@ pub fn wrapped_for_tty(bytes: &[u8]) -> Vec<u8> {
     dcs_wrap(bytes)
 }
 
-/// Wraps bytes in the DCS passthrough envelope: `ESC P ... ESC \\`.
+/// Wraps bytes in tmux's passthrough envelope: `ESC Ptmux; ... ESC \\`.
 pub fn dcs_wrap(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len() + 4);
-    out.extend_from_slice(b"\x1bP");
+    let mut out = Vec::with_capacity(bytes.len() + 8);
+    out.extend_from_slice(b"\x1bPtmux;");
     out.extend_from_slice(bytes);
     out.extend_from_slice(b"\x1b\\");
     out
@@ -503,9 +504,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dcs_wrap_uses_the_passthrough_envelope() {
+    fn dcs_wrap_uses_the_tmux_passthrough_envelope() {
         let wrapped = dcs_wrap(b"\x1b_Ga=T,q=2\x1b\\");
-        assert_eq!(wrapped, b"\x1bP\x1b_Ga=T,q=2\x1b\\\x1b\\");
+        assert_eq!(wrapped, b"\x1bPtmux;\x1b_Ga=T,q=2\x1b\\\x1b\\");
     }
 
     #[test]

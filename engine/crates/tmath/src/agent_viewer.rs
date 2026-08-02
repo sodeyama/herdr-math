@@ -63,7 +63,16 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
 
     let mut terminal = Terminal::new(StdioTty::default(), 1)
         .map_err(|error| format!("initialize terminal: {error}"))?;
-    if !terminal
+    // Inside tmux, capability and cell-size queries cannot round-trip through
+    // the passthrough envelope, so graphics support is assumed (the sequences
+    // are fire-and-forget transmits). Everywhere else the probe stays
+    // mandatory and fail-closed.
+    let tmux_passthrough = tmath_core::kitty::inside_tmux();
+    if tmux_passthrough {
+        eprintln!(
+            "agent-viewer: tmux passthrough assumed; require allow-passthrough on the tmux window"
+        );
+    } else if !terminal
         .probe_graphics_support()
         .map_err(|error| format!("probe graphics: {error}"))?
     {
