@@ -7,6 +7,7 @@
 
 pub mod kitty;
 pub mod mouse;
+pub mod native;
 pub mod scroll;
 pub mod terminal;
 
