@@ -3,7 +3,7 @@ import { extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const ignoredDirectories = new Set([".git", "node_modules", "coverage"]);
+const ignoredDirectories = new Set([".git", "node_modules", "coverage", "target"]);
 const textExtensions = new Set([".css", ".html", ".js", ".json", ".md", ".mjs", ".toml", ".ts", ".txt"]);
 const textNames = new Set([".editorconfig", ".gitignore", "LICENSE"]);
 const allowedEnvironmentKeys = new Set([
@@ -52,13 +52,14 @@ const repositoryRules = [
 ];
 
 const forbiddenArtifactNames = [/^\.env(?:\..+)?$/u, /\.(?:lock|log|tmp|tgz)$/u, /^\.DS_Store$/u];
+const committedLockfiles = new Set(["Cargo.lock"]);
 const violations = [];
 const files = await collectFiles(root);
 const runtimeFiles = files.filter((path) => path.startsWith("src/") && path.endsWith(".ts"));
 
 for (const path of files) {
   const name = path.split("/").at(-1) ?? path;
-  if (name !== ".env.example" && forbiddenArtifactNames.some((pattern) => pattern.test(name))) {
+  if (name !== ".env.example" && !committedLockfiles.has(name) && forbiddenArtifactNames.some((pattern) => pattern.test(name))) {
     violations.push(`${path}: forbidden generated or local artifact`);
   }
   if (!textExtensions.has(extname(path)) && !textNames.has(name)) continue;
