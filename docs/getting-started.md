@@ -4,6 +4,31 @@ Terminal Math 0.2.0 is under development. This document describes the planned st
 workflow. Nothing below is a release claim until the release-gate tasks complete and real
 Ghostty evidence is recorded.
 
+## Install (one command)
+
+From a checkout, or anywhere (the script clones the repository on first use):
+
+```sh
+bash scripts/install.sh
+# equivalent: npm run install:local
+# one-liner, like terminal-browser:
+# curl -fsSL https://raw.githubusercontent.com/sodeyama/herdr-math/main/scripts/install.sh | bash
+```
+
+The installer builds and places everything under your user data directory and
+puts a `tmath` launcher on `~/.local/bin`:
+
+- `tmath` binary: `~/.local/share/tmath/app/bin/tmath`
+- renderer (Node + local Chromium): `~/.local/share/tmath/app/renderer`
+- the `tmath` agent skill linked into Claude Code, Codex, Cursor, opencode,
+  and pi skills directories.
+
+After install the binary locates its renderer automatically — no
+`TMATH_RENDER_WORKER` setup is needed. `tmath diagnose` verifies everything
+(`--prefix <dir>` / `TMATH_INSTALL_ROOT` change the target; `TMATH_SKIP_TESTS=1`
+skips the post-install check). Add `~/.local/bin` to `PATH` if the installer
+detects it is missing.
+
 ## Requirements
 
 - macOS arm64 (the primary target)
@@ -81,10 +106,14 @@ terminal does not relay the transmit, nothing is displayed, but nothing
 crashes. Outside tmux, `tmath render` and the viewer probe normally and fail
 closed on missing Kitty support.
 
+Per-agent notes (Claude Code, Codex, opencode, Cursor Agent, pi): see
+[Coding agents](coding-agents.md).
+
 ## Diagnose
 
 ```sh
-./target/debug/tmath diagnose
+tmath diagnose        # installed binary
+./target/debug/tmath diagnose   # from a build checkout
 ```
 
 Diagnostics report only allowlisted versions, capabilities, statuses, counts, and stable error
@@ -92,8 +121,8 @@ codes. They do not print document text, equations, environment contents, or loca
 
 Common results:
 
-- `renderer subprocess: missing`: `TMATH_RENDER_WORKER` is not set; point it at
-  `dist/renderer/subprocess.js` after `npm run build`.
+- `renderer subprocess: not found`: the binary could not find its renderer; set
+  `TMATH_RENDER_WORKER` or re-run `scripts/install.sh`.
 - `node: missing`: install Node.js 22 or later.
 - `stdout: not a terminal`: image transport needs a real terminal (piping output only prints a
   text summary).

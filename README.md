@@ -18,6 +18,17 @@ It runs in any Kitty-graphics-capable terminal such as Ghostty, kitty, or WezTer
 > integration (`tmath agent`, tmux viewer) is in Phase 8; see
 > [getting-started.md](docs/getting-started.md).
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sodeyama/herdr-math/main/scripts/install.sh | bash
+# from a checkout: bash scripts/install.sh  (or npm run install:local)
+```
+
+Installs the `tmath` binary, its local renderer, and the coding-agent skill
+under `~/.local/share/tmath` with a launcher on `~/.local/bin`. No
+`TMATH_RENDER_WORKER` setup is needed.
+
 ## Planned use
 
 ```sh
@@ -44,6 +55,7 @@ tmath agent --source-pane %0    # inside tmux, watching pane %0 (experimental)
 - [Concept and product boundaries](docs/concept.md)
 - [Architecture](docs/architecture.md)
 - [Compatibility](docs/compatibility.md)
+- [Coding agents (Claude Code, Codex, opencode, Cursor, pi)](docs/coding-agents.md)
 - [Getting started and troubleshooting](docs/getting-started.md)
 - [Release checklist](docs/RELEASE.md)
 - [Post-V2 backlog](docs/backlog.md)

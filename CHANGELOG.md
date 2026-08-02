@@ -23,6 +23,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Bounded, privacy-preserving logs, stable error records, and fuzz/adversarial parser coverage.
 - The Herdr plugin contract (`herdr-plugin.toml`, `src/herdr`, viewer, graphics, manifest,
   boundary, state, events, config, presentation, diagnostics) removed; V1 is superseded.
+- `tmath agent` / `tmath agent-viewer`: watch a tmux pane running a coding agent and show each
+  finished answer (prose + typeset math) in a viewer pane, with tmux passthrough support.
+- One-command install (`scripts/install.sh`, `npm run install:local`): builds and installs the
+  binary + renderer to `~/.local/share/tmath`, a `~/.local/bin/tmath` launcher, renderer
+  auto-discovery (no `TMATH_RENDER_WORKER` needed), and a `tmath` skill linked into coding-agent
+  skill directories (Claude Code, Codex, Cursor, opencode, pi).
+
+### Fixed
+
+- One-shot render subprocess: the entry check now resolves symlinks (macOS `/tmp` → `/private/tmp`)
+  so the worker runs when its path is under a symlinked directory, and the process drains stdout
+  before exiting so larger responses are never truncated.
 
 ### Security
 

@@ -547,3 +547,19 @@ not part of the `0.2.0` release gate.
 - Acceptance: `AT-2-801`, `AT-2-803` for each recorded agent
 - Evidence: Runtime
 - Commit: `test(agent): record real-agent boundary matrix`
+
+### T-906: User-local install and agent skill
+
+- Scope: Add `scripts/install.sh` (`npm run install:local`) that builds the
+  release binary + renderer, installs them under
+  `~/.local/share/tmath/app` (launcher in `~/.local/bin/tmath`), links a
+  `tmath` SKILL.md into Claude Code/Codex/Cursor/opencode/pi skill dirs, and
+  runs `tmath diagnose` as a post-install gate. Add renderer auto-discovery in
+  `renderer_worker_path()` (env, then `<exe>/../renderer/dist/...`) so no
+  `TMATH_RENDER_WORKER` is required. Add per-agent usage docs
+  (`docs/coding-agents.md`) and fix the one-shot render subprocess entry/exit
+  so it runs under a symlinked path (macOS `/tmp`) and flushes stdout.
+- Dependencies: T-904
+- Acceptance: `AT-2-808`
+- Evidence: Static, Install, Integration
+- Commit: `feat(install): user-local installer, auto-discovery, and agent skill`

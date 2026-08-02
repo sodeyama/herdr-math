@@ -3,10 +3,11 @@
 ## Status
 
 - Plan state: Phases 0-7 (release-gate prep) complete; **Phase 8 (agent
-  integration, P1) in progress** — `tmath agent`/`agent-viewer` implemented and
-  unit/integration-serviced; Ghostty tmux image relay recorded as a limitation.
+  integration + local install, P1) in progress** — `tmath agent`/`agent-viewer`
+  implemented, and `scripts/install.sh` provides a one-command user-local
+  install with renderer auto-discovery and a coding-agent skill.
 - Target release: `0.2.0` (first standalone release without a Herdr runtime)
-- Last updated: August 2, 2026
+- Last updated: August 3, 2026
 - Acceptance contract: `../tests/main.md`
 - Task checklist: `../tasks/main.md`
 - Predecessor spec: `../../../specs/herdr-math-v1/plans/main.md`

@@ -584,6 +584,29 @@ finished answer as a rendered Markdown + math image in a separate viewer pane.
 - Then logs contain only event names, pane ids, counts, byte sizes, and hashes;
   never answer text, formulas, or document bytes.
 
+### AT-2-808 - User-local install and agent skill
+
+- Priority: P1
+- Evidence: Static, Install, Integration
+- Given a clean checkout
+- When `scripts/install.sh` runs into a user data directory
+- Then the release binary and the renderer (with its production dependencies)
+  install under `<data>/tmath/app`, a `tmath` launcher is created on the
+  configured bin path, the binary renders a document without `TMATH_RENDER_WORKER`
+  set (auto-discovery), `tmath diagnose` reports the renderer available, and a
+  `tmath` SKILL.md is linked into each supported coding-agent skill directory
+  (Claude Code, Codex, Cursor, opencode, pi).
+
+### AT-2-809 - Render subprocess path and flush robustness
+
+- Priority: P1
+- Evidence: Contract, Integration
+- Given the render subprocess path under a symlinked directory (macOS
+  `/tmp` → `/private/tmp`) and a response larger than the pipe buffer
+- When `tmath render` runs
+- Then the entry check matches (the worker is not silently skipped) and the
+  full bounded JSON response is read back without truncation.
+
 ## Release Acceptance Rule
 
 Release `0.2.0` only when:
