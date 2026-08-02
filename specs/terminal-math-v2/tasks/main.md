@@ -24,10 +24,10 @@
 
 ## Current Next Task
 
-Phases 0-5 (terminal surface, render transport, placement, input loop, CLI and composition,
-hardening) are complete; resume with **T-701** (Phase 6, compatibility and documentation) next.
-Runtime release evidence (real Ghostty placement and scrollback) remains a manual verification
-step documented across the phase evidence files.
+Phases 0-6 (terminal surface, render transport, placement, input loop, CLI and composition,
+hardening, Herdr removal and docs) are complete; resume with **T-801** (Phase 7, release gate)
+next. T-703's real Ghostty compatibility matrix remains a manual runtime step recorded in the
+Phase 6 evidence before any release claim.
 
 ---
 
@@ -427,7 +427,8 @@ rollback and its spec is marked superseded, never deleted.
 - Evidence: Runtime
 - Commit: `docs(compat): record ghostty standalone evidence`
 
-Progress (T-701): See `docs/evidence/2026-08-02-tmath-v2-phase6.md`.
+Progress (T-701, T-702): committed via `3e279e5` plus the Phase 6 docs. Evidence:
+`docs/evidence/2026-08-02-tmath-v2-phase6.md`. T-703 remains a manual Ghostty runtime step.
 
 ## Phase 7 - Release Gate (outline)
 

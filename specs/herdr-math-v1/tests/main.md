@@ -1,3 +1,8 @@
+> **SUPERSEDED**: This V1 document describes the withdrawn Herdr Math plugin (0.1.0).
+> The current product is the standalone Terminal Math renderer; see
+> [`specs/terminal-math-v2/`](../terminal-math-v2/). This spec is kept only as historical
+> reference and must not be treated as current product guidance.
+
 # Herdr Math V1 Acceptance Tests
 
 ## Status

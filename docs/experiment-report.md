@@ -1,5 +1,11 @@
 # LaTeX Viewer Prototype Experiment Report
 
+> **Historical record**: this report documents the August 2026 prototype that led to the V1
+> Herdr plugin. The product has since been refactored into the standalone Terminal Math
+> renderer; see [concept.md](concept.md), [architecture.md](architecture.md), and
+> [`specs/terminal-math-v2/`](../specs/terminal-math-v2/). Keep this file as evidence; do not
+> treat it as current product guidance.
+
 ## Report Metadata
 
 - Experiment date: August 1, 2026
