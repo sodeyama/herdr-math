@@ -24,10 +24,10 @@
 
 ## Current Next Task
 
-Phases 0-6 (terminal surface, render transport, placement, input loop, CLI and composition,
-hardening, Herdr removal and docs) are complete; resume with **T-801** (Phase 7, release gate)
-next. T-703's real Ghostty compatibility matrix remains a manual runtime step recorded in the
-Phase 6 evidence before any release claim.
+Phases 0-7 (terminal surface, render transport, placement, input loop, CLI and composition,
+hardening, Herdr removal and docs, release-gate prep) are complete; the **0.2.0 release gate**
+remains: real Ghostty runtime evidence (T-703) and clean-tag install validation (T-801/T-802)
+must be recorded before publishing.
 
 ---
 
@@ -432,8 +432,44 @@ Progress (T-701, T-702): committed via `3e279e5` plus the Phase 6 docs. Evidence
 the exact procedure recorded in that evidence; it must be completed before any runtime release
 claim.
 
-## Phase 7 - Release Gate (outline)
+---
 
-- **T-801**: Clean build, install, validation; no local paths; reproducible build.
-- **T-802**: Version tags agree; prepare `0.2.0` release notes.
-- **T-803**: P1/P2 post-V2 backlog (Linux, Windows, `watch`, additional terminals).
+## Phase 7 - Release Gate
+
+The goal of Phase 7 is to make the standalone product releasable: clean and reproducible build
+with no local paths, agreed versions, `0.2.0` release preparation, sealed-gate validation, and a
+recorded P1/P2 backlog. Publishing the tag is not done here; only the release-gate preparation is
+completed.
+
+### T-801: Reproducible clean build with no local paths
+
+- Scope: Verify a clean checkout builds identically for Rust and TypeScript, confirm no
+  user-specific absolute paths or runtime artifacts leak into the build, and confirm the declared
+  validation surface (`npm ci`, `npm run check`, `npm test`, `npm run test:integration`, `npm run
+  build`, `npm run smoke:render`, `cargo test`, `cargo clippy --all-targets`) passes from a clean
+  tree.
+- Dependencies: T-102, T-602
+- Acceptance: `AT-2-003`, `AT-2-004`, `AT-2-005`
+- Evidence: Static, Install
+- Commit: `test(release): verify a reproducible clean build`
+
+### T-802: Agree versions and prepare the 0.2.0 release
+
+- Scope: Align `package.json`, `Cargo.toml`, and the changelog heading on `0.2.0`; add a
+  `docs/RELEASE.md` (or equivalent) release checklist; record sealed-gate results and remaining
+  limitations.
+- Dependencies: T-801
+- Acceptance: `AT-2-003`, `AT-2-706`
+- Evidence: Static
+- Commit: `chore(release): prepare the 0.2.0 release gate`
+
+### T-803: Record the post-V2 backlog
+
+- Scope: Record Linux, Windows, `watch`, additional terminals, and shared-memory/file media as
+  P1/P2 post-V2 backlog with clear "planned/unsupported" labeling.
+- Dependencies: T-802
+- Acceptance: refresh of `AT-2-700`, `AT-2-701` labeling
+- Evidence: Static
+- Commit: `docs(release): record the post-v2 backlog`
+
+Progress (T-801/T-802/T-803): see `docs/evidence/2026-08-02-tmath-v2-phase7.md`.
