@@ -10,23 +10,21 @@
 use std::env;
 use std::fs::File;
 use std::io::{self, IsTerminal as _, Read as _, Write as _};
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde_json::json;
-use tmath_core::ipc::{
-    EitherKind, IpcError, RenderOptions, RenderRequest, RenderResponse, IPC_MAX_REQUEST_BYTES,
-    IPC_MAX_RESPONSE_BYTES, IPC_PROTOCOL,
-};
+use tmath_core::ipc::{RenderOptions, RenderResponse, IPC_MAX_REQUEST_BYTES};
 use tmath_core::placement::{
     decode_png, emit_placed_block, CellSize, PlacementError, PlacementLimits, PlacementTracker,
 };
 use tmath_core::terminal::{StdioTty, Terminal};
 
-const RENDER_TIMEOUT: Duration = Duration::from_secs(15);
+use crate::render::{render_document_text, renderer_worker_path};
+
+mod render;
 
 fn main() {
     let code = match run() {
@@ -147,17 +145,8 @@ fn render(args: &[String]) -> Result<i32, String> {
             layout: Some(serde_json::Value::Object(layout)),
         });
     }
-    let request = RenderRequest {
-        protocol: IPC_PROTOCOL.to_string(),
-        kind: EitherKind::Document,
-        text: Some(source),
-        formulas: None,
-        options,
-    };
 
-    let worker = renderer_worker_path()?;
-    let payload = request.encode().map_err(|error| error.to_string())?;
-    let response = spawn_renderer(&worker, &payload)?;
+    let response = render_document_text(&source, options)?;
     match response {
         RenderResponse::Success(success) => {
             let png = BASE64
@@ -368,85 +357,6 @@ fn probe_graphics_from_tty() -> Option<bool> {
     let result = terminal.probe_graphics_support().ok();
     let _ = terminal.reset();
     result
-}
-
-fn renderer_worker_path() -> Result<PathBuf, String> {
-    if let Some(path) = env::var_os("TMATH_RENDER_WORKER") {
-        return Ok(PathBuf::from(path));
-    }
-    Err("TMATH_RENDER_WORKER must point at the built render subprocess".into())
-}
-
-fn spawn_renderer(worker: &PathBuf, request: &[u8]) -> Result<RenderResponse, String> {
-    let mut child = Command::new("node")
-        .arg(worker)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("spawn renderer: {error}"))?;
-
-    let mut stdin = child.stdin.take().ok_or("renderer stdin unavailable")?;
-    stdin
-        .write_all(request)
-        .map_err(|error| format!("write request: {error}"))?;
-    drop(stdin);
-
-    let mut stdout = child.stdout.take().ok_or("renderer stdout unavailable")?;
-    let mut bytes = Vec::new();
-    let timed_out = std::sync::Arc::new(std::sync::Mutex::new(false));
-    let timeout_flag = std::sync::Arc::clone(&timed_out);
-    let read_result = std::thread::spawn(move || {
-        let limit = IPC_MAX_RESPONSE_BYTES + 1;
-        let mut chunk = [0u8; 4096];
-        let mut read = 0usize;
-        while read < limit {
-            match stdout.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    bytes.extend_from_slice(&chunk[..n]);
-                    read += n;
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(format!("read response: {error}")),
-            }
-        }
-        Ok::<Vec<u8>, String>(bytes)
-    });
-
-    let started = Instant::now();
-    loop {
-        if read_result.is_finished() {
-            break;
-        }
-        if started.elapsed() >= RENDER_TIMEOUT {
-            *timeout_flag.lock().unwrap() = true;
-            let _ = child.kill();
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let response_bytes = match read_result.join() {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(message)) => return Err(message),
-        Err(_) => return Err("renderer reader panicked".into()),
-    };
-    let status = child.wait().map_err(|error| format!("wait: {error}"))?;
-    if *timed_out.lock().unwrap() {
-        return Err(format!(
-            "renderer timed out after {} ms",
-            RENDER_TIMEOUT.as_millis()
-        ));
-    }
-    if !status.success() {
-        return Err(format!("renderer exited with {status}"));
-    }
-    if response_bytes.len() > IPC_MAX_RESPONSE_BYTES {
-        return Err(format!("response exceeds {IPC_MAX_RESPONSE_BYTES} bytes"));
-    }
-    let response =
-        RenderResponse::parse(&response_bytes).map_err(|error: IpcError| error.to_string())?;
-    Ok(response)
 }
 
 #[cfg(test)]
