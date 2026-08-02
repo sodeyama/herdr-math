@@ -7,6 +7,7 @@
 
 pub mod kitty;
 pub mod mouse;
+pub mod scroll;
 pub mod terminal;
 
 /// Returns the crate version from the package manifest.
