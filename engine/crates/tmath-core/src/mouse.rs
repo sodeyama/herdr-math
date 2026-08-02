@@ -70,7 +70,12 @@ pub enum Key {
     PageDown,
     Home,
     End,
+    Insert,
     Delete,
+    Backspace,
+    Enter,
+    Tab,
+    Escape,
     Char(char),
     Unknown,
 }
