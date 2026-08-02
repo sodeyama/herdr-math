@@ -24,9 +24,9 @@
 
 ## Current Next Task
 
-Phase 0 (Rust terminal surface) is complete through `9a8a60f`; resume with **T-201** (Phase 1,
-render transport) next. Until a real Kitty-graphics terminal run is recorded, Phase 0 claims no
-runtime or release behavior.
+Phase 0 (Rust terminal surface) and Phase 1 (render transport) are complete; resume with
+**T-301** (Phase 2, placement and scrollback anchoring) next. Until a real Kitty-graphics
+terminal run is recorded, Phases 0-1 claim no runtime or release behavior.
 
 ---
 
@@ -178,6 +178,9 @@ enforces size, timeout, and trust limits.
 - Acceptance: `AT-2-200`, `AT-2-201`
 - Evidence: Contract, Integration
 - Commit: `feat(cli): add tmath render transport placeholder`
+
+Progress: T-201 through T-204 complete via commits `d554d17`, `c44874b`, `f8f65e3`, `3f667f7`
+(plus `131f761` docs, and fix/style commits). Evidence: `docs/evidence/2026-08-02-tmath-v2-phase1.md`.
 
 ## Phase 2 - Placement and Scrollback Anchoring (outline)
 
