@@ -70,12 +70,10 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     listener.set_nonblocking(true).ok();
 
     let exe = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
-    let viewer_cmd = format!(
-        "{} {} {}",
-        shell_quote(&exe.display().to_string()),
-        "agent-viewer",
-        shell_quote(&socket_path.display().to_string())
-    );
+    let worker = renderer_worker_path()?;
+    // tmux starts the viewer pane with the server's environment, so the
+    // renderer worker path must be passed explicitly on the command line.
+    let viewer_cmd = viewer_command(&exe, &worker, &socket_path);
     let viewer_pane = spawn_viewer_pane(&parsed, &source, &viewer_cmd)?;
 
     eprintln!(
@@ -241,6 +239,23 @@ fn spawn_viewer_pane(
     Ok(pane)
 }
 
+/// Builds the shell command that runs the viewer in a fresh tmux pane,
+/// injecting the renderer worker path because tmux panes inherit the server
+/// environment rather than the watcher's.
+fn viewer_command(
+    exe: &std::path::Path,
+    worker: &std::path::Path,
+    socket: &std::path::Path,
+) -> String {
+    format!(
+        "env TMATH_RENDER_WORKER={} {} {} {}",
+        shell_quote(&worker.display().to_string()),
+        shell_quote(&exe.display().to_string()),
+        "agent-viewer",
+        shell_quote(&socket.display().to_string())
+    )
+}
+
 fn capture_source(pane: &PaneId, history: u32) -> Result<String, String> {
     tmux_output(&capture(pane, history))
 }
@@ -392,5 +407,31 @@ mod tests {
         let cmd = capture(&pane, DEFAULT_HISTORY);
         assert_eq!(cmd.last().map(String::as_str), Some("-500"));
         assert_eq!(cmd[3], "%4");
+    }
+
+    #[test]
+    fn viewer_command_injects_the_worker_path() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/tools/tmath"),
+            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
+            std::path::Path::new("/tmp/tmath-agent-1.sock"),
+        );
+        assert_eq!(
+            cmd,
+            "env TMATH_RENDER_WORKER='/opt/site/dist/renderer/subprocess.js' '/opt/tools/tmath' agent-viewer '/tmp/tmath-agent-1.sock'"
+        );
+    }
+
+    #[test]
+    fn viewer_command_quotes_paths_with_spaces() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/my tools/tmath"),
+            std::path::Path::new("/opt/my site/dist/renderer/subprocess.js"),
+            std::path::Path::new("/tmp/tmath agent-1.sock"),
+        );
+        assert!(
+            cmd.starts_with("env TMATH_RENDER_WORKER='/opt/my site/dist/renderer/subprocess.js'")
+        );
+        assert!(cmd.contains("'/opt/my tools/tmath' agent-viewer"));
     }
 }
