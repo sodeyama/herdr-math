@@ -2,11 +2,11 @@
 
 ## Status
 
-- Plan state: Proposed — requires review before implementation
+- Plan state: In progress — Phase 0 (Rust terminal surface) under implementation
 - Target release: `0.2.0` (first standalone release without a Herdr runtime)
 - Last updated: August 2, 2026
-- Acceptance contract: `../tests/main.md` (draft)
-- Task checklist: `../tasks/main.md` (draft)
+- Acceptance contract: `../tests/main.md`
+- Task checklist: `../tasks/main.md`
 - Predecessor spec: `../../../specs/herdr-math-v1/plans/main.md`
 
 This document is a **plan**, not verified release behavior. Nothing described here is
