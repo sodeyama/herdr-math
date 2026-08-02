@@ -344,11 +344,43 @@ Progress: T-501 through T-503 complete via commit `b3dc302` (the CLI refactor bu
 reads, composition options, `diagnose`, and help/version; parse and composition are covered by
 unit and renderer-integration tests). Evidence: `docs/evidence/2026-08-02-tmath-v2-phase4.md`.
 
-## Phase 5 - Hardening and Security (outline)
+## Phase 5 - Hardening and Security
 
-- **T-601**: Revisit the threat model for the Rust/TS split; enforce all aggregate limits.
-- **T-602**: Privacy audit for the new code paths (no content in logs/state).
-- **T-603**: Fuzz the mouse/escape parser and the scanner.
+The goal of Phase 5 is to close the security and privacy gaps in the new Rust/TS split: every
+user input path (scanner, renderer, and CLI boundary) must fail closed with a stable error, all
+aggregate limits must be enforced before emission, no content may leak into logs or state, and
+the input/mouse/escape parsers and the scanner must withstand adversarial input.
+
+### T-601: Fail closed on scanner and renderer limit errors
+
+- Scope: Wrap the scanner and renderer calls in the render subprocess so scanner limit errors
+  (`scanner_input_limit`) and renderer limit errors return a stable JSON error record instead of
+  crashing the subprocess. Add an over-limit document test proving the subprocess still returns
+  a bounded JSON error and exits cleanly.
+- Dependencies: T-202
+- Acceptance: `AT-2-501`, `AT-2-603`
+- Evidence: Integration
+- Commit: `fix(renderer): fail closed on scanner and renderer limits`
+
+### T-602: Privacy audit for the new code paths
+
+- Scope: Scan the new Rust + TS code paths for content leakage (no document text, formula source,
+  or importable content in logs, diagnostics, or durable state). Extend the repo security gate to
+  cover the Rust workspace output and CLI diagnostics, and record a bounded audit in evidence.
+- Dependencies: T-601
+- Acceptance: `AT-2-600`, `AT-2-601`, `AT-2-602`
+- Evidence: Static, Integration
+- Commit: `test(security): enforce local-only privacy invariants`
+
+### T-603: Fuzz the input, mouse, escape, and scanner parsers
+
+- Scope: Extend adversarial coverage across the decoder, mouse/escape decoders, and the TypeScript
+  scanner with deterministic fuzz harnesses that assert bounded allocation, no panics, and event
+  recovery at valid boundaries. Include over-limit and truncated scanner inputs.
+- Dependencies: T-404, T-602
+- Acceptance: `AT-2-403`, `AT-2-500`
+- Evidence: Unit, Contract
+- Commit: `test(security): fuzz input, mouse, and scanner parsers`
 
 ## Phase 6 - Compatibility and Documentation (outline)
 
