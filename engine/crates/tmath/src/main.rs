@@ -146,6 +146,8 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
         .flush()
         .map_err(|error| format!("flush placement: {error}"))?;
     drop(stdout);
+
+    run_scroll_loop().map_err(|error| format!("input loop: {error}"))?;
     terminal
         .reset()
         .map_err(|error| format!("reset terminal: {error}"))?;
@@ -154,6 +156,41 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
         block.image_id
     );
     Ok(0)
+}
+
+/// Reads raw stdin through the bounded decoder until the user presses `q` or
+/// `Ctrl-C`, feeding scroll events into the driver. `Ctrl-C` is consumed so it
+/// never reaches the shell; `q` exits normally. Either way the caller resets
+/// the terminal.
+fn run_scroll_loop() -> std::io::Result<()> {
+    use tmath_core::input::InputDecoder;
+    use tmath_core::scroll_driver::{is_exit_signal, ScrollDriver};
+
+    let mut decoder = InputDecoder::new();
+    let mut driver = ScrollDriver::new(1024.0);
+    let start = Instant::now();
+    let mut chunk = [0u8; 256];
+    loop {
+        let mut stdin = io::stdin();
+        let n = match stdin.read(&mut chunk) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        decoder.push(&chunk[..n]);
+        while let Some(event) = decoder.next_event() {
+            if is_exit_signal(&event) {
+                return Ok(());
+            }
+            let _ = driver.handle(&event, Some(24.0));
+            let _ = driver.step(1.0 / 60.0);
+        }
+        // Bound the total interactive wait so a non-interactive run cannot hang.
+        if start.elapsed() > Duration::from_secs(5) {
+            return Ok(());
+        }
+    }
 }
 
 fn read_document(path: &str) -> Result<String, String> {

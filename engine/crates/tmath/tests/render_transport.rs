@@ -114,6 +114,42 @@ fn oversized_request_is_rejected_before_spawning() {
 }
 
 #[test]
+fn scroll_loop_consumes_wheel_input_and_exits_on_q_or_ctrl_c() {
+    use tmath_core::input::{Event, InputDecoder};
+    use tmath_core::mouse::MouseKind;
+    use tmath_core::scroll_driver::{is_exit_signal, ScrollDriver};
+
+    let mut decoder = InputDecoder::new();
+    let mut driver = ScrollDriver::new(64.0);
+
+    // Wheel up then down, then the fallback keys, then q.
+    decoder.push(b"\x1b[<64;3;4M\x1b[<65;3;4M\x1b[B\x1b[6~\x1b[5~");
+    let mut scrolled = 0u32;
+    let mut exit = false;
+    while let Some(event) = decoder.next_event() {
+        match &event {
+            Event::Mouse(mouse) if mouse.kind == MouseKind::ScrollUp => scrolled += 1,
+            Event::Mouse(mouse) if mouse.kind == MouseKind::ScrollDown => scrolled += 1,
+            _ => {}
+        }
+        let _ = driver.handle(&event, Some(24.0));
+        let _ = driver.step(1.0 / 60.0);
+        exit = is_exit_signal(&event);
+    }
+    assert_eq!(scrolled, 2, "both wheel events were consumed");
+    assert!(!exit, "no exit key in this batch");
+
+    decoder.push(b"q");
+    let mut exit = false;
+    while let Some(event) = decoder.next_event() {
+        exit = is_exit_signal(&event);
+    }
+    assert!(exit, "q is a clean exit signal");
+
+    assert!(driver.position() > 0.0);
+}
+
+#[test]
 fn rendered_png_decodes_and_emits_a_placement_when_built() {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
