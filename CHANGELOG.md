@@ -35,6 +35,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - One-shot render subprocess: the entry check now resolves symlinks (macOS `/tmp` → `/private/tmp`)
   so the worker runs when its path is under a symlinked directory, and the process drains stdout
   before exiting so larger responses are never truncated.
+- `tmath render -` with a piped document no longer fails with
+  `Inappropriate ioctl for device`: when stdin is not a terminal the controlling
+  terminal (`/dev/tty`) is used for raw mode, probes, and input, so piping a
+  document into `tmath render -` places the image in a real Kitty-capable
+  terminal. `tmath render` also assumes tmux passthrough inside tmux, matching
+  `tmath agent-viewer`.
 
 ### Security
 

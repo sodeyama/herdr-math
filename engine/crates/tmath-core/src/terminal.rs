@@ -7,7 +7,8 @@
 //! trait so every escape byte and probe reply is asserted in unit tests against
 //! a fake device; no real terminal is required.
 
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, IsTerminal as _, Write};
 use std::os::fd::AsFd as _;
 use std::time::{Duration, Instant};
 
@@ -93,6 +94,11 @@ impl<T: Tty> Terminal<T> {
     /// The image id this terminal owns, used for the placeholder grid.
     pub fn image_id(&self) -> u32 {
         self.image_id
+    }
+
+    /// The underlying terminal I/O surface, for reading input events.
+    pub fn tty_mut(&mut self) -> &mut T {
+        &mut self.io
     }
 
     /// Current window size from the terminal driver.
@@ -208,10 +214,52 @@ fn retry_intr(
     }
 }
 
-/// Termios-backed [`Tty`] over stdin/stdout.
-#[derive(Default)]
+/// Termios-backed [`Tty`] over the current terminal.
+///
+/// When stdin is a terminal it is used as the control device (raw mode,
+/// probes, and input). When stdin is a pipe or file — for example
+/// `printf '...' | tmath render -` — the controlling terminal is opened via
+/// `/dev/tty` so raw mode, probes, and the input loop still reach the real
+/// terminal while the document itself is read from the piped stdin.
 pub struct StdioTty {
     saved: Option<rustix::termios::Termios>,
+    ctrl: Option<File>,
+}
+
+impl StdioTty {
+    /// Runs `f` against the control device: the opened `/dev/tty` when stdin
+    /// is not a terminal, otherwise stdin.
+    fn with_ctrl_fd<R>(&self, f: impl FnOnce(&rustix::fd::BorrowedFd<'_>) -> R) -> R {
+        if let Some(ctrl) = &self.ctrl {
+            f(&ctrl.as_fd())
+        } else {
+            let stdin = io::stdin();
+            f(&stdin.as_fd())
+        }
+    }
+}
+
+impl Default for StdioTty {
+    fn default() -> Self {
+        Self {
+            saved: None,
+            ctrl: open_control_terminal(),
+        }
+    }
+}
+
+/// Opens `/dev/tty` when stdin is not a terminal so interactive control still
+/// reaches the real terminal; `None` when stdin is the terminal or no
+/// controlling terminal exists (a non-interactive run).
+fn open_control_terminal() -> Option<File> {
+    if io::stdin().is_terminal() {
+        return None;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .ok()
 }
 
 impl Tty for StdioTty {
@@ -226,13 +274,12 @@ impl Tty for StdioTty {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let stdin = io::stdin();
-        loop {
-            match rustix::io::read(stdin.as_fd(), &mut *buf) {
+        self.with_ctrl_fd(|fd| loop {
+            match rustix::io::read(*fd, &mut *buf) {
                 Err(rustix::io::Errno::INTR) => continue,
                 other => return other.map_err(io::Error::from),
             }
-        }
+        })
     }
 
     fn poll_readable(&mut self, timeout: Option<Duration>) -> io::Result<bool> {
@@ -241,20 +288,22 @@ impl Tty for StdioTty {
             tv_sec: duration.as_secs() as i64,
             tv_nsec: duration.subsec_nanos() as _,
         });
-        let stdin = io::stdin();
-        let mut fds = [rustix::event::PollFd::new(&stdin, PollFlags::IN)];
-        let ready = rustix::event::poll(&mut fds, timeout.as_ref()).map_err(io::Error::from)?;
-        Ok(ready > 0 && fds[0].revents().contains(PollFlags::IN))
+        self.with_ctrl_fd(|fd| {
+            let mut fds = [rustix::event::PollFd::new(fd, PollFlags::IN)];
+            let ready = rustix::event::poll(&mut fds, timeout.as_ref()).map_err(io::Error::from)?;
+            Ok(ready > 0 && fds[0].revents().contains(PollFlags::IN))
+        })
     }
 
     fn set_raw(&mut self) -> io::Result<()> {
-        let stdin = io::stdin();
-        let fd = stdin.as_fd();
-        let saved = retry_intr(|| rustix::termios::tcgetattr(fd).map_err(io::Error::from))?;
-        let mut raw = saved.clone();
-        raw.make_raw();
-        rustix::termios::tcsetattr(fd, rustix::termios::OptionalActions::Flush, &raw)
-            .map_err(io::Error::from)?;
+        let saved = self.with_ctrl_fd(|fd| {
+            let saved = retry_intr(|| rustix::termios::tcgetattr(*fd).map_err(io::Error::from))?;
+            let mut raw = saved.clone();
+            raw.make_raw();
+            rustix::termios::tcsetattr(*fd, rustix::termios::OptionalActions::Flush, &raw)
+                .map_err(io::Error::from)?;
+            Ok::<rustix::termios::Termios, io::Error>(saved)
+        })?;
         self.saved = Some(saved);
         Ok(())
     }
@@ -263,23 +312,21 @@ impl Tty for StdioTty {
         let Some(saved) = self.saved.take() else {
             return Ok(());
         };
-        let stdin = io::stdin();
-        rustix::termios::tcsetattr(
-            stdin.as_fd(),
-            rustix::termios::OptionalActions::Flush,
-            &saved,
-        )
-        .map_err(io::Error::from)
+        self.with_ctrl_fd(|fd| {
+            rustix::termios::tcsetattr(*fd, rustix::termios::OptionalActions::Flush, &saved)
+                .map_err(io::Error::from)
+        })
     }
 
     fn window_size(&self) -> io::Result<WindowSize> {
-        let stdin = io::stdin();
-        let ws = rustix::termios::tcgetwinsize(stdin.as_fd()).map_err(io::Error::from)?;
-        Ok(WindowSize {
-            cols: u32::from(ws.ws_col),
-            rows: u32::from(ws.ws_row),
-            width_px: u32::from(ws.ws_xpixel),
-            height_px: u32::from(ws.ws_ypixel),
+        self.with_ctrl_fd(|fd| {
+            let ws = rustix::termios::tcgetwinsize(*fd).map_err(io::Error::from)?;
+            Ok(WindowSize {
+                cols: u32::from(ws.ws_col),
+                rows: u32::from(ws.ws_row),
+                width_px: u32::from(ws.ws_xpixel),
+                height_px: u32::from(ws.ws_ypixel),
+            })
         })
     }
 }

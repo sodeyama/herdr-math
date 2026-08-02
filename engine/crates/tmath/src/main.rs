@@ -21,7 +21,7 @@ use tmath_core::ipc::{RenderOptions, RenderResponse, IPC_MAX_REQUEST_BYTES};
 use tmath_core::placement::{
     decode_png, emit_placed_block, CellSize, PlacementError, PlacementLimits, PlacementTracker,
 };
-use tmath_core::terminal::{StdioTty, Terminal};
+use tmath_core::terminal::{StdioTty, Terminal, Tty};
 
 use crate::render::{render_document_text, renderer_worker_path};
 
@@ -192,7 +192,14 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
 
     let mut terminal = Terminal::new(StdioTty::default(), 1)
         .map_err(|error| format!("initialize terminal: {error}"))?;
-    if !terminal
+    // Inside tmux, capability queries cannot round-trip through passthrough,
+    // so graphics support is assumed (fire-and-forget transmits); everywhere
+    // else the probe stays mandatory and fail-closed.
+    if tmath_core::kitty::inside_tmux() {
+        eprintln!(
+            "tmath: tmux passthrough assumed; require allow-passthrough on the tmux window"
+        );
+    } else if !terminal
         .probe_graphics_support()
         .map_err(|error| format!("probe graphics: {error}"))?
     {
@@ -233,7 +240,7 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
         .map_err(|error| format!("flush placement: {error}"))?;
     drop(stdout);
 
-    run_scroll_loop().map_err(|error| format!("input loop: {error}"))?;
+    run_scroll_loop(terminal.tty_mut()).map_err(|error| format!("input loop: {error}"))?;
     terminal
         .reset()
         .map_err(|error| format!("reset terminal: {error}"))?;
@@ -244,11 +251,12 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// Reads raw stdin through the bounded decoder until the user presses `q` or
-/// `Ctrl-C`, feeding scroll events into the driver. `Ctrl-C` is consumed so it
-/// never reaches the shell; `q` exits normally. Either way the caller resets
-/// the terminal.
-fn run_scroll_loop() -> std::io::Result<()> {
+/// Reads terminal input through the bounded decoder until the user presses
+/// `q` or `Ctrl-C`, feeding scroll events into the driver. Input comes from
+/// the control device (the real terminal even when stdin carried the piped
+/// document). `Ctrl-C` is consumed so it never reaches the shell; `q` exits
+/// normally. Either way the caller resets the terminal.
+fn run_scroll_loop(tty: &mut StdioTty) -> std::io::Result<()> {
     use tmath_core::input::InputDecoder;
     use tmath_core::scroll_driver::{is_exit_signal, ScrollDriver};
 
@@ -257,11 +265,11 @@ fn run_scroll_loop() -> std::io::Result<()> {
     let start = Instant::now();
     let mut chunk = [0u8; 256];
     loop {
-        let mut stdin = io::stdin();
-        let n = match stdin.read(&mut chunk) {
+        let n = match tty.read(&mut chunk) {
             Ok(0) => return Ok(()),
             Ok(n) => n,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotConnected => return Ok(()),
             Err(error) => return Err(error),
         };
         decoder.push(&chunk[..n]);
