@@ -12,6 +12,7 @@ pub mod mouse;
 pub mod native;
 pub mod placement;
 pub mod scroll;
+pub mod scroll_driver;
 pub mod terminal;
 
 /// Returns the crate version from the package manifest.
