@@ -187,3 +187,71 @@ fn rendered_png_decodes_and_emits_a_placement_when_built() {
         "placeholder grid closes the color"
     );
 }
+
+#[test]
+fn markdown_document_composes_in_source_order_with_options_when_built() {
+    use serde_json::json;
+    use tmath_core::ipc::RenderOptions;
+
+    let Some(worker) = worker_path() else {
+        eprintln!("skipping: render subprocess not built (set TMATH_RENDER_WORKER)");
+        return;
+    };
+    let doc = "# Header\n\nProse with $E=mc^2$.\n\n$$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n\n- item $a_i$".to_string();
+
+    let default = RenderRequest {
+        protocol: IPC_PROTOCOL.to_string(),
+        kind: EitherKind::Document,
+        text: Some(doc.clone()),
+        formulas: None,
+        options: None,
+    };
+    let RenderResponse::Success(default_image) = spawn_and_send(&worker, &default).unwrap() else {
+        panic!("expected render success")
+    };
+
+    let options = RenderOptions {
+        limits: None,
+        layout: Some(json!({ "contentWidthPx": 800, "fontSizePx": 18 })),
+    };
+    let wide = RenderRequest {
+        protocol: IPC_PROTOCOL.to_string(),
+        kind: EitherKind::Document,
+        text: Some(doc),
+        formulas: None,
+        options: Some(options),
+    };
+    let RenderResponse::Success(wide_image) = spawn_and_send(&worker, &wide).unwrap() else {
+        panic!("expected render success")
+    };
+
+    assert!(default_image.height > 0, "document produces a PNG");
+    assert!(wide_image.height > 0);
+    assert_eq!(wide_image.width, 800, "content-width option applies");
+    assert!(
+        wide_image.width > default_image.width,
+        "wider canvas under a wider option"
+    );
+    assert_eq!(wide_image.renderer, "katex-playwright-sharp");
+}
+
+#[test]
+fn oversized_document_is_rejected_before_the_renderer() {
+    use tmath_core::ipc::RenderOptions;
+
+    let padding = "a".repeat(IPC_MAX_REQUEST_BYTES + 10);
+    let request = RenderRequest {
+        protocol: IPC_PROTOCOL.to_string(),
+        kind: EitherKind::Document,
+        text: Some(padding),
+        formulas: None,
+        options: Some(RenderOptions {
+            limits: None,
+            layout: None,
+        }),
+    };
+    assert!(
+        request.encode().is_err(),
+        "oversized text must be rejected at the boundary"
+    );
+}

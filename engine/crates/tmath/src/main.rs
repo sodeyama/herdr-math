@@ -4,9 +4,11 @@
 //! TypeScript renderer subprocess over stdin/stdout, and — when running against
 //! a real Kitty-graphics terminal — places the rendered image as a
 //! scrollback-anchored placement in the main buffer. When stdout is not a
-//! terminal, it reports the bounded response instead.
+//! terminal, it reports the bounded response instead. `tmath diagnose` reports
+//! local capability status.
 
 use std::env;
+use std::fs::File;
 use std::io::{self, IsTerminal as _, Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -14,8 +16,9 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use serde_json::json;
 use tmath_core::ipc::{
-    EitherKind, IpcError, RenderRequest, RenderResponse, IPC_MAX_REQUEST_BYTES,
+    EitherKind, IpcError, RenderOptions, RenderRequest, RenderResponse, IPC_MAX_REQUEST_BYTES,
     IPC_MAX_RESPONSE_BYTES, IPC_PROTOCOL,
 };
 use tmath_core::placement::{
@@ -39,16 +42,17 @@ fn main() {
 fn run() -> Result<i32, String> {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(command) = args.first() else {
-        return Err("usage: tmath render <file | ->".into());
+        eprint!("{}", help_text());
+        return Err("missing command; use 'render' or 'diagnose'".into());
     };
     match command.as_str() {
         "render" => render(&args[1..]),
-        "--help" | "-h" => {
-            println!("usage: tmath render <file | ->");
-            println!("  -  read the document from stdin");
+        "diagnose" => diagnose(&args[1..]),
+        "--help" | "-h" | "help" => {
+            print!("{}", help_text());
             Ok(0)
         }
-        "--version" | "-V" => {
+        "--version" | "-V" | "version" => {
             println!("tmath {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
         }
@@ -56,17 +60,99 @@ fn run() -> Result<i32, String> {
     }
 }
 
-fn render(args: &[String]) -> Result<i32, String> {
-    if args.len() != 1 {
-        return Err("usage: tmath render <file | ->".into());
+fn help_text() -> String {
+    format!(
+        "tmath {version} — render Markdown + LaTeX as scrollback-anchored images.\n\
+         \n\
+         USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
+         \n\
+         OPTIONS:\n  --content-width <px>  Render width in pixels (default 480)\n\
+         \x20 --font-size <px>      Base font size in pixels (default 14)\n\
+         \n\
+         With `-`, the document is read from stdin. When stdout is a terminal\n\
+         with Kitty graphics support, the image is placed in the main buffer so\n\
+         it scrolls with the shell scrollback; `q` or Ctrl-C exits.\n",
+        version = env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// Parsed render arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderArgs {
+    input: String,
+    content_width: Option<u32>,
+    font_size: Option<u32>,
+}
+
+fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
+    let mut input: Option<String> = None;
+    let mut content_width: Option<u32> = None;
+    let mut font_size: Option<u32> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--content-width" => {
+                let value = args.get(index + 1).ok_or("--content-width needs a value")?;
+                content_width = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("invalid content width {value:?}"))?,
+                );
+                index += 2;
+            }
+            "--font-size" => {
+                let value = args.get(index + 1).ok_or("--font-size needs a value")?;
+                font_size = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("invalid font size {value:?}"))?,
+                );
+                index += 2;
+            }
+            "--help" | "-h" => return Err("use 'tmath --help'".into()),
+            other if other.starts_with('-') && other != "-" => {
+                return Err(format!("unknown option {other:?}"));
+            }
+            other => {
+                if input.is_some() {
+                    return Err("expected one input path".into());
+                }
+                input = Some(other.to_string());
+                index += 1;
+            }
+        }
     }
-    let source = read_document(&args[0])?;
+    let input = input.ok_or("missing input; use 'tmath render <file | ->'")?;
+    Ok(RenderArgs {
+        input,
+        content_width,
+        font_size,
+    })
+}
+
+fn render(args: &[String]) -> Result<i32, String> {
+    let parsed = parse_render_args(args)?;
+    let source = read_document(&parsed.input)?;
+    let mut options: Option<RenderOptions> = None;
+    if parsed.content_width.is_some() || parsed.font_size.is_some() {
+        let mut layout = serde_json::Map::new();
+        if let Some(width) = parsed.content_width {
+            layout.insert("contentWidthPx".into(), json!(width));
+        }
+        if let Some(size) = parsed.font_size {
+            layout.insert("fontSizePx".into(), json!(size));
+        }
+        options = Some(RenderOptions {
+            limits: None,
+            layout: Some(serde_json::Value::Object(layout)),
+        });
+    }
     let request = RenderRequest {
         protocol: IPC_PROTOCOL.to_string(),
         kind: EitherKind::Document,
         text: Some(source),
         formulas: None,
-        options: None,
+        options,
     };
 
     let worker = renderer_worker_path()?;
@@ -201,12 +287,87 @@ fn read_document(path: &str) -> Result<String, String> {
             .read_to_string(&mut text)
             .map_err(|error| format!("read stdin: {error}"))?;
     } else {
-        std::fs::read_to_string(path).map_err(|error| format!("read {path}: {error}"))?;
+        File::open(path)
+            .map_err(|error| format!("open {path}: {error}"))?
+            .take((IPC_MAX_REQUEST_BYTES + 1) as u64)
+            .read_to_string(&mut text)
+            .map_err(|error| format!("read {path}: {error}"))?;
     }
     if text.len() > IPC_MAX_REQUEST_BYTES {
         return Err(format!("document exceeds {IPC_MAX_REQUEST_BYTES} bytes"));
     }
     Ok(text)
+}
+
+/// Reports local capabilities with a stable status per check and a non-zero
+/// exit when a required capability is missing.
+fn diagnose(args: &[String]) -> Result<i32, String> {
+    if !args.is_empty() && args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("usage: tmath diagnose");
+        return Ok(0);
+    }
+    let mut problems = 0u32;
+
+    match renderer_worker_path() {
+        Ok(_) => println!("renderer subprocess: available"),
+        Err(message) => {
+            println!("renderer subprocess: missing ({message})");
+            problems += 1;
+        }
+    }
+
+    match Command::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => println!("node: available"),
+        _ => {
+            println!("node: missing");
+            problems += 1;
+        }
+    }
+
+    if io::stdout().is_terminal() {
+        println!("stdout: terminal");
+    } else {
+        println!("stdout: not a terminal (image transport unavailable here)");
+    }
+
+    // Probes that need a real terminal only run when stdout is a tty.
+    if io::stdout().is_terminal() && !io::stdin().is_terminal() {
+        println!("stdin: not a terminal (input events unavailable)");
+    }
+
+    let graphics = probe_graphics_from_tty();
+    match graphics {
+        Some(true) => println!("kitty graphics: supported"),
+        Some(false) => {
+            println!("kitty graphics: unsupported");
+            problems += 1;
+        }
+        None => println!("kitty graphics: not probed (no stdin terminal)"),
+    }
+
+    if problems == 0 {
+        Ok(0)
+    } else {
+        Err(format!(
+            "{problems} required capability/capabilities missing; see above"
+        ))
+    }
+}
+
+/// Runs a Kitty graphics probe against the real tty; `None` when no tty exists.
+fn probe_graphics_from_tty() -> Option<bool> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return None;
+    }
+    let mut terminal = Terminal::new(StdioTty::default(), 1).ok()?;
+    let result = terminal.probe_graphics_support().ok();
+    let _ = terminal.reset();
+    result
 }
 
 fn renderer_worker_path() -> Result<PathBuf, String> {
@@ -286,4 +447,60 @@ fn spawn_renderer(worker: &PathBuf, request: &[u8]) -> Result<RenderResponse, St
     let response =
         RenderResponse::parse(&response_bytes).map_err(|error: IpcError| error.to_string())?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_render_arguments() {
+        let parsed = parse_render_args(&args(&["doc.md"])).unwrap();
+        assert_eq!(parsed.input, "doc.md");
+        assert_eq!(parsed.content_width, None);
+
+        let parsed =
+            parse_render_args(&args(&["--content-width", "800", "--font-size", "18", "-"]))
+                .unwrap();
+        assert_eq!(parsed.input, "-");
+        assert_eq!(parsed.content_width, Some(800));
+        assert_eq!(parsed.font_size, Some(18));
+    }
+
+    #[test]
+    fn rejects_invalid_render_arguments() {
+        assert!(parse_render_args(&args(&[])).is_err(), "missing input");
+        assert!(
+            parse_render_args(&args(&["a.md", "b.md"])).is_err(),
+            "two inputs"
+        );
+        assert!(
+            parse_render_args(&args(&["--content-width", "abc", "-"])).is_err(),
+            "bad width"
+        );
+        assert!(
+            parse_render_args(&args(&["--bogus", "-"])).is_err(),
+            "unknown option"
+        );
+    }
+
+    #[test]
+    fn progress_preserves_options() {
+        let parsed = parse_render_args(&args(&["--font-size", "20", "doc.md"])).unwrap();
+        assert_eq!(parsed.font_size, Some(20));
+        assert_eq!(parsed.input, "doc.md");
+    }
+
+    #[test]
+    fn help_mentions_commands_and_options() {
+        let help = help_text();
+        assert!(help.contains("render"));
+        assert!(help.contains("diagnose"));
+        assert!(help.contains("--content-width"));
+        assert!(help.contains("--font-size"));
+    }
 }
