@@ -374,7 +374,29 @@ fn renderer_worker_path() -> Result<PathBuf, String> {
     if let Some(path) = env::var_os("TMATH_RENDER_WORKER") {
         return Ok(PathBuf::from(path));
     }
-    Err("TMATH_RENDER_WORKER must point at the built render subprocess".into())
+    // Local checkout convenience: `npm run build` produces
+    // `dist/renderer/subprocess.js` in the repository root (relative to CWD),
+    // or `../dist/renderer/subprocess.js` relative to the binary when the
+    // binary lives in `target/debug/`.
+    let candidates = ["dist/renderer/subprocess.js".to_string(), {
+        // `target/debug/tmath` → repo root → `dist/renderer/subprocess.js`
+        let exe = env::current_exe().unwrap_or_default();
+        exe.parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(|p| {
+                p.join("dist/renderer/subprocess.js")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_default()
+    }];
+    for candidate in candidates {
+        if !candidate.is_empty() && PathBuf::from(&candidate).is_file() {
+            return Ok(PathBuf::from(candidate));
+        }
+    }
+    Err("renderer subprocess not found; build it with `npm ci && npm run build`, or set TMATH_RENDER_WORKER".into())
 }
 
 fn spawn_renderer(worker: &PathBuf, request: &[u8]) -> Result<RenderResponse, String> {
@@ -502,5 +524,16 @@ mod tests {
         assert!(help.contains("diagnose"));
         assert!(help.contains("--content-width"));
         assert!(help.contains("--font-size"));
+    }
+
+    #[test]
+    fn renderer_worker_path_honors_the_environment_variable() {
+        // The workspace denies unsafe code, so this uses only the safe std env
+        // API. No other test reads TMATH_RENDER_WORKER, so the temporary value
+        // cannot race with parallel test threads here.
+        std::env::set_var("TMATH_RENDER_WORKER", "/tmp/example/subprocess.js");
+        let path = renderer_worker_path().unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/example/subprocess.js"));
+        std::env::remove_var("TMATH_RENDER_WORKER");
     }
 }

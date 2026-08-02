@@ -29,6 +29,9 @@ cargo build
 install:browser` repairs only the locked browser artifacts, and `npm run audit:browser` verifies
 them. `cargo build` produces the `tmath` binary in `target/debug/tmath`.
 
+When you run `tmath` from the repository root, it finds the built renderer automatically at
+`dist/renderer/subprocess.js`; no environment variable is required.
+
 ## Render a document
 
 ```sh
@@ -47,7 +50,30 @@ Terminal Math renders `$...$` and `$$...$$` equations and the strict allowlisted
 the main terminal buffer so it scrolls with the shell scrollback. Mouse wheel and keyboard scroll
 a tall rendered document; `q` or Ctrl-C resets the terminal.
 
-If the built render subprocess is located elsewhere, set `TMATH_RENDER_WORKER` to its path.
+If the built render subprocess is located elsewhere (for example a copied binary), set
+`TMATH_RENDER_WORKER` to its path.
+
+### Use it from anywhere
+
+Run `tmath` from any directory by adding the binary to your `PATH`:
+
+```sh
+# fish
+set -U fish_user_paths /path/to/herdr-math-v2-phase0/target/debug $fish_user_paths
+
+# zsh / bash
+export PATH="/path/to/herdr-math-v2-phase0/target/debug:$PATH"
+```
+
+`tmath` finds the renderer automatically, in this order: the `TMATH_RENDER_WORKER` environment
+variable, `dist/renderer/subprocess.js` in the current directory, then `dist/renderer/subprocess.js`
+relative to the binary's `target/debug`. So a checkout whose `npm run build` output is present
+works from any working directory with no environment variable set.
+
+```sh
+tmath render ~/notes.md          # from anywhere
+tmath diagnose
+```
 
 ## Diagnose
 
