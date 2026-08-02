@@ -182,13 +182,61 @@ enforces size, timeout, and trust limits.
 Progress: T-201 through T-204 complete via commits `d554d17`, `c44874b`, `f8f65e3`, `3f667f7`
 (plus `131f761` docs, and fix/style commits). Evidence: `docs/evidence/2026-08-02-tmath-v2-phase1.md`.
 
-## Phase 2 - Placement and Scrollback Anchoring (outline)
+---
 
-- **T-301**: Transmit one placement per block into the main buffer with virtual placement and a
-  placeholder grid.
-- **T-302**: Verify images scroll with the shell scrollback in a real terminal.
-- **T-303**: Implement replacement/delete of a stale block.
-- **T-304**: Add concurrent-placement and total-placement-pixel limits.
+## Phase 2 - Placement and Scrollback Anchoring
+
+The goal of Phase 2 is to transmit one Kitty placement per document block into the main screen
+buffer, glued to real cells with a virtual placement (`U=1,c,r`) and a placeholder grid so the
+images scroll with the shell scrollback. A placement tracker owns image ids, replacement/delete,
+and the concurrent-pixel and total-pixel limits. The TypeScript renderer is unchanged beyond
+Phase 1.
+
+### T-301: Place one block per rendered document into the main buffer
+
+- Scope: Add a `tmath-core` placement module that computes a cell grid from measured cell size
+  (`cols = ceil(width/cell_w)`, `rows = ceil(height/cell_h)`, clamped to the addressable
+  placeholder limit), emits the placed transmit (`a=T,f=32,o=z,s,v,t=d,i,q=2,U=1,c,r`) followed by
+  a cursor-relative placeholder grid so the cells scroll with scrollback, and tracks the placed
+  image id. Wire `tmath render` to initialize the terminal (main buffer only, no alternate
+  screen), measure cell size, render, decode the PNG to RGBA, and place each block at its source
+  row in order.
+- Dependencies: T-204, T-103, T-102
+- Acceptance: `AT-2-300`
+- Evidence: Unit, Integration
+- Commit: `feat(placement): place scrollback-anchored image blocks`
+
+### T-302: Verify images scroll with the shell scrollback
+
+- Scope: In a real Kitty-graphics terminal (Ghostty primary), render a multi-block document, then
+  scroll the terminal back and forth and record that the images move with the real cells rather
+  than staying pinned to the viewport. Record redacted runtime evidence.
+- Dependencies: T-301
+- Acceptance: `AT-2-301`
+- Evidence: Runtime
+- Commit: `docs(test): record scrollback placement runtime evidence`
+
+### T-303: Replace and delete a pixel block
+
+- Scope: Extend the placement tracker so re-rendering a block deletes its stale image
+  (`a=d`) before or as part of the replacement, and removing a block deletes its image without
+  leaving orphans. Use scoped `d=I,i=<id>` deletes so other blocks are untouched, with a stable
+  error when a stale id is unknown.
+- Dependencies: T-301
+- Acceptance: `AT-2-302`
+- Evidence: Unit, Integration
+- Commit: `feat(placement): replace and delete stale image blocks`
+
+### T-304: Enforce placement concurrency and pixel limits
+
+- Scope: Add strict limits for the number of concurrent placements and the total placed pixels,
+  rejected before emission with a stable error and no partial output. Invalid input, missing
+  Kitty support, render timeouts, and payload rejection leave earlier valid placements intact and
+  fail closed.
+- Dependencies: T-301, T-303
+- Acceptance: `AT-2-303`, `AT-2-304`
+- Evidence: Unit, Contract
+- Commit: `feat(placement): cap concurrent placements and pixels`
 
 ## Phase 3 - Input Loop (outline)
 
