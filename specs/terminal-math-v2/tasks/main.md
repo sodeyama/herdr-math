@@ -24,9 +24,10 @@
 
 ## Current Next Task
 
-Phase 0 (Rust terminal surface) and Phase 1 (render transport) are complete; resume with
-**T-301** (Phase 2, placement and scrollback anchoring) next. Until a real Kitty-graphics
-terminal run is recorded, Phases 0-1 claim no runtime or release behavior.
+Phase 0 (Rust terminal surface), Phase 1 (render transport), and Phase 2 (placement and
+scrollback anchoring) are complete; resume with **T-401** (Phase 3, input loop) next. T-302's
+real-terminal scrollback observation is a manual Ghostty step documented in the Phase 2
+evidence; until it is run, no runtime-release claim is made.
 
 ---
 
@@ -237,6 +238,10 @@ Phase 1.
 - Acceptance: `AT-2-303`, `AT-2-304`
 - Evidence: Unit, Contract
 - Commit: `feat(placement): cap concurrent placements and pixels`
+
+Progress: T-301 through T-304 implemented via commits `65a4825`, `8948775`, `f22b841` (plus
+`d25cba8` docs). T-302 runtime observation remains a manual Ghostty step.
+Evidence: `docs/evidence/2026-08-02-tmath-v2-phase2.md`.
 
 ## Phase 3 - Input Loop (outline)
 

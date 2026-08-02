@@ -2,7 +2,7 @@
 
 ## Status
 
-- Plan state: In progress — Phase 0 (Rust terminal surface) and Phase 1 (render transport) complete; Phase 2 (placement and scrollback anchoring) next
+- Plan state: In progress — Phases 0-2 (terminal surface, render transport, placement) complete; Phase 3 (input loop) next
 - Target release: `0.2.0` (first standalone release without a Herdr runtime)
 - Last updated: August 2, 2026
 - Acceptance contract: `../tests/main.md`
