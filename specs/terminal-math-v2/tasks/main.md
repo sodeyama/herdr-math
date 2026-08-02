@@ -24,10 +24,10 @@
 
 ## Current Next Task
 
-Phases 0-3 (Rust terminal surface, render transport, placement, input loop) are complete;
-resume with **T-501** (Phase 4, CLI and document composition) next. T-302's real-terminal
-scrollback observation and the Phase 3 mouse-wheel runtime step remain manual Ghostty
-verification documented in the phase evidence; no runtime-release claim is made until they run.
+Phases 0-4 (Rust terminal surface, render transport, placement, input loop, CLI and
+composition) are complete; resume with **T-601** (Phase 5, hardening and security) next.
+Runtime release evidence (real Ghostty placement and scrollback) remains a manual verification
+step documented across the phase evidence files.
 
 ---
 
@@ -339,6 +339,10 @@ renderer through the Phase 1 transport.
 - Acceptance: `AT-2-304`, `AT-2-706`
 - Evidence: Contract, Integration
 - Commit: `feat(cli): add capability diagnostics and help text`
+
+Progress: T-501 through T-503 complete via commit `b3dc302` (the CLI refactor bundles bounded
+reads, composition options, `diagnose`, and help/version; parse and composition are covered by
+unit and renderer-integration tests). Evidence: `docs/evidence/2026-08-02-tmath-v2-phase4.md`.
 
 ## Phase 5 - Hardening and Security (outline)
 
