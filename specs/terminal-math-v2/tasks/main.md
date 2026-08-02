@@ -24,8 +24,8 @@
 
 ## Current Next Task
 
-Phases 0-4 (Rust terminal surface, render transport, placement, input loop, CLI and
-composition) are complete; resume with **T-601** (Phase 5, hardening and security) next.
+Phases 0-5 (terminal surface, render transport, placement, input loop, CLI and composition,
+hardening) are complete; resume with **T-701** (Phase 6, compatibility and documentation) next.
 Runtime release evidence (real Ghostty placement and scrollback) remains a manual verification
 step documented across the phase evidence files.
 
@@ -381,6 +381,9 @@ the input/mouse/escape parsers and the scanner must withstand adversarial input.
 - Acceptance: `AT-2-403`, `AT-2-500`
 - Evidence: Unit, Contract
 - Commit: `test(security): fuzz input, mouse, and scanner parsers`
+
+Progress: T-601 through T-603 complete via commits `a70a5d1`, `a6f104c`, `b7d6741` (plus
+`1e9b118` docs). Evidence: `docs/evidence/2026-08-02-tmath-v2-phase5.md`.
 
 ## Phase 6 - Compatibility and Documentation (outline)
 
