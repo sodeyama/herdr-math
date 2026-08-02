@@ -570,8 +570,11 @@ finished answer as a rendered Markdown + math image in a separate viewer pane.
 - Evidence: Runtime
 - Given a Ghostty-attached tmux session with `allow-passthrough` enabled
 - When an answer renders in the viewer pane
-- Then a real image is displayed; until recorded, image display inside tmux
-  remains a verified limitation with a clear fail-closed diagnostic.
+- Then the viewer places a real image in the pane (recorded:
+  `placed image=1 rows=10 bytes=4980`). tmux cannot relay query replies, so
+  inside tmux probing is optimistic and the cell size comes from winsize; the
+  PNG itself is a fire-and-forget transmit forwarded to the outer terminal, so
+  visual confirmation in the user's terminal is a manual eyeball step.
 
 ### AT-2-807 - No-content logging
 

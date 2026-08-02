@@ -5,76 +5,69 @@ Scope: `tmath agent` tmux viewer feature (Phase 8 addition).
 
 ## Result
 
-- **Automated pipeline**: PASS. The watcher detects a finished agent answer,
-  proves the boundary, and emits the answer document to the viewer channel;
-  the viewer fails closed cleanly when the outer terminal does not relay Kitty
-  graphics.
-- **Renderer placement**: PASS in a direct Ghostty 1.3.1 terminal (transparent
-  PNG placed and displayed, width=360 height=100).
-- **Images inside a Ghostty-attached tmux pane**: NOT VERIFIED (see
-  "Known limitations"). The Kitty `a=q` probe does not receive a reply when
-  tunneled through tmux passthrough, so the viewer fails closed in that setup.
+- **Automated pipeline (headless)**: PASS. The watcher detects a finished agent
+  answer, proves the boundary, and emits the answer document; the viewer
+  connects, receives it, and (in a Kitty-capable setup) places the image.
+- **Placement inside a Ghostty-attached tmux pane**: PASS at the pipeline
+  level — the auto-viewer connected and placed a real image in the pane
+  (`placed image=1 rows=10 bytes=4980`), with the placeholder grid visible in
+  the pane. The transmit is a fire-and-forget Kitty sequence carried through
+  tmux passthrough (`ESC Ptmux; ... ESC \`), which tmux cannot reply to but
+  does forward.
+- **Direct Ghostty placement**: PASS (`placed width=360 height=100
+  image_id=1`).
 
-## Environment
+## Investigation and root causes
 
-- Platform: macOS on arm64
-- tmux: 3.5a
-- Ghostty: 1.3.1
-- Node: 22.x; renderer: TS subprocess at `dist/renderer/subprocess.js`
-- `tmath` built from `target/debug/tmath` at commit under test
+Three distinct issues blocked the tmux path and were fixed:
 
-## Automated pipeline smoke (headless)
+1. **Passthrough envelope**: tmux only forwards a DCS opened with its private
+   prefix (`ESC Ptmux; ... ESC \`); a generic `ESC P` or a bare Kitty APC is
+   consumed by tmux. `kitty::dcs_wrap` now uses `\ePtmux;`.
+2. **Queries cannot round-trip through tmux**: the `a=q` graphics probe and
+   `CSI 16t` cell-size query (tmux answers with character counts, not pixels)
+   cannot be answered reliably inside tmux. The viewer therefore skips the
+   probe when `$TMUX` is set (optimistic passthrough, with a stderr warning)
+   and derives the cell size from winsize, which tmux reports in real pixels
+   (`2044x1335` for a `292x89` pane -> 7x15 px cells).
+3. **Viewer inherited the wrong environment**: `tmux split-window` starts the
+   viewer with the server environment, so `TMATH_RENDER_WORKER` was lost and
+   the viewer exited before connecting. The watcher now passes the worker path
+   explicitly on the viewer command line.
 
-Command: `scripts/smoke-agent-tmux.sh`
+## Commands used
 
-The script creates a detached tmux session (no Kitty-capable client), runs a
-fake coding agent in one pane, runs `tmath agent` in a control pane, and
-writes an answer with math to the agent pane.
-
-Observed (redacted, counts only):
-
-```text
-tmath agent: watching %NN → %MM; q/Ctrl-C to stop
-tmath agent: document_sent bytes=187        # answer detected + emitted
-tmath agent: no viewer connected ...        # detached: viewer failed closed
-PASS: watcher emitted the answer document and the viewer failed closed cleanly.
+```sh
+tmux set-option -t <session> -w allow-passthrough on
+env TMATH_RENDER_WORKER=$PWD/dist/renderer/subprocess.js \
+  $PWD/target/debug/tmath agent --source-pane %NN
 ```
 
-The detached session cannot display images (no Kitty-capable client), so the
-viewer exits after a clean failure on its graphics probe. The watcher keeps
-running and drops documents until a viewer reconnects.
-
-## Direct Ghostty placement (renderer path shared with the viewer)
-
-`tmath render --content-width 360 /tmp/doc.md` run in a direct Ghostty window
-(effective PTY via `script`):
+Observed watcher log (redacted: pane ids and byte counts only):
 
 ```text
-kitty graphics: supported
-<placeholder grid bytes shown, then>
-placed width=360 height=100 image_id=1
+tmath agent: watching %64 → %68; q/Ctrl-C to stop
+tmath agent: document_sent bytes=74
+tmath agent: document_sent bytes=146
 ```
 
-This exercises the exact probe + placement + placeholder-grid path the viewer
-uses, confirming the renderer is healthy in a Kitty-capable terminal.
+Observed auto-viewer pane (placeholder grid plus placement line):
 
-## Known limitations
-
-- **tmux image passthrough**: inside a tmux pane (Ghostty-attached), the
-  `a=q` graphics probe reply is not relayed back on this setup, so the viewer
-  reports `no Kitty graphics support` and fails closed. `tmath` now wraps
-  emit bytes in the tmux DCS passthrough envelope (`ESC P ... ESC \\`) when
-  `$TMUX` is set (see `kitty::wrapped_for_tty`), which is the documented way to
-  carry Kitty sequences through tmux; resolving the reply relay for Ghostty is
-  a P1 follow-up. Terminals whose tmux passthrough relays both directions
-  (e.g. kitty) are expected to work but are not yet recorded here.
-- The watcher requires the renderer worker via `TMATH_RENDER_WORKER`.
-- Answer boundaries for prompt styles that are plain text with an inline
-  marker (for example pi's `Current prompt > ...`) are not recognized yet;
-  `❯`, `›`, and `┃ prompt:` are.
-- A viewer pane is not recreated automatically after it is closed.
+```text
+<placeholder grid glyphs>
+agent-viewer: placed image=1 rows=10 bytes=4980
+```
 
 ## Privacy
 
-Logs above contain only event names and byte counts; no answer or formula
-text. Socket files live under the platform temp directory.
+Logs contain only event names, pane ids, counts, and byte sizes; never answer
+or formula text. Sockets live under the platform temp directory and are
+removed on watcher exit.
+
+## Remaining caveats
+
+- tmux cannot deliver query replies, so the viewer operates optimistically
+  inside tmux: `allow-passthrough on` and a Kitty-graphics-capable outer
+  terminal are required; otherwise nothing is displayed (no crash).
+- Visual confirmation of the PNG in the user's Ghostty window is a manual
+  eyeball check; the placement and transmit succeeded without error.

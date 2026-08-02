@@ -67,15 +67,19 @@ env TMATH_RENDER_WORKER=/abs/path/dist/renderer/subprocess.js \
 ```
 
 The watcher creates the viewer pane, prints `tmath agent: watching ...` once,
-and then logs only bounded status to stderr. `q`/Ctrl-C stops it. Inside the
+and then logs only bounded status to stderr. It passes the renderer worker
+path to the viewer automatically. `q`/Ctrl-C stops the watcher. Inside the
 viewer pane, the wheel and arrow keys scroll the current answer and `q`/
 Ctrl-C closes it.
 
-Known limitation: inside a tmux pane, Kitty images require the outer terminal
-to relay both the passthrough sequence and its reply. On the verified
-Ghostty 1.3.1 + tmux 3.5a setup the reply is not relayed yet, so the viewer
-fails closed with `no Kitty graphics support`. A direct (non-tmux) Ghostty
-terminal displays placements correctly.
+Inside tmux, tmux cannot relay query replies, so the viewer skips its
+graphics probe (optimistic passthrough) and logs a short stderr warning;
+images are carried to the outer terminal with the tmux passthrough envelope
+`ESC Ptmux; ...`. Requirements: tmux `allow-passthrough on` (shown above) and
+a Kitty-graphics-capable outer terminal (Ghostty, kitty, ...). If the outer
+terminal does not relay the transmit, nothing is displayed, but nothing
+crashes. Outside tmux, `tmath render` and the viewer probe normally and fail
+closed on missing Kitty support.
 
 ## Diagnose
 

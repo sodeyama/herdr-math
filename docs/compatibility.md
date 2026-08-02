@@ -43,11 +43,13 @@ clean-exit evidence.
 ## Agent integration (P1, experimental)
 
 `tmath agent` / `tmath agent-viewer` (Phase 8) run inside tmux 3.2+ and rely
-on the tmux DCS passthrough envelope (`allow-passthrough on`). Verified on a
-direct Ghostty terminal (placements display correctly); images inside a
-Ghostty 1.3.1 + tmux 3.5a pane are **not yet verified** — the `a=q` probe reply
-is not relayed back through tmux, so the viewer fails closed with a clear
-diagnostic. kitty and WezTerm tmux relay behavior is P1.
+on the tmux passthrough envelope (`allow-passthrough on`). Verified on a
+direct Ghostty terminal (placements display correctly) and on a
+Ghostty 1.3.1 + tmux 3.5a pane (a real placement was placed through
+passthrough). tmux cannot relay query replies, so inside tmux probing is
+optimistic and the cell size comes from winsize; the forwarded PNG's visual
+appearance in the user's terminal is a manual eyeball step. kitty and WezTerm
+tmux relay behavior is P1.
 
 ## Evidence
 

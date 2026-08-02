@@ -2,14 +2,10 @@
 #
 # smoke-agent-tmux: headless pipeline test for `tmath agent`.
 #
-# Runs inside a detached tmux session (no Kitty-capable outer client), so this
-# proves the watcher -> socket -> viewer pipeline and the fail-closed behavior:
-# a real image cannot display without a Kitty-graphics outer terminal, so the
-# viewer must connect, receive the message boundary, and exit cleanly with a
-# clear diagnostic when graphics are unavailable.
-#
-# Real-image display is recorded manually in a Ghostty-attached session (see
-# docs/evidence).
+# Runs inside a detached tmux session (no Kitty-capable outer client), proving
+# the watcher -> socket -> viewer pipeline: the watcher detects the newest
+# answer and emits the document. Real-image placement is recorded separately
+# in a Ghostty-attached session (see docs/evidence).
 
 set -euo pipefail
 
@@ -85,14 +81,15 @@ if [ -z "$VIEWER_PANE" ]; then
 fi
 echo "viewer pane: $VIEWER_PANE"
 
-# In a detached (no Kitty-capable) session tmux can reap the exited viewer pane,
-# so the graphics diagnostic is best-effort here; the real-image path is recorded
-# manually in a Ghostty-attached session.
+# The viewer pane in a detached (no client) session may report a graphics or
+# cell-size diagnostic, or be reaped by tmux after a clean exit; the
+# watcher-side emit is the mandatory assertion here. Real-image placement is
+# recorded separately in a Ghostty-attached session.
 VIEWER_CAP="$(tmux capture-pane -p -S -100 -t "$VIEWER_PANE" 2>/dev/null || true)"
-if printf '%s' "$VIEWER_CAP" | grep -q 'no Kitty graphics support'; then
-  echo "viewer: failed closed cleanly on missing Kitty graphics (expected detached)"
+if printf '%s' "$VIEWER_CAP" | grep -qE 'no Kitty graphics support|no usable cell size|placed image='; then
+  printf '%s\n' "$VIEWER_CAP" | grep -v '^$' | tail -3 | sed 's/^/viewer: /'
 else
-  echo "viewer pane: already reaped by tmux (exit was clean); graphics path deferred to Ghostty evidence"
+  echo "viewer pane: already reaped by tmux (clean exit); image path recorded in Ghostty evidence"
 fi
 
 # --- cleanup ------------------------------------------------------------------
@@ -100,7 +97,7 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 rm -f "$LOG"
 
 if [ "$pass" = 1 ]; then
-  echo "PASS: watcher emitted the answer document and the viewer failed closed cleanly."
+  echo "PASS: watcher emitted the answer document; real-image placement recorded in Ghostty evidence."
   exit 0
 fi
 exit 1

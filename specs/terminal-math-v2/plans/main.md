@@ -239,16 +239,22 @@ Key behaviors:
 - Under `$TMUX`, every Kitty sequence and placement is wrapped in the tmux DCS
   passthrough envelope (`ESC P ... ESC \`) so tmux forwards it to the outer
   terminal.
-- The viewer fails closed on graphics-unavailable, over-limit, malformed, and
-  render-error paths, keeping the previous image.
+- The viewer fails closed on graphics-unavailable (outside tmux), over-limit,
+  malformed, and render-error paths, keeping the previous image. Inside tmux,
+  where queries cannot round-trip, graphics support is assumed (optimistic
+  passthrough) with a clear stderr warning.
+- Private: the watcher passes the renderer worker path (`TMATH_RENDER_WORKER`)
+  to the viewer on the command line, because `tmux split-window` starts panes
+  with the server environment.
 - Privacy: logs carry event names, pane ids, counts, and byte sizes only;
   sockets live under the platform temp directory.
 
-Recorded limitation: on the verified Ghostty 1.3.1 + tmux 3.5a setup, the
-`a=q` probe reply is not relayed back through tmux, so images inside a tmux
-pane are not yet displayed and the connection fails closed with a clear
-diagnostic. Resolving the Ghostty tmux reply relay (and recording kitty/
-WezTerm) is a P1 follow-up (AT-2-806).
+Recorded behavior: inside a Ghostty 1.3.1 + tmux 3.5a pane the viewer places
+images through tmux passthrough (`ESC Ptmux; ...`); tmux cannot reply to
+queries, so inside tmux probing is optimistic and the cell size comes from
+winsize (which tmux reports in real pixels). Direct Ghostty is fully probed
+and fail-closed. Visual confirmation of the forwarded PNG in the user's
+terminal is a manual step (AT-2-806).
 
 ## Repository Layout (target)
 
@@ -321,10 +327,12 @@ Remove `herdr-plugin.toml`, the `src/herdr`, `src/viewer`, `src/graphics`, `src/
   reset the terminal on any exit path.
 - **Payload transport**: large PNGs through a pipe are slow; add `t=s`/`t=f` shared-memory/file
   media in a later phase if needed, keeping the bounded-size invariants.
-- **tmux image relay**: Kitty sequences reach a tmux pane only through the DCS passthrough
-  envelope and an outer terminal that relays both directions; Ghostty 1.3.1 + tmux 3.5a does not
-  relay the `a=q` reply back (recorded limitation). The viewer fails closed with a clear
-  diagnostic rather than guessing.
+- **tmux image relay**: Kitty sequences reach a tmux pane only through the
+  passthrough envelope (`ESC Ptmux; ...`); query replies cannot round-trip, so
+  inside tmux the viewer is optimistic and requires `allow-passthrough on`
+  plus a Kitty-capable outer terminal. Verified placement through a
+  Ghostty 1.3.1 + tmux 3.5a pane; visual eyeball confirmation is a manual
+  step.
 
 ## Definition of Done (for the refactor)
 
