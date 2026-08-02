@@ -243,13 +243,56 @@ Progress: T-301 through T-304 implemented via commits `65a4825`, `8948775`, `f22
 `d25cba8` docs). T-302 runtime observation remains a manual Ghostty step.
 Evidence: `docs/evidence/2026-08-02-tmath-v2-phase2.md`.
 
-## Phase 3 - Input Loop (outline)
+---
 
-- **T-401**: Mouse wheel → scroll state machine in a real terminal.
-- **T-402**: Keyboard fallback scrolling (arrows, `PgUp`/`PgDn`, `j`/`k`, `g`/`G`) and `q`/`Ctrl-C`
-  clean reset.
-- **T-403**: Bracketed-paste hygiene and graceful handling of focus events.
-- **T-404**: Fuzz/bounds coverage for the escape and mouse parsers.
+## Phase 3 - Input Loop
+
+The goal of Phase 3 is the interactive input loop: a bounded incremental decoder that turns raw
+stdin bytes into mouse and keyboard events, a scroll driver that maps wheel deltas and fallback
+keys through the existing `ScrollState`, and a clean `q`/`Ctrl-C` reset that always restores the
+terminal. Bracketed paste and focus events are handled without leaking raw escape text.
+
+### T-401: Bind mouse wheel input to the scroll state machine
+
+- Scope: Add an incremental input decoder (`input.rs`) that buffers bounded bytes and emits one
+  event at a time, decoding SGR pixel/cell mouse reports, arrows, `PgUp`/`PgDn`, `Home`/`End`,
+  `j`/`k`/`g`/`G`, `q`, and `Ctrl-C`. Feed wheel deltas into `ScrollState` with the `Smooth`
+  profile and bound per-frame work.
+- Dependencies: T-112 (scroll), T-110 (mouse), T-103 (terminal)
+- Acceptance: `AT-2-400`, `AT-2-403`
+- Evidence: Unit
+- Commit: `feat(input): decode bounded terminal input events`
+
+### T-402: Keyboard fallback scrolling and clean reset
+
+- Scope: Map fallback keys (arrows, `PgUp`/`PgDn`, `j`/`k`, `g`/`G`) to scroll offsets so the
+  document can be scrolled without a mouse. `q` and `Ctrl-C` must reset the terminal on any exit
+  path.
+- Dependencies: T-401
+- Acceptance: `AT-2-401`, `AT-2-404`
+- Evidence: Unit, Integration
+- Commit: `feat(input): scroll with keyboard fallback and reset cleanly`
+
+### T-403: Bracketed paste and focus hygiene
+
+- Scope: Decode bracketed-paste spans as single paste events without echoing or forwarding
+  `ESC [ 200~` / `ESC [ 201~` markers, and decode focus in/out (`CSI I`/`CSI O`) into bounded
+  focus events. Caps the recording buffer so an unclosed paste cannot grow unbounded.
+- Dependencies: T-401
+- Acceptance: `AT-2-403`
+- Evidence: Unit
+- Commit: `feat(input): handle bracketed paste and focus events`
+
+### T-404: Fuzz and bounds coverage for the input parsers
+
+- Scope: Run adversarial byte sequences (truncated CSIs, unclosed pastes, oversized parameter
+  runs, garbage escapes) through the decoder; assert bounded allocation, stable event recovery at
+  the next valid boundary, and no panics. Wire the decoder into `tmath render`'s real-terminal
+  input loop with capped buffering.
+- Dependencies: T-401, T-403
+- Acceptance: `AT-2-403` (bounds), `AT-2-404` (reset)
+- Evidence: Unit, Contract
+- Commit: `test(input): fuzz and bound the input decoders`
 
 ## Phase 4 - CLI and Document Composition (outline)
 
