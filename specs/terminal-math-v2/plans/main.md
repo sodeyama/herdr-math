@@ -2,7 +2,7 @@
 
 ## Status
 
-- Plan state: In progress — Phases 0-2 (terminal surface, render transport, placement) complete; Phase 3 (input loop) next
+- Plan state: In progress — Phases 0-3 (terminal surface, render transport, placement, input loop) complete; Phase 4 (CLI and document composition) next
 - Target release: `0.2.0` (first standalone release without a Herdr runtime)
 - Last updated: August 2, 2026
 - Acceptance contract: `../tests/main.md`

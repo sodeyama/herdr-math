@@ -79,7 +79,7 @@ Manual procedure to complete T-302:
 
 ```sh
 open -na Ghostty --args -e bash -lc '
-  cd /Users/sodeyama/git/herdr-math-v2-phase0
+  cd <path-to-worktree>
   export TMATH_RENDER_WORKER=$PWD/dist/renderer/subprocess.js
   printf "The relation is $E=mc^2$.\n\nThen: $x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}" \
     | ./target/debug/tmath render -

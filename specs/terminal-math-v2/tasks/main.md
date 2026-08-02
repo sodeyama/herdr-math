@@ -24,10 +24,10 @@
 
 ## Current Next Task
 
-Phase 0 (Rust terminal surface), Phase 1 (render transport), and Phase 2 (placement and
-scrollback anchoring) are complete; resume with **T-401** (Phase 3, input loop) next. T-302's
-real-terminal scrollback observation is a manual Ghostty step documented in the Phase 2
-evidence; until it is run, no runtime-release claim is made.
+Phases 0-3 (Rust terminal surface, render transport, placement, input loop) are complete;
+resume with **T-501** (Phase 4, CLI and document composition) next. T-302's real-terminal
+scrollback observation and the Phase 3 mouse-wheel runtime step remain manual Ghostty
+verification documented in the phase evidence; no runtime-release claim is made until they run.
 
 ---
 
@@ -293,6 +293,10 @@ terminal. Bracketed paste and focus events are handled without leaking raw escap
 - Acceptance: `AT-2-403` (bounds), `AT-2-404` (reset)
 - Evidence: Unit, Contract
 - Commit: `test(input): fuzz and bound the input decoders`
+
+Progress: T-401 through T-404 complete via commits `d5bcca3`, `3627579`, `dbba4a9`, `ba8ff71`
+(plus `5133ddf` docs). Real-terminal mouse-wheel verification is part of the manual Ghostty step.
+Evidence: `docs/evidence/2026-08-02-tmath-v2-phase3.md`.
 
 ## Phase 4 - CLI and Document Composition (outline)
 
