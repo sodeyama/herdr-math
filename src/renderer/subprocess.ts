@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -126,7 +127,20 @@ function readBoundedStdin(): Promise<Buffer> {
   });
 }
 
-if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? "")).href) {
-  const code = await main();
-  process.exit(code);
+function entryUrl(): string {
+  const raw = resolve(process.argv[1] ?? "");
+  try {
+    // Resolve symlinks (e.g. /tmp -> /private/tmp on macOS) so the check
+    // matches Node's import.meta.url, which is symlink-resolved.
+    return pathToFileURL(realpathSync(raw)).href;
+  } catch {
+    return pathToFileURL(raw).href;
+  }
+}
+
+if (import.meta.url === entryUrl()) {
+  // Set the exit code and let Node exit naturally so the async stdout
+  // response is fully flushed to the pipe before the process ends;
+  // `process.exit()` would truncate larger responses.
+  process.exitCode = await main();
 }
