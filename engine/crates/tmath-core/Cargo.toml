@@ -1,0 +1,11 @@
+[package]
+name = "tmath-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Terminal-facing core for the tmath math/document renderer."
+
+[lints]
+workspace = true
+
+[dependencies]

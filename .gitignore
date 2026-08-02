@@ -10,3 +10,8 @@ coverage/
 
 # Local Herdr runtime artifacts must stay outside version control.
 .herdr-math/
+
+# Rust build artifacts
+/target
+/engine/target
+*.rs.bk

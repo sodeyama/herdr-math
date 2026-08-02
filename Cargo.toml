@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["engine/crates/tmath-core"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = "warn"
