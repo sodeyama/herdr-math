@@ -44,8 +44,8 @@ describe("bounded local renderer", () => {
     expect(html).toContain("Before &lt;unsafe&gt;");
     expect(html).not.toContain("Before <unsafe>");
     expect(html).toContain("background:transparent");
-    expect(html).toContain("font-size:12px");
-    expect(html).toContain(".katex{font-size:1em}");
+    expect(html).toContain("font-size:13px");
+    expect(html).toContain(".katex{font-size:1em;line-height:normal}");
 
     const result = await renderResponse(text, formulas);
     expect(result.ok).toBe(true);

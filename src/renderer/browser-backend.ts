@@ -198,13 +198,22 @@ function buildMarkup(segments: readonly RendererDocumentSegment[]): string {
   }
 }
 
+function wrapMarkupLines(markup: string): string {
+  return markup
+    .split("\n")
+    .map((line) =>
+      line.length === 0 ? '<div class="gap" aria-hidden="true"></div>' : `<div class="line">${line}</div>`
+    )
+    .join("");
+}
+
 export function buildRendererHtml(
   document: RendererDocument,
   css: string,
   layout: Readonly<RendererLayout> = resolveRendererLayout()
 ): string {
-  const markup = buildMarkup(document.segments);
-  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${css}\nhtml,body{margin:0;background:transparent}#render{box-sizing:border-box;width:${layout.contentWidthPx}px;min-height:1px;padding:${layout.paddingPx}px;color:#e6edf3;background:transparent;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:${layout.fontSizePx}px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.katex{font-size:1em}.math-inline{display:inline;white-space:nowrap}.math-display{display:block;margin:.8em 0;text-align:center;white-space:normal}.katex-display{margin:0}</style></head><body><div id="render">${markup}</div></body></html>`;
+  const markup = wrapMarkupLines(buildMarkup(document.segments));
+  return `<!doctype html><html><head><base href="${KATEX_BASE_URL}"><style>${css}\nhtml,body{margin:0;background:transparent}#render{box-sizing:border-box;width:${layout.contentWidthPx}px;min-height:1px;padding:${layout.paddingPx}px;color:#e6edf3;background:transparent;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:${layout.fontSizePx}px;line-height:1.65;word-break:break-word;overflow-wrap:break-word}.line{display:block;min-height:1.65em}.gap{display:block;height:.55em}.katex{font-size:1em;line-height:normal}.math-inline{display:inline-block;max-width:100%;vertical-align:baseline;white-space:nowrap}.math-display{display:block;margin:.65em 0;text-align:center;white-space:normal}.katex-display{margin:0}</style></head><body><div id="render">${markup}</div></body></html>`;
 }
 
 function escapeHtml(value: string): string {
