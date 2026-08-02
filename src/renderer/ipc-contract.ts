@@ -83,7 +83,12 @@ export function validateRequest(request: RenderIpcRequest): string | undefined {
   if (request.kind === "formulas") {
     if (!Array.isArray(request.formulas) || request.formulas.length === 0) return "No formulas";
     for (const formula of request.formulas) {
-      if (typeof formula?.latex !== "string" || typeof formula.display !== "boolean") {
+      if (
+        typeof formula !== "object" ||
+        formula === null ||
+        typeof (formula as WireFormula).latex !== "string" ||
+        typeof (formula as WireFormula).display !== "boolean"
+      ) {
         return "Malformed formula";
       }
     }
