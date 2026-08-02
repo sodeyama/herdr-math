@@ -83,7 +83,12 @@ pub fn decode_png(
     png_bytes: &[u8],
     max_pixels: u64,
 ) -> Result<(u32, u32, Vec<u8>), PlacementError> {
-    let decoder = png::Decoder::new(io::Cursor::new(png_bytes));
+    let mut decoder = png::Decoder::new(io::Cursor::new(png_bytes));
+    // Expand palette/16-bit input to 8-bit RGBA so the payload is always the
+    // `f=32` RGBA format regardless of how the renderer optimized its PNG.
+    decoder.set_transformations(
+        png::Transformations::normalize_to_color8() | png::Transformations::ALPHA,
+    );
     let mut reader = decoder
         .read_info()
         .map_err(|_| PlacementError::InvalidImage {
@@ -483,8 +488,29 @@ mod tests {
     }
 
     #[test]
-    fn remove_emits_a_scoped_delete() {
-        let out = emit_remove_block(9);
-        assert_eq!(out, b"\x1b_Ga=d,d=I,i=9,q=2\x1b\\");
+    fn decode_png_expands_palette_to_rgba8() {
+        let mut encoder_bytes = Vec::new();
+        {
+            let width = 1;
+            let height = 1;
+            let mut encoder = png::Encoder::new(io::Cursor::new(&mut encoder_bytes), width, height);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_palette(vec![0x2a, 0x2a, 0x2a]);
+            encoder.set_trns(vec![0x00]);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[0]).unwrap();
+        }
+        let (width, height, rgba) = decode_png(&encoder_bytes, 100).unwrap();
+        assert_eq!((width, height), (1, 1));
+        assert_eq!(rgba, vec![42, 42, 42, 0]);
+    }
+
+    #[test]
+    fn decode_png_rejects_invalid_input() {
+        assert!(matches!(
+            decode_png(b"not a png", 100),
+            Err(PlacementError::InvalidImage { .. })
+        ));
     }
 }

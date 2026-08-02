@@ -206,6 +206,7 @@ dependencies = [
 name = "tmath"
 version = "0.2.0"
 dependencies = [
+ "base64",
  "serde_json",
  "tmath-core",
 ]

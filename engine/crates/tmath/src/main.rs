@@ -1,20 +1,27 @@
 //! `tmath` — standalone terminal math/document renderer CLI.
 //!
-//! Phase 1 placeholder: `tmath render <file | ->` reads a document, forwards it
-//! to the one-shot TypeScript renderer subprocess over stdin/stdout, and reports
-//! the bounded response. Terminal placement and the input loop land in later
-//! phases.
+//! `tmath render <file | ->` reads a document, forwards it to the one-shot
+//! TypeScript renderer subprocess over stdin/stdout, and — when running against
+//! a real Kitty-graphics terminal — places the rendered image as a
+//! scrollback-anchored placement in the main buffer. When stdout is not a
+//! terminal, it reports the bounded response instead.
 
 use std::env;
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, IsTerminal as _, Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use tmath_core::ipc::{
     EitherKind, IpcError, RenderRequest, RenderResponse, IPC_MAX_REQUEST_BYTES,
     IPC_MAX_RESPONSE_BYTES, IPC_PROTOCOL,
 };
+use tmath_core::placement::{
+    decode_png, emit_placed_block, CellSize, PlacementError, PlacementLimits, PlacementTracker,
+};
+use tmath_core::terminal::{StdioTty, Terminal};
 
 const RENDER_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -67,11 +74,18 @@ fn render(args: &[String]) -> Result<i32, String> {
     let response = spawn_renderer(&worker, &payload)?;
     match response {
         RenderResponse::Success(success) => {
-            println!(
-                "ok width={} height={} bytes={} renderer={}",
-                success.width, success.height, success.bytes, success.renderer
-            );
-            Ok(0)
+            let png = BASE64
+                .decode(success.base64.as_bytes())
+                .map_err(|_| "renderer returned invalid base64 PNG".to_string())?;
+            if io::stdout().is_terminal() {
+                place_in_terminal(&png)
+            } else {
+                println!(
+                    "ok width={} height={} bytes={} renderer={}",
+                    success.width, success.height, success.bytes, success.renderer
+                );
+                Ok(0)
+            }
         }
         RenderResponse::Failure(failure) => {
             eprintln!(
@@ -81,6 +95,65 @@ fn render(args: &[String]) -> Result<i32, String> {
             Ok(1)
         }
     }
+}
+
+/// Places a rendered PNG into a real terminal's main buffer as a
+/// scrollback-anchored virtual placement, then restores the terminal.
+fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
+    const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+    let (width, height, rgba) = decode_png(png, MAX_PIXELS)
+        .map_err(|error: PlacementError| format!("decode rendered image: {error}"))?;
+
+    let mut terminal = Terminal::new(StdioTty::default(), 1)
+        .map_err(|error| format!("initialize terminal: {error}"))?;
+    if !terminal
+        .probe_graphics_support()
+        .map_err(|error| format!("probe graphics: {error}"))?
+    {
+        return Err("this terminal reports no Kitty graphics support".into());
+    }
+    let cell = terminal
+        .cell_size()
+        .map_err(|error| format!("measure cell size: {error}"))?
+        .ok_or("terminal reported no usable cell size")?;
+
+    let mut tracker = PlacementTracker::new(PlacementLimits::default());
+    let block = tracker
+        .reserve(
+            width,
+            height,
+            CellSize {
+                width: cell.0,
+                height: cell.1,
+            },
+        )
+        .map_err(|error: PlacementError| format!("place image: {error}"))?;
+    let home_row = tracker.home_row_for_next().max(1);
+    let placement = emit_placed_block(
+        block.image_id,
+        width,
+        height,
+        &rgba,
+        block.cols,
+        block.rows,
+        home_row,
+    );
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(&placement)
+        .map_err(|error| format!("write placement: {error}"))?;
+    stdout
+        .flush()
+        .map_err(|error| format!("flush placement: {error}"))?;
+    drop(stdout);
+    terminal
+        .reset()
+        .map_err(|error| format!("reset terminal: {error}"))?;
+    println!(
+        "placed width={width} height={height} image_id={}",
+        block.image_id
+    );
+    Ok(0)
 }
 
 fn read_document(path: &str) -> Result<String, String> {

@@ -112,3 +112,42 @@ fn oversized_request_is_rejected_before_spawning() {
         "oversized request must be rejected"
     );
 }
+
+#[test]
+fn rendered_png_decodes_and_emits_a_placement_when_built() {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use tmath_core::placement::{decode_png, emit_placed_block, CellSize};
+
+    let Some(worker) = worker_path() else {
+        eprintln!("skipping: render subprocess not built (set TMATH_RENDER_WORKER)");
+        return;
+    };
+    let request = RenderRequest {
+        protocol: IPC_PROTOCOL.to_string(),
+        kind: EitherKind::Document,
+        text: Some("The relation is $E=mc^2$.".to_string()),
+        formulas: None,
+        options: None,
+    };
+    let RenderResponse::Success(success) = spawn_and_send(&worker, &request).unwrap() else {
+        panic!("expected render success")
+    };
+    let png = BASE64.decode(success.base64.as_bytes()).unwrap();
+    let cell = CellSize {
+        width: 7,
+        height: 15,
+    };
+    let (width, height, rgba) = decode_png(&png, 64 * 1024 * 1024).unwrap();
+    assert_eq!((width, height), (success.width, success.height));
+    let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
+    let placement = emit_placed_block(1, width, height, &rgba, cols, rows, 1);
+    let text = String::from_utf8_lossy(&placement);
+    assert!(text.starts_with("\x1b[1;1H"));
+    assert!(text.contains("a=T,f=32,o=z,s="));
+    assert!(text.contains("U=1,c="), "virtual placement keys present");
+    assert!(
+        text.ends_with("\x1b[39m"),
+        "placeholder grid closes the color"
+    );
+}
