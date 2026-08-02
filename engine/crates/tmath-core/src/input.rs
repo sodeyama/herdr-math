@@ -533,4 +533,63 @@ mod tests {
         let decoded = events(b"\x1b]0;title\x1b\\j");
         assert_eq!(decoded, vec![key_event(Key::Char('j'))], "OSC is skipped");
     }
+
+    #[test]
+    fn adversarial_byte_streams_never_panic_or_grow_unbounded() {
+        // Deterministic fuzz over the full printable + escape byte range. The
+        // decoder must always terminate, stay within the buffer cap, and never
+        // emit a raw marker as a character event.
+        let mut seed = 0x5eed_u64;
+        for iteration in 0..512u64 {
+            let mut bytes = Vec::new();
+            let len = 1 + (iteration as usize % 64);
+            for _ in 0..len {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let kind = (seed >> 32) as u8 % 4;
+                bytes.push(match kind {
+                    0 => (seed >> 24) as u8,
+                    1 => 0x1b,
+                    2 => b'[',
+                    _ => (seed >> 56) as u8,
+                });
+            }
+            let mut decoder = InputDecoder::new();
+            decoder.push(&bytes);
+            let mut count = 0;
+            while let Some(event) = decoder.next_event() {
+                count += 1;
+                assert!(count < 4096, "must always make progress");
+                match event {
+                    Event::Key(KeyEvent {
+                        key: Key::Char(c), ..
+                    }) => {
+                        // A lone ESC must never become a plain ESC char here.
+                        assert!(c != '\u{1b}');
+                    }
+                    Event::Paste(_) | Event::Focus(_) | Event::Mouse(_) | Event::Key(_) => {}
+                }
+            }
+            assert!(decoder.pending.len() <= MAX_PENDING_BYTES);
+        }
+    }
+
+    #[test]
+    fn feeding_in_small_chunks_preserves_events() {
+        let full = b"\x1b[A\x1b[<64;3;4M\x1b[200~pasted\x1b[201~q";
+        let one_shot = events(full).len();
+        let mut decoder = InputDecoder::new();
+        let mut chunked = 0;
+        for &b in full {
+            decoder.push(&[b]);
+            while let Some(_event) = decoder.next_event() {
+                chunked += 1;
+            }
+        }
+        assert_eq!(
+            chunked, one_shot,
+            "byte-by-byte and whole-buffer decode agree"
+        );
+    }
 }
