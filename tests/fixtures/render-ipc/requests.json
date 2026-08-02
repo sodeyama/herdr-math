@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "protocol": "tmath-render/1",
+  "cases": [
+    {
+      "id": "inline-math",
+      "request": {
+        "protocol": "tmath-render/1",
+        "kind": "document",
+        "text": "The relation is $E=mc^2$."
+      },
+      "expect": "ok"
+    },
+    {
+      "id": "display-math",
+      "request": {
+        "protocol": "tmath-render/1",
+        "kind": "document",
+        "text": "Then:\n$$x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}$$"
+      },
+      "expect": "ok"
+    },
+    {
+      "id": "prose-and-math-markdown",
+      "request": {
+        "protocol": "tmath-render/1",
+        "kind": "document",
+        "text": "## Steps\n\n1. Energy $E=mc^2$.\n2. Roots via the quadratic formula $$x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}$$."
+      },
+      "expect": "ok"
+    },
+    {
+      "id": "formula-request",
+      "request": {
+        "protocol": "tmath-render/1",
+        "kind": "formulas",
+        "formulas": [
+          { "latex": "e^{i\\pi}+1=0", "display": true },
+          { "latex": "\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2}", "display": true }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "id": "invalid-latex",
+      "request": {
+        "protocol": "tmath-render/1",
+        "kind": "document",
+        "text": "bad $\\href{https://example.com}{link}$"
+      },
+      "expect": "error",
+      "errorCode": "invalid_latex"
+    },
+    {
+      "id": "raw-html-blocked",
+      "request": {
+        "protocol": "tmath-render/1",
+        "kind": "document",
+        "text": "literal <script>alert(1)</script> $x$"
+      },
+      "expect": "ok"
+    },
+    {
+      "id": "empty-source",
+      "request": {
+        "protocol": "tmath-render/1",
+        "kind": "document",
+        "text": "   "
+      },
+      "expect": "error",
+      "errorCode": "formula_not_found"
+    },
+    {
+      "id": "unsupported-protocol",
+      "request": {
+        "protocol": "other/9",
+        "kind": "document",
+        "text": "ok $a$"
+      },
+      "expect": "error",
+      "errorCode": "renderer_input_limit"
+    }
+  ]
+}

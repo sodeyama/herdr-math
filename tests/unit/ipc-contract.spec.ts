@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -72,5 +74,25 @@ describe("render IPC contract", () => {
       base64: "x".repeat(IPC_MAX_RESPONSE_BYTES + 1)
     } as const;
     expect(() => encodeResponse(response)).toThrow(RangeError);
+  });
+
+  it("accepts every fixture request the renderer should accept", () => {
+    const fixture = JSON.parse(
+      readFileSync(new URL("../fixtures/render-ipc/requests.json", import.meta.url), "utf8")
+    ) as {
+      protocol: string;
+      cases: Array<{ id: string; request: unknown; expect: string; errorCode?: string }>;
+    };
+    expect(fixture.protocol).toBe(IPC_PROTOCOL);
+    for (const testCase of fixture.cases) {
+      const request = decodeRequest(Buffer.from(JSON.stringify(testCase.request)));
+      const accepts = testCase.expect === "ok" || testCase.errorCode === "invalid_latex";
+      if (accepts) {
+        expect(request.protocol).toBe(IPC_PROTOCOL);
+        expect(validateRequest(request)).toBeUndefined();
+      } else {
+        expect(validateRequest(request)).not.toBeUndefined();
+      }
+    }
   });
 });
