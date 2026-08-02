@@ -32,7 +32,7 @@ export async function main(): Promise<number> {
     const invalid = validateRequest(request);
     if (invalid !== undefined) {
       writeError(makeProtocolError(invalid));
-      return 1;
+      return 0;
     }
   } catch (error) {
     writeError(
@@ -40,7 +40,7 @@ export async function main(): Promise<number> {
         ? new HerdrMathError("renderer_input_limit", {}, true)
         : new HerdrMathError("renderer_input_limit", {})
     );
-    return 1;
+    return 0;
   }
   const options = request.options ?? {};
   if (request.kind === "formulas") {
