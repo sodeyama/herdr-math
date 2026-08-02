@@ -40,6 +40,8 @@ terminal-math render -          # read from stdin
 - [Architecture](docs/architecture.md)
 - [Compatibility](docs/compatibility.md)
 - [Getting started and troubleshooting](docs/getting-started.md)
+- [Release checklist](docs/RELEASE.md)
+- [Post-V2 backlog](docs/backlog.md)
 - [Privacy](PRIVACY.md)
 - [Security](SECURITY.md)
 - [Support](SUPPORT.md)
