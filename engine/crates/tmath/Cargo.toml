@@ -15,4 +15,5 @@ workspace = true
 [dependencies]
 tmath-core = { path = "../tmath-core" }
 base64 = { workspace = true }
+rustix = { workspace = true }
 serde_json = { workspace = true }

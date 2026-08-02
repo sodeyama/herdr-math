@@ -5,7 +5,8 @@
 //! a real Kitty-graphics terminal — places the rendered image as a
 //! scrollback-anchored placement in the main buffer. When stdout is not a
 //! terminal, it reports the bounded response instead. `tmath diagnose` reports
-//! local capability status.
+//! local capability status. `tmath agent` watches a tmux pane running a coding
+//! agent and shows each finished answer (with its math) in a split viewer pane.
 
 use std::env;
 use std::fs::File;
@@ -24,6 +25,8 @@ use tmath_core::terminal::{StdioTty, Terminal};
 
 use crate::render::{render_document_text, renderer_worker_path};
 
+mod agent_viewer;
+mod agent_watcher;
 mod render;
 
 fn main() {
@@ -46,6 +49,8 @@ fn run() -> Result<i32, String> {
     match command.as_str() {
         "render" => render(&args[1..]),
         "diagnose" => diagnose(&args[1..]),
+        "agent" => agent_watcher::run_agent(&args[1..]),
+        "agent-viewer" => agent_viewer::run_agent_viewer(&args[1..]),
         "--help" | "-h" | "help" => {
             print!("{}", help_text());
             Ok(0)
@@ -62,14 +67,20 @@ fn help_text() -> String {
     format!(
         "tmath {version} — render Markdown + LaTeX as scrollback-anchored images.\n\
          \n\
-         USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
+         USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath agent [OPTIONS]\n  tmath agent-viewer <socket-path>\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
          \n\
-         OPTIONS:\n  --content-width <px>  Render width in pixels (default 480)\n\
-         \x20 --font-size <px>      Base font size in pixels (default 14)\n\
+         OPTIONS (render):\n  --content-width <px>  Render width in pixels (default 480)\n  --font-size <px>      Base font size in pixels (default 14)\n\
+         \n\
+         OPTIONS (agent):\n  --source-pane <id>  tmux pane to watch (default: current pane)\n  --percent <p>       Viewer split width in percent (default 35)\n  --wait-ms <ms>      Answer settle debounce (default 600)\n  --poll-ms <ms>      Pane poll interval (default 250)\n  --history <lines>   Scrollback lines to capture (default 500)\n\
          \n\
          With `-`, the document is read from stdin. When stdout is a terminal\n\
          with Kitty graphics support, the image is placed in the main buffer so\n\
-         it scrolls with the shell scrollback; `q` or Ctrl-C exits.\n",
+         it scrolls with the shell scrollback; `q` or Ctrl-C exits.\n\
+         \n\
+         `tmath agent` runs inside tmux, watches a pane running a coding agent\n\
+         (Claude Code, Codex, opencode, and similar), and shows each finished\n\
+         answer as Markdown + rendered math in a right-hand viewer pane.\n\
+         `tmath agent-viewer` is the helper that renders into that pane.\n",
         version = env!("CARGO_PKG_VERSION")
     )
 }
@@ -410,7 +421,10 @@ mod tests {
         let help = help_text();
         assert!(help.contains("render"));
         assert!(help.contains("diagnose"));
+        assert!(help.contains("agent"));
+        assert!(help.contains("agent-viewer"));
         assert!(help.contains("--content-width"));
         assert!(help.contains("--font-size"));
+        assert!(help.contains("--source-pane"));
     }
 }
