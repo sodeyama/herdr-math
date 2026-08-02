@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { deriveStateKey } from "../../src/boundary/fingerprint-builder.js";
 import type { SupportedAgent } from "../../src/boundary/fingerprint-schema.js";
+import { parsePluginConfig } from "../../src/config/plugin-config.js";
 import { failure, success, type OperationResult, type RenderedImage } from "../../src/core/contracts.js";
 import { HerdrMathError, serializeError } from "../../src/core/errors.js";
 import {
@@ -47,8 +48,8 @@ afterEach(async () => {
 });
 
 describe("agent status worker", () => {
-  it("processes valid formula lifecycles for Claude Code, Codex, Pi, and OpenCode", async () => {
-    for (const agent of ["claude", "codex", "pi", "opencode"] satisfies SupportedAgent[]) {
+  it("processes valid formula lifecycles for Claude Code, Codex, Cursor, Pi, and OpenCode", async () => {
+    for (const agent of ["claude", "codex", "cursor", "pi", "opencode"] satisfies SupportedAgent[]) {
       const baseline = `BASELINE_SENTINEL_${agent}_with_unique_history`;
       const rig = await createRig({
         agent,
@@ -257,7 +258,7 @@ describe("agent status worker", () => {
   it("publishes a completed formula through the owned graphics viewer", async () => {
     const rig = await createRig();
     const client = new HerdrSocketClient(rig.server.socketPath);
-    const presenter = new ViewerPresenter(client, () => Promise.resolve());
+    const presenter = new ViewerPresenter(client);
     rig.dependencies.client = client;
     rig.dependencies.publish = (request) =>
       publishImage(request, {
@@ -368,6 +369,31 @@ describe("agent status worker", () => {
     expect(await loadState(rig)).toMatchObject({ generation: 2, pane_revision: 4, event_sequence: 14 });
   });
 
+  it("ignores panes outside configured allowed directories", async () => {
+    const rig = await createRig({ cwd: "/tmp/other-project" });
+    rig.dependencies.pluginConfig = parsePluginConfig({
+      allowed_directories: ["/Users/example/obsidian"]
+    });
+
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "working"))).toEqual({
+      ok: true,
+      value: { kind: "ignored", status: "working", reason: "directory_out_of_scope" }
+    });
+    expect(rig.publications).toHaveLength(0);
+  });
+
+  it("processes panes inside configured allowed directories", async () => {
+    const allowed = "/Users/example/obsidian";
+    const rig = await createRig({ cwd: `${allowed}/notes` });
+    rig.dependencies.pluginConfig = parsePluginConfig({ allowed_directories: [allowed] });
+
+    rig.server.setPaneOutput("w1:p1", "BASELINE");
+    expect(await process(rig, rig.server.transitionPane("w1:p1", "working"))).toMatchObject({
+      ok: true,
+      value: { kind: "baseline_stored" }
+    });
+  });
+
   it("captures the working snapshot before setup and authoritative lookups", async () => {
     const rig = await createRig();
     rig.server.setPaneOutput("w1:p1", "Immediate working baseline before a fast response.");
@@ -376,6 +402,7 @@ describe("agent status worker", () => {
     expect(
       await runAgentStatusHook({
         HERDR_PLUGIN_EVENT_JSON: JSON.stringify(event),
+        HERDR_PLUGIN_CONFIG_DIR: rig.directory,
         HERDR_PLUGIN_STATE_DIR: rig.directory,
         HERDR_SOCKET_PATH: rig.server.socketPath
       })
@@ -434,8 +461,8 @@ describe("agent status worker", () => {
       value: { kind: "ignored", status: "working", reason: "no_agent" }
     });
 
-    rig.server.updatePane("w1:p1", { agent: "cursor", agent_session: null, agent_status: "working" });
-    expect(await process(rig, statusEvent("w1", "w1:p1", "working", "cursor"))).toEqual({
+    rig.server.updatePane("w1:p1", { agent: "hermes", agent_session: null, agent_status: "working" });
+    expect(await process(rig, statusEvent("w1", "w1:p1", "working", "hermes"))).toEqual({
       ok: true,
       value: { kind: "ignored", status: "working", reason: "agent_unsupported" }
     });
@@ -676,6 +703,7 @@ async function createRig(overrides: Partial<FakePaneState> = {}): Promise<TestRi
     stateDirectory: directory,
     sessionIdentity: server.socketPath,
     secret: SECRET,
+    pluginConfig: { allowedDirectories: [] },
     now: () => NOW,
     sleep: () => Promise.resolve(),
     timing: { completionDebounceMs: 0, stableReadIntervalMs: 0 },

@@ -178,6 +178,7 @@ export function diagnosticNotChecked(): readonly DiagnosticCheck[] {
     "graphics",
     "cell_size",
     "viewer_ownership",
+    "directory_scope",
     "terminal_support"
   ].map((id) => diagnosticCheck(id, "info", `${id}_not_checked`, "This capability was not checked."));
 }

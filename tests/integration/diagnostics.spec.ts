@@ -65,6 +65,7 @@ describe("privacy-safe diagnostics", () => {
       "renderer_ok",
       "graphics_enabled",
       "cell_size_available",
+      "directory_scope_unrestricted",
       "viewer_owned",
       "terminal_unverified"
     ]);

@@ -14,7 +14,7 @@ export const FINGERPRINT_SCHEMA_LIMITS = Object.freeze({
 });
 
 export type FingerprintDigest = string;
-export type SupportedAgent = "claude" | "codex" | "pi" | "opencode";
+export type SupportedAgent = "claude" | "codex" | "cursor" | "pi" | "opencode";
 export type LifecycleAuthority = "screen_detection" | "integration_hook";
 
 export interface PrefixCheckpointV1 {

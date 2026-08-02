@@ -42,6 +42,8 @@ export interface HerdrPaneSnapshot {
   agentSession: HerdrAgentSessionRef | null;
   status: AgentStatus;
   revision: number;
+  cwd?: string | null;
+  foregroundCwd?: string | null;
   title?: string | null;
   tokens?: Readonly<Record<string, string>>;
 }
@@ -136,6 +138,22 @@ export interface HerdrGraphicsSetRequest {
   };
 }
 
+export interface HerdrPaneScrollInfo {
+  offsetFromBottom: number;
+  maxOffsetFromBottom: number;
+  viewportRows: number;
+}
+
+export interface HerdrPaneScrollChangedEvent {
+  paneId: string;
+  workspaceId: string;
+  scroll: HerdrPaneScrollInfo;
+}
+
+export interface HerdrEventSubscription {
+  close(): void;
+}
+
 type HerdrRequest =
   | { id: string; method: "ping"; params: Record<string, never> }
   | { id: string; method: "agent.get"; params: { target: string } }
@@ -163,6 +181,13 @@ type HerdrRequest =
         | { pane_id: string; source: "recent_unwrapped"; format: "ansi"; lines: number; strip_ansi: false };
     }
   | { id: string; method: "pane.report_metadata"; params: { pane_id: string } & HerdrPaneMetadataReport }
+  | {
+      id: string;
+      method: "events.subscribe";
+      params: {
+        subscriptions: Array<{ type: "pane.scroll_changed"; pane_id: string } | { type: "layout.updated" }>;
+      };
+    }
   | {
       id: string;
       method: "plugin.pane.open";
@@ -422,6 +447,106 @@ export class HerdrSocketClient {
     return this.#request(outbound, this.#paneGraphicsTimeoutMs, parseOkResult, parseGraphicsRemoteError);
   }
 
+  subscribePaneScroll(
+    paneId: string,
+    onEvent: (event: HerdrPaneScrollChangedEvent) => void
+  ): OperationResult<HerdrEventSubscription> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(paneId)) return protocolFailure();
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "events.subscribe",
+      params: { subscriptions: [{ type: "pane.scroll_changed", pane_id: paneId }] }
+    };
+    return this.#openEventSubscription(outbound, (parsed) => parseScrollSubscriptionEvent(parsed, paneId), onEvent);
+  }
+
+  subscribePaneLayout(
+    viewerPaneId: string,
+    workspaceId: string,
+    onEvent: (pane: { width: number; height: number }) => void
+  ): OperationResult<HerdrEventSubscription> {
+    if (!isSocketPath(this.socketPath) || !isIdentifier(viewerPaneId) || !isIdentifier(workspaceId)) {
+      return protocolFailure();
+    }
+    const outbound: HerdrRequest = {
+      id: randomUUID(),
+      method: "events.subscribe",
+      params: { subscriptions: [{ type: "layout.updated" }] }
+    };
+    return this.#openEventSubscription(
+      outbound,
+      (parsed) => parseLayoutUpdatedPane(parsed, viewerPaneId, workspaceId),
+      onEvent
+    );
+  }
+
+  #connect(): Socket | undefined {
+    try {
+      return createConnection({ path: this.socketPath });
+    } catch {
+      return undefined;
+    }
+  }
+
+  #openEventSubscription<T>(
+    outbound: HerdrRequest,
+    parse: (parsed: unknown) => T | null,
+    onEvent: (value: T) => void
+  ): OperationResult<HerdrEventSubscription> {
+    const socket = this.#connect();
+    if (socket === undefined) return protocolFailure(true);
+
+    let acknowledged = false;
+    let buffer = Buffer.alloc(0);
+    let closed = false;
+
+    const close = (): void => {
+      if (closed) return;
+      closed = true;
+      socket.destroy();
+    };
+
+    socket.once("connect", () => {
+      try {
+        socket.write(`${JSON.stringify(outbound)}\n`);
+      } catch {
+        close();
+      }
+    });
+
+    socket.on("data", (chunk: Buffer) => {
+      if (closed) return;
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.byteLength > this.#responseBytes) {
+        close();
+        return;
+      }
+      let newlineOffset = buffer.indexOf(0x0a);
+      while (newlineOffset !== -1) {
+        let line = buffer.subarray(0, newlineOffset);
+        buffer = buffer.subarray(newlineOffset + 1);
+        if (line.at(-1) === 0x0d) line = line.subarray(0, -1);
+        newlineOffset = buffer.indexOf(0x0a);
+        if (line.byteLength === 0) continue;
+        if (!acknowledged) {
+          acknowledged = true;
+          continue;
+        }
+        try {
+          const parsed: unknown = JSON.parse(UTF8_DECODER.decode(line));
+          const event = parse(parsed);
+          if (event !== null) onEvent(event);
+        } catch {
+          // Ignore malformed push frames so the subscription stays alive.
+        }
+      }
+    });
+
+    socket.once("error", close);
+    socket.once("end", close);
+    socket.once("close", close);
+    return success({ close });
+  }
   #request<T>(
     outbound: HerdrRequest,
     timeoutMs: number,
@@ -429,10 +554,8 @@ export class HerdrSocketClient {
     parseRemoteError?: (error: HerdrWireError) => T
   ): Promise<OperationResult<T>> {
     return new Promise((resolve) => {
-      let socket: Socket;
-      try {
-        socket = createConnection({ path: this.socketPath });
-      } catch {
+      const socket = this.#connect();
+      if (socket === undefined) {
         resolve(protocolFailure(true));
         return;
       }
@@ -577,6 +700,8 @@ function parseAgentGetResult(value: unknown): HerdrAgentSnapshot {
 function parsePaneInfo(pane: Record<string, unknown>): HerdrPaneSnapshot {
   const agentSession = parseAgentSession(pane.agent_session);
   const tokens = parseMetadataTokens(pane.tokens);
+  const cwd = parseOptionalAbsolutePath(pane.cwd);
+  const foregroundCwd = parseOptionalAbsolutePath(pane.foreground_cwd);
   if (
     !isIdentifier(pane.pane_id) ||
     !isIdentifier(pane.terminal_id) ||
@@ -587,6 +712,8 @@ function parsePaneInfo(pane: Record<string, unknown>): HerdrPaneSnapshot {
     (pane.agent !== undefined && pane.agent !== null && !isIdentifier(pane.agent)) ||
     agentSession === undefined ||
     tokens === undefined ||
+    cwd === undefined ||
+    foregroundCwd === undefined ||
     (pane.title !== undefined && pane.title !== null && typeof pane.title !== "string") ||
     !Number.isSafeInteger(pane.revision) ||
     (pane.revision as number) < 0
@@ -604,9 +731,24 @@ function parsePaneInfo(pane: Record<string, unknown>): HerdrPaneSnapshot {
     status: pane.agent_status,
     revision: pane.revision as number
   };
+  if (cwd !== null) snapshot.cwd = cwd;
+  if (foregroundCwd !== null) snapshot.foregroundCwd = foregroundCwd;
   if (pane.title !== undefined) snapshot.title = pane.title;
   if (tokens !== null) snapshot.tokens = tokens;
   return Object.freeze(snapshot);
+}
+
+function parseOptionalAbsolutePath(value: unknown): string | null | undefined {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (typeof value !== "string" || value.length === 0 || value.includes("\0") || !isAbsolutePath(value)) {
+    throw new HerdrMathError("herdr_protocol_error");
+  }
+  return value;
+}
+
+function isAbsolutePath(value: string): boolean {
+  return value.startsWith("/") || /^[A-Za-z]:[\\/]/u.test(value);
 }
 
 function parsePaneListResult(value: unknown): readonly HerdrPaneSnapshot[] {
@@ -694,6 +836,51 @@ function parseLayoutRect(value: unknown): HerdrLayoutRect {
 
 function parseOkResult(value: unknown): void {
   if (!isRecord(value) || value.type !== "ok") throw new HerdrMathError("herdr_protocol_error");
+}
+
+function parseScrollSubscriptionEvent(value: unknown, paneId: string): HerdrPaneScrollChangedEvent | null {
+  if (!isRecord(value) || value.event !== "pane.scroll_changed" || !isRecord(value.data)) return null;
+  const data = value.data;
+  if (data.pane_id !== paneId || !isIdentifier(data.workspace_id) || !isRecord(data.scroll)) return null;
+  const scroll = data.scroll;
+  if (
+    !isUint64(scroll.offset_from_bottom) ||
+    !isUint64(scroll.max_offset_from_bottom) ||
+    !isUint64(scroll.viewport_rows)
+  ) {
+    return null;
+  }
+  return {
+    paneId: data.pane_id,
+    workspaceId: data.workspace_id,
+    scroll: {
+      offsetFromBottom: scroll.offset_from_bottom,
+      maxOffsetFromBottom: scroll.max_offset_from_bottom,
+      viewportRows: scroll.viewport_rows
+    }
+  };
+}
+
+function parseLayoutUpdatedPane(
+  value: unknown,
+  viewerPaneId: string,
+  workspaceId: string
+): { width: number; height: number } | null {
+  if (!isRecord(value) || !isRecord(value.data) || !isRecord(value.data.layout)) return null;
+  const layout = value.data.layout;
+  if (layout.workspace_id !== workspaceId || !Array.isArray(layout.panes)) return null;
+  for (const pane of layout.panes) {
+    if (!isRecord(pane) || pane.pane_id !== viewerPaneId || !isRecord(pane.rect)) continue;
+    const width = pane.rect.width;
+    const height = pane.rect.height;
+    if (!isUint16(width) || !isUint16(height) || width <= 0 || height <= 0) return null;
+    return { width, height };
+  }
+  return null;
+}
+
+function isUint64(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function parseGraphicsRemoteError(error: HerdrWireError): never {

@@ -91,7 +91,51 @@ export function scanLatex(input: string, overrides: Partial<ScannerLimits> = {})
       continue;
     }
 
-    if (inlineTicks > 0 || input[index] !== "$" || isEscaped(input, index)) {
+    if (inlineTicks > 0) {
+      index += 1;
+      continue;
+    }
+
+    // \( ... \) and \[ ... \] delimiters
+    if (input[index] === "\\" && !isEscaped(input, index)) {
+      const next = input[index + 1];
+      if (next === "(" || next === "[") {
+        const closing = next === "(" ? "\\)" : "\\]";
+        const contentStart = index + 2;
+        let cursor = contentStart;
+        while (cursor < input.length) {
+          if (input[cursor] === "\n" && next === "(") {
+            break;
+          }
+          if (input.startsWith(closing, cursor)) {
+            const latex = input.slice(contentStart, cursor).trim();
+            const formulaCharacters = [...latex].length;
+            if (formulaCharacters > limits.maxFormulaCharacters) {
+              throw new ScannerLimitError("formula_characters", limits.maxFormulaCharacters, formulaCharacters);
+            }
+            if (latex.length > 0) {
+              formulas.push({
+                latex,
+                display: next === "[",
+                start: index,
+                end: cursor + closing.length,
+                delimiter: next === "(" ? "paren" : "bracket"
+              });
+              if (formulas.length > limits.maxFormulaCount) {
+                throw new ScannerLimitError("formula_count", limits.maxFormulaCount, formulas.length);
+              }
+            }
+            cursor += closing.length;
+            break;
+          }
+          cursor += 1;
+        }
+        index = cursor;
+        continue;
+      }
+    }
+
+    if (input[index] !== "$" || isEscaped(input, index)) {
       index += 1;
       continue;
     }

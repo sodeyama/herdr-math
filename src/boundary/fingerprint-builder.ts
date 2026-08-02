@@ -29,7 +29,7 @@ export interface FingerprintBuildMetadata {
 
 export const FINGERPRINT_EXPIRY_MS = POLICY_LIMITS.fingerprintExpiryMs;
 
-const SUPPORTED_AGENTS = new Set<SupportedAgent>(["claude", "codex", "pi", "opencode"]);
+const SUPPORTED_AGENTS = new Set<SupportedAgent>(["claude", "codex", "cursor", "pi", "opencode"]);
 const LIFECYCLE_AUTHORITIES = new Set<LifecycleAuthority>(["screen_detection", "integration_hook"]);
 const SUFFIX_WINDOW_LENGTHS = [80, 128, 256, 512] as const;
 

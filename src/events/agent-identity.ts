@@ -4,6 +4,7 @@ import type { HerdrPaneSnapshot } from "../herdr/socket-client.js";
 export const AGENT_AUTHORITIES: Readonly<Record<SupportedAgent, LifecycleAuthority>> = Object.freeze({
   claude: "screen_detection",
   codex: "screen_detection",
+  cursor: "integration_hook",
   pi: "integration_hook",
   opencode: "integration_hook"
 });

@@ -31,7 +31,9 @@ describe("coding-agent final response extraction", () => {
   it("covers every supported coding agent with unique synthetic cases", () => {
     expect(corpus.schemaVersion).toBe(1);
     expect(new Set(corpus.cases.map(({ id }) => id)).size).toBe(corpus.cases.length);
-    expect(new Set(corpus.cases.map(({ agent }) => agent))).toEqual(new Set(["claude", "codex", "pi", "opencode"]));
+    expect(new Set(corpus.cases.map(({ agent }) => agent))).toEqual(
+      new Set(["claude", "codex", "cursor", "pi", "opencode"])
+    );
   });
 
   it.each(corpus.cases)("extracts only the normalized final response for $id", (testCase) => {
@@ -76,7 +78,7 @@ describe("coding-agent final response extraction", () => {
       error: { code: "conclusion_boundary_failed", retryable: false }
     });
 
-    const ambiguous = "────────────────────────\nOnly one boundary with $x$.";
+    const ambiguous = "────────────────────────\n\n─ Worked for 1m 0s ─────────────────────────────";
     const ambiguousSnapshot = parseMatchingAnsiSnapshot(ambiguous, ambiguous);
     expect(ambiguousSnapshot.ok).toBe(true);
     if (!ambiguousSnapshot.ok) return;
@@ -88,6 +90,34 @@ describe("coding-agent final response extraction", () => {
         snapshot: ambiguousSnapshot.value
       })
     ).toEqual({ ok: false, error: { code: "conclusion_boundary_failed", retryable: false } });
+
+    const modernCodex =
+      "────────────────────────────────────────────────────────────────\n• Final answer with $E=mc^2$.\n\n─ Worked for 1m 0s ─────────────────────────────\n\n› next prompt";
+    const modernSnapshot = parseMatchingAnsiSnapshot(modernCodex, modernCodex);
+    expect(modernSnapshot.ok).toBe(true);
+    if (!modernSnapshot.ok) return;
+    expect(
+      extractFinalResponse({
+        agent: "codex",
+        answer: modernCodex,
+        answerStartOffset: 0,
+        snapshot: modernSnapshot.value
+      })
+    ).toMatchObject({ ok: true, value: { text: "Final answer with $E=mc^2$." } });
+  });
+
+  it("skips a leading Codex prompt echo before extracting multiline display math", () => {
+    const answer = "› $$で描画して\n\n\n• $$\n  E = mc^2\n  $$\n\n\n";
+    const snapshot = parseMatchingAnsiSnapshot(answer, answer);
+    expect(snapshot.ok).toBe(true);
+    if (!snapshot.ok) return;
+
+    const result = extractFinalResponse({ agent: "codex", answer, answerStartOffset: 0, snapshot: snapshot.value });
+    expect(result).toMatchObject({ ok: true, value: { text: "• $$\nE = mc^2\n$$" } });
+    if (!result.ok) return;
+    expect(scanLatex(result.value.text).map(({ latex, display }) => ({ latex, display }))).toEqual([
+      { latex: "E = mc^2", display: true }
+    ]);
   });
 
   it("requires a styled Pi boundary and footer for suffix recovery", () => {

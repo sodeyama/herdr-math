@@ -9,7 +9,7 @@ import {
 import { HerdrMathError } from "../core/errors.js";
 import { POLICY_LIMITS } from "../core/limits.js";
 
-const AGENTS = new Set(["claude", "codex", "pi", "opencode"]);
+const AGENTS = new Set(["claude", "codex", "cursor", "pi", "opencode"]);
 const AUTHORITIES = new Set(["screen_detection", "integration_hook"]);
 
 export function parseFingerprintState(value: unknown): FingerprintStateV1 {

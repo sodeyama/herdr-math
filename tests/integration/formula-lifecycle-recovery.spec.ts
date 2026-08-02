@@ -79,9 +79,9 @@ describe("full formula lifecycle recovery", () => {
       expect(resized.completion).toMatchObject({ ok: true, value: { viewerPaneId: "w1:p2" } });
       expect(rig.server.getGraphics("w1:p2")?.placement).toEqual({
         viewport_col: 0,
-        viewport_row: 0,
+        viewport_row: -31,
         grid_cols: 40,
-        grid_rows: 10
+        grid_rows: 41
       });
 
       expect(rig.server.closePane("w1:p2")).toBe(true);

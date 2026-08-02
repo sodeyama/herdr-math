@@ -1,3 +1,5 @@
+import { isDirectoryAllowed, resolvePaneWorkingDirectory } from "../config/directory-scope.js";
+import type { PluginConfig } from "../config/plugin-config.js";
 import { buildBaselineFingerprint, deriveStateKey } from "../boundary/fingerprint-builder.js";
 import {
   fingerprintDigest,
@@ -58,6 +60,7 @@ export interface ImagePublishRequest {
   generation: number;
   existingViewerPaneId?: string;
   image: RenderedImage;
+  document?: { text: string; formulas: readonly Formula[] };
 }
 
 export interface ImagePublishResult {
@@ -80,6 +83,7 @@ export interface AgentStatusWorkerDependencies {
   stateDirectory: string;
   sessionIdentity: string;
   secret: Uint8Array;
+  pluginConfig: Readonly<PluginConfig>;
   render(request: ResponseRenderRequest): Promise<OperationResult<RenderedImage>>;
   publish(request: ImagePublishRequest): Promise<OperationResult<ImagePublishResult>>;
   workingSnapshot?: HerdrPaneReadSnapshot;
@@ -92,7 +96,7 @@ export type AgentStatusWorkerOutcome =
   | {
       kind: "ignored";
       status: DecodedAgentStatusEvent["status"];
-      reason: "no_agent" | "agent_unsupported";
+      reason: "no_agent" | "agent_unsupported" | "directory_out_of_scope";
     }
   | { kind: "baseline_stored"; status: "working"; agent: SupportedAgent; generation: number }
   | {
@@ -138,7 +142,7 @@ interface CompletionPhase {
 interface StableRead {
   snapshot: HerdrPaneReadSnapshot;
   styledSnapshot: StyledTerminalSnapshot;
-  snapshotMode: "strict" | "pi_suffix" | "opencode_plain";
+  snapshotMode: "strict" | "pi_suffix" | "opencode_plain" | "cursor_plain";
   digest: string;
   styledDigest: string;
 }
@@ -192,6 +196,9 @@ async function resolveEvent(
   if (pane.agent === null) return success({ kind: "ignored", status: decoded.status, reason: "no_agent" });
   if (!isSupportedAgent(pane.agent)) {
     return success({ kind: "ignored", status: decoded.status, reason: "agent_unsupported" });
+  }
+  if (!isDirectoryAllowed(resolvePaneWorkingDirectory(pane), dependencies.pluginConfig.allowedDirectories)) {
+    return success({ kind: "ignored", status: decoded.status, reason: "directory_out_of_scope" });
   }
   if (pane.status !== decoded.status || (decoded.agentHint !== undefined && decoded.agentHint !== pane.agent)) {
     return safeFailure("event_invalid");
@@ -434,7 +441,8 @@ async function processCompletion(
     paths,
     dependencies,
     rendered.value,
-    formulas.length
+    formulas.length,
+    { text: finalResponse.value.text, formulas }
   );
 }
 
@@ -468,6 +476,10 @@ async function readStableCompletion(
     if (!styledSnapshot.ok && resolved.agent === "opencode") {
       styledSnapshot = parseMatchingAnsiSnapshot(read.value.text, read.value.text);
       if (styledSnapshot.ok) snapshotMode = "opencode_plain";
+    }
+    if (!styledSnapshot.ok && resolved.agent === "cursor") {
+      styledSnapshot = parseMatchingAnsiSnapshot(read.value.text, read.value.text);
+      if (styledSnapshot.ok) snapshotMode = "cursor_plain";
     }
     if (!styledSnapshot.ok) {
       snapshotMismatch = true;
@@ -504,7 +516,8 @@ async function commitFinal(
   paths: PaneStatePaths,
   dependencies: AgentStatusWorkerDependencies,
   image?: RenderedImage,
-  formulaCount = 0
+  formulaCount = 0,
+  document?: { text: string; formulas: readonly Formula[] }
 ): Promise<OperationResult<AgentStatusWorkerOutcome>> {
   const lock = await acquirePaneLock(paths, { eventType: authorization.status, now: currentTime(dependencies) });
   try {
@@ -529,7 +542,8 @@ async function commitFinal(
         workspaceId: resolved.decoded.workspaceId,
         generation: authorization.generation,
         ...(current?.viewer_pane_id === undefined ? {} : { existingViewerPaneId: current.viewer_pane_id }),
-        image
+        image,
+        ...(document === undefined ? {} : { document })
       });
       if (!published.ok) return failure(published.error);
       viewerPaneId = published.value.viewerPaneId;

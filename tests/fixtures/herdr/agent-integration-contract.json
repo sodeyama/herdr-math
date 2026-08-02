@@ -14,6 +14,11 @@
       "lifecycleAuthority": "screen_detection"
     },
     {
+      "id": "cursor",
+      "minimumIntegrationVersion": 1,
+      "lifecycleAuthority": "integration_hook"
+    },
+    {
       "id": "pi",
       "minimumIntegrationVersion": 6,
       "lifecycleAuthority": "integration_hook"

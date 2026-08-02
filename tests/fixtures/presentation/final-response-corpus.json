@@ -48,6 +48,14 @@
       "ansi": "\u001b[38;2;92;156;245m  ┃\u001b[0m prompt includes $p=0$\n\u001b[38;2;92;156;245m  ┃\u001b[0m\n\n\u001b[2m     → Read package.json\u001b[0m\n\n     The package is Herdr Math and $E=mc^2$.\n     A display equation follows.\n\n     $$a^2+b^2=c^2$$\n\n\u001b[38;2;92;156;245m     ▣\u001b[0m Build · Model · 1.0s\n\n  ┃\n  ╹────────\n  status",
       "expected": "The package is Herdr Math and $E=mc^2$. A display equation follows.\n\n$$a^2+b^2=c^2$$",
       "expectedFormulas": ["E=mc^2", "a^2+b^2=c^2"]
+    },
+    {
+      "id": "cursor-tool-footer",
+      "agent": "cursor",
+      "plain": "Grepped SupportedAgent in .\n\nRead src/presentation/final-response.ts\n\n  • The package is Herdr Math and $E=mc^2$.\n\n  A display equation follows.\n\n  $$a^2+b^2=c^2$$\n\n▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  1 task\n  Composer 2.5 Fast · 30.3% · 24 files edited\n  ~/git/herdr-math · main",
+      "ansi": "Grepped SupportedAgent in .\n\nRead src/presentation/final-response.ts\n\n  • The package is Herdr Math and $E=mc^2$.\n\n  A display equation follows.\n\n  $$a^2+b^2=c^2$$\n\n▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  1 task\n  Composer 2.5 Fast · 30.3% · 24 files edited\n  ~/git/herdr-math · main",
+      "expected": "The package is Herdr Math and $E=mc^2$.\n\nA display equation follows.\n\n$$a^2+b^2=c^2$$",
+      "expectedFormulas": ["E=mc^2", "a^2+b^2=c^2"]
     }
   ]
 }

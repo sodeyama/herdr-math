@@ -66,7 +66,7 @@ describe("integrated final response presentation", () => {
     30_000
   );
 
-  it("scrolls a long final message to its bottom through prevalidated frames", async () => {
+  it("presents a long final message as one frame with the bottom visible", async () => {
     const rig = await FullLifecycleRig.start("codex");
     rig.renderer = ({ text, formulas }) => renderResponse(text, formulas);
     try {
@@ -80,8 +80,10 @@ describe("integrated final response presentation", () => {
 
       expect(result.completion).toMatchObject({ ok: true, value: { kind: "image_published", formulaCount: 1 } });
       expect(rig.renderedResponses).toEqual([answer]);
-      expect(rig.server.graphicsUpdates.length).toBeGreaterThan(1);
-      expect(rig.server.getGraphics("w1:p2")).toEqual(rig.server.graphicsUpdates.at(-1));
+      expect(rig.server.graphicsUpdates.length).toBe(1);
+      const update = rig.server.graphicsUpdates[0];
+      expect(update?.placement.viewport_row).toBeLessThan(0);
+      expect(rig.server.getGraphics("w1:p2")).toEqual(update);
       expect(rig.server.requests.some(({ method }) => method === "pane.graphics.clear")).toBe(false);
       expect(rig.server.getPane("w1:p1")?.focused).toBe(true);
     } finally {

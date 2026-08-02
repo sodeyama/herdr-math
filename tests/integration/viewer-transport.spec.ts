@@ -18,6 +18,7 @@ import {
   startViewerTransport,
   type ViewerTransportServer
 } from "../../src/viewer/transport.js";
+import type { ViewerRenderDocument } from "../../src/viewer/transport-protocol.js";
 import { FakeHerdrServer } from "../support/fake-herdr-server.js";
 import { createFakePane } from "../support/fake-herdr-types.js";
 
@@ -91,7 +92,7 @@ describe("private viewer transport", () => {
       sourceToken,
       viewerPaneId: "w1:p2",
       workspaceId: "w1",
-      presenter: new ViewerPresenter(new HerdrSocketClient(server.socketPath), () => Promise.resolve())
+      presenter: new ViewerPresenter(new HerdrSocketClient(server.socketPath))
     });
     transports.add(transport);
     expect((await stat(transport.socketPath)).mode & 0o777).toBe(0o600);
@@ -106,7 +107,7 @@ describe("private viewer transport", () => {
       image
     });
     expect(result).toEqual({ ok: true, value: { viewerPaneId: "w1:p2" } });
-    expect(server.graphicsUpdates.length).toBeGreaterThan(1);
+    expect(server.graphicsUpdates.length).toBe(1);
     expect((await stat(transport.socketPath)).isSocket()).toBe(true);
     expect(await readdir(directory)).toEqual([basename(transport.socketPath)]);
 
@@ -131,6 +132,46 @@ describe("private viewer transport", () => {
     await transport.close();
     transports.delete(transport);
     await expect(stat(transport.socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("carries the render document so the viewer can re-render after a resize", async () => {
+    const directory = await mkdtemp("/tmp/hm-doc-");
+    directories.push(directory);
+    const server = await FakeHerdrServer.start({
+      panes: [createFakePane(), createFakePane({ pane_id: "w1:p2", terminal_id: "term-2", agent: null })]
+    });
+    servers.add(server);
+    const sourceToken = deriveViewerSourceToken(server.socketPath, "w1:p1");
+    let receivedDocument: ViewerRenderDocument | undefined;
+    const transport = await startViewerTransport({
+      stateDirectory: directory,
+      sourceToken,
+      viewerPaneId: "w1:p2",
+      workspaceId: "w1",
+      presenter: new ViewerPresenter(new HerdrSocketClient(server.socketPath)),
+      onDocument: (document) => {
+        receivedDocument = document;
+      }
+    });
+    transports.add(transport);
+
+    const image = await png(480, 200);
+    const document: ViewerRenderDocument = {
+      text: "E=mc^2",
+      formulas: [{ latex: "E=mc^2", display: true, start: 0, end: 6 }]
+    };
+    const result = await sendViewerPresentation({
+      stateDirectory: directory,
+      sourceToken,
+      viewerPaneId: "w1:p2",
+      workspaceId: "w1",
+      generation: 1,
+      image,
+      document
+    });
+    expect(result).toEqual({ ok: true, value: { viewerPaneId: "w1:p2" } });
+    expect(receivedDocument).toEqual(document);
+    expect(server.graphicsUpdates).toHaveLength(1);
   });
 });
 

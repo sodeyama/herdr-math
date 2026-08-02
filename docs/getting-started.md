@@ -11,7 +11,7 @@ an immutable v0.1.0 tag exists.
 - Node.js 22 or later and npm
 - Ghostty 1.3.1 for the verified outer-terminal path
 - Herdr's experimental Kitty graphics setting
-- A supported coding agent: Claude Code, Codex CLI, Pi, or OpenCode
+- A supported coding agent: Claude Code, Codex CLI, Cursor, Pi, or OpenCode
 
 Herdr Math does not call Ghostty APIs. Other terminals may work, but they are not verified for v0.1.
 
@@ -57,6 +57,29 @@ herdr config check
 herdr server reload-config
 ```
 
+## Limit to specific directories
+
+By default Herdr Math runs in every supported agent pane. To restrict it to one or more project roots, create
+`config.json` in the plugin config directory:
+
+```sh
+herdr plugin config-dir io.github.sodeyama.herdr-math
+```
+
+Example `config.json`:
+
+```json
+{
+  "allowed_directories": [
+    "/Users/you/docs/obsidian"
+  ]
+}
+```
+
+Copy [docs/config.example.json](config.example.json) as a starting point. Each entry must be an absolute path.
+Herdr Math compares the pane working directory against those roots and ignores panes outside them. Omit the file,
+or use an empty `allowed_directories` array, to keep the default unrestricted behavior.
+
 ## Install coding-agent integrations
 
 Install only the agents you use:
@@ -64,12 +87,13 @@ Install only the agents you use:
 ```sh
 herdr integration install claude
 herdr integration install codex
+herdr integration install cursor
 herdr integration install pi
 herdr integration install opencode
 herdr integration status
 ```
 
-The verified minimum integration versions are Claude Code v7, Codex v6, Pi v6, and OpenCode v9. Herdr reports
+The verified minimum integration versions are Claude Code v7, Codex v6, Cursor v1, Pi v6, and OpenCode v9. Herdr reports
 whether each installed integration is current.
 
 ## First use
@@ -145,7 +169,7 @@ removal and config/state retention will be finalized by the immutable-tag uninst
 
 ## Known limits
 
-- Only `$...$` and `$$...$$` math delimiters are parsed; this is not a general Markdown renderer.
+- Only `$...$` and `$$...$$` math delimiters are parsed, and only the allowlisted Markdown subset (headings, emphasis, lists, quotes, tables, code blocks, inert links) is rendered by a local parser. Raw HTML, images, scripts, custom CSS, and color directives are not supported.
 - Only the visible final response is presented; reasoning, tool output, progress, prompts, and terminal chrome are excluded or cause a fail-closed result when their boundary is uncertain.
 - The response background is transparent, while custom foreground colors are not configurable in v0.1.
 - Formulas in code spans, fenced code, prices, shell variables, and ambiguous delimiter runs are rejected.

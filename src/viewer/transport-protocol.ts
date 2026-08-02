@@ -12,6 +12,20 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const RENDERER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const SOCKET_PATH_BYTES = 103;
+const DELIMITERS = new Set(["dollar", "paren", "bracket"]);
+
+export interface ViewerRenderFormula {
+  latex: string;
+  display: boolean;
+  start: number;
+  end: number;
+  delimiter?: "dollar" | "paren" | "bracket";
+}
+
+export interface ViewerRenderDocument {
+  text: string;
+  formulas: readonly ViewerRenderFormula[];
+}
 
 export interface ViewerTransportRequest {
   stateDirectory: string;
@@ -20,6 +34,7 @@ export interface ViewerTransportRequest {
   workspaceId: string;
   generation: number;
   image: RenderedImage;
+  document?: ViewerRenderDocument;
 }
 
 export interface ViewerTransportSuccess {
@@ -53,7 +68,10 @@ export function encodeViewerTransportRequest(
         height: encoded.value.height,
         bytes: request.image.bytes,
         renderer: request.image.renderer
-      }
+      },
+      ...(request.document === undefined
+        ? {}
+        : { document: encodeRenderDocument(request.document, "viewer_ownership_failed") })
     })}\n`;
     const payloadBytes = Buffer.byteLength(payload, "utf8");
     if (payloadBytes > POLICY_LIMITS.viewerTransportBytes) {
@@ -68,7 +86,7 @@ export function encodeViewerTransportRequest(
 export function decodeViewerTransportRequest(
   source: string,
   expected: Pick<ViewerTransportRequest, "sourceToken" | "viewerPaneId" | "workspaceId">
-): OperationResult<{ image: RenderedImage }> {
+): OperationResult<{ image: RenderedImage; document?: ViewerRenderDocument }> {
   try {
     const value: unknown = JSON.parse(source);
     if (!isRecord(value) || !isRecord(value.image)) throw new HerdrMathError("viewer_ownership_failed");
@@ -107,7 +125,9 @@ export function decodeViewerTransportRequest(
       renderer: image.renderer
     };
     const validated = encodeValidatedPng(rendered);
-    return validated.ok ? success({ image: rendered }) : failure(validated.error);
+    if (!validated.ok) return failure(validated.error);
+    const document = value.document === undefined ? undefined : decodeRenderDocument(value.document);
+    return success({ image: rendered, ...(document === undefined ? {} : { document }) });
   } catch (error) {
     return failure(serializeError(error));
   }
@@ -170,6 +190,83 @@ export function transportLimitFailure(limit: number, actual: number): ViewerTran
       new HerdrMathError("image_too_large", { limit_kind: "viewer_transport_bytes", limit, actual })
     )
   };
+}
+
+function encodeRenderDocument(
+  renderDocument: ViewerRenderDocument,
+  failureCode: HerdrMathError["code"]
+): ViewerRenderDocument {
+  if (typeof renderDocument?.text !== "string" || !Array.isArray(renderDocument.formulas)) {
+    throw new HerdrMathError(failureCode);
+  }
+  const textBytes = Buffer.byteLength(renderDocument.text, "utf8");
+  if (textBytes > POLICY_LIMITS.responseDocumentBytes) throw new HerdrMathError(failureCode);
+  const formulas = renderDocument.formulas as readonly ViewerRenderFormula[];
+  if (formulas.length === 0 || formulas.length > POLICY_LIMITS.formulasPerAnswer) {
+    throw new HerdrMathError(failureCode);
+  }
+  for (const formula of formulas) {
+    const latex = formula.latex;
+    const delimiter = formula.delimiter;
+    if (
+      typeof latex !== "string" ||
+      latex.trim() === "" ||
+      typeof formula.display !== "boolean" ||
+      !Number.isSafeInteger(formula.start) ||
+      !Number.isSafeInteger(formula.end) ||
+      formula.start < 0 ||
+      formula.end <= formula.start ||
+      [...latex].length > POLICY_LIMITS.charactersPerFormula ||
+      (delimiter !== undefined && !DELIMITERS.has(delimiter))
+    ) {
+      throw new HerdrMathError(failureCode);
+    }
+  }
+  return Object.freeze({ text: renderDocument.text, formulas: Object.freeze([...formulas]) });
+}
+
+function decodeRenderDocument(value: unknown): ViewerRenderDocument {
+  if (!isRecord(value) || typeof value.text !== "string" || !Array.isArray(value.formulas)) {
+    throw new HerdrMathError("viewer_ownership_failed");
+  }
+  const textBytes = Buffer.byteLength(value.text, "utf8");
+  if (textBytes > POLICY_LIMITS.responseDocumentBytes || value.formulas.length === 0) {
+    throw new HerdrMathError("viewer_ownership_failed");
+  }
+  if (value.formulas.length > POLICY_LIMITS.formulasPerAnswer) {
+    throw new HerdrMathError("viewer_ownership_failed");
+  }
+  const formulas: ViewerRenderFormula[] = [];
+  for (const raw of value.formulas as unknown[]) {
+    if (!isRecord(raw)) throw new HerdrMathError("viewer_ownership_failed");
+    const latex = raw.latex;
+    const display = raw.display;
+    const start = raw.start;
+    const end = raw.end;
+    const delimiter = raw.delimiter;
+    if (
+      typeof latex !== "string" ||
+      typeof display !== "boolean" ||
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end)
+    ) {
+      throw new HerdrMathError("viewer_ownership_failed");
+    }
+    const startNumber = start as number;
+    const endNumber = end as number;
+    if (startNumber < 0 || endNumber <= startNumber) {
+      throw new HerdrMathError("viewer_ownership_failed");
+    }
+    if (delimiter !== undefined && (typeof delimiter !== "string" || !DELIMITERS.has(delimiter))) {
+      throw new HerdrMathError("viewer_ownership_failed");
+    }
+    const formula: ViewerRenderFormula = { latex, display, start: startNumber, end: endNumber };
+    if (typeof delimiter === "string") {
+      formula.delimiter = delimiter as NonNullable<ViewerRenderFormula["delimiter"]>;
+    }
+    formulas.push(formula);
+  }
+  return { text: value.text, formulas };
 }
 
 function isSafeError(value: unknown): value is SafeErrorRecord {

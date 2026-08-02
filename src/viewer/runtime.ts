@@ -2,12 +2,21 @@ import { Buffer } from "node:buffer";
 
 import { failure, success, type OperationResult } from "../core/contracts.js";
 import { HerdrMathError, serializeError } from "../core/errors.js";
-import { HERDR_CLIENT_LIMITS, HerdrSocketClient, type HerdrPaneSnapshot } from "../herdr/socket-client.js";
+import { renderResponse } from "../renderer/index.js";
+import {
+  HERDR_CLIENT_LIMITS,
+  HerdrSocketClient,
+  type HerdrEventSubscription,
+  type HerdrPaneScrollChangedEvent,
+  type HerdrPaneSnapshot
+} from "../herdr/socket-client.js";
 import { createViewerMetadata, isViewerSourceToken, VIEWER_IDENTITY } from "./ownership.js";
 import { ViewerPresenter, type ViewerPresenterClient } from "./presenter.js";
 import { startViewerTransport, type ViewerTransportServer } from "./transport.js";
+import type { ViewerRenderDocument } from "./transport-protocol.js";
 
 const HERDR_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const RESIZE_DEBOUNCE_MS = 200;
 
 export interface ViewerEnvironment {
   HERDR_SOCKET_PATH?: string | undefined;
@@ -34,9 +43,24 @@ export interface ViewerReady {
 
 export interface ManagedViewerReady extends ViewerReady {
   transport: ViewerTransportServer;
+  subscription?: HerdrEventSubscription | undefined;
+  layoutSubscription?: HerdrEventSubscription | undefined;
+  presenter: ViewerPresenter;
 }
 
-export interface ManagedViewerClient extends ViewerMetadataClient, ViewerPresenterClient {}
+export type { ViewerTransportServer };
+
+export interface ManagedViewerClient extends ViewerMetadataClient, ViewerPresenterClient {
+  subscribePaneScroll?(
+    paneId: string,
+    onEvent: (event: HerdrPaneScrollChangedEvent) => void
+  ): OperationResult<HerdrEventSubscription>;
+  subscribePaneLayout?(
+    paneId: string,
+    workspaceId: string,
+    onEvent: (pane: { width: number; height: number }) => void
+  ): OperationResult<HerdrEventSubscription>;
+}
 
 export async function registerViewer(
   environment: ViewerEnvironment,
@@ -71,17 +95,98 @@ export async function startManagedViewer(
     const runtimeClient = client ?? new HerdrSocketClient(decoded.socketPath);
     const registered = await registerViewer(environment, runtimeClient);
     if (!registered.ok) return failure(registered.error);
+    const presenter = new ViewerPresenter(runtimeClient);
+    let currentDocument: ViewerRenderDocument | undefined;
     const transport = await startViewerTransport({
       stateDirectory,
       sourceToken: decoded.sourceToken,
       viewerPaneId: decoded.paneId,
       workspaceId: decoded.workspaceId,
-      presenter: new ViewerPresenter(runtimeClient)
+      presenter,
+      onDocument: (document) => {
+        currentDocument = document;
+      }
     });
-    return success({ ...registered.value, transport });
+    const subscription = startScrollSubscription(runtimeClient, presenter, decoded.paneId, decoded.workspaceId);
+    const layoutSubscription = startResizeSubscription(
+      runtimeClient,
+      presenter,
+      decoded.paneId,
+      decoded.workspaceId,
+      () => currentDocument
+    );
+    return success({ ...registered.value, transport, subscription, layoutSubscription, presenter });
   } catch (error) {
     return failure(serializeError(error));
   }
+}
+
+function startScrollSubscription(
+  client: ManagedViewerClient,
+  presenter: ViewerPresenter,
+  paneId: string,
+  workspaceId: string
+): HerdrEventSubscription | undefined {
+  if (typeof client.subscribePaneScroll !== "function") return undefined;
+  let lastOffsetFromBottom: number | undefined;
+  const result = client.subscribePaneScroll(paneId, (event: HerdrPaneScrollChangedEvent) => {
+    if (event.workspaceId !== workspaceId) return;
+    const current = event.scroll.offsetFromBottom;
+    if (lastOffsetFromBottom === undefined) {
+      lastOffsetFromBottom = current;
+      return;
+    }
+    const delta = current - lastOffsetFromBottom;
+    lastOffsetFromBottom = current;
+    if (delta === 0) return;
+    void presenter.scrollBy(paneId, workspaceId, delta);
+  });
+  return result.ok ? result.value : undefined;
+}
+
+function startResizeSubscription(
+  client: ManagedViewerClient,
+  presenter: ViewerPresenter,
+  viewerPaneId: string,
+  workspaceId: string,
+  getDocument: () => ViewerRenderDocument | undefined
+): HerdrEventSubscription | undefined {
+  if (typeof client.subscribePaneLayout !== "function") return undefined;
+  let debounceTimer: NodeJS.Timeout | undefined;
+  let rendering = false;
+  let lastWidthPx = -1;
+  const handle = (pane: { width: number; height: number }): void => {
+    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      void renderForPane(pane);
+    }, RESIZE_DEBOUNCE_MS);
+  };
+
+  const renderForPane = async (pane: { width: number; height: number }): Promise<void> => {
+    if (rendering || pane.width <= 0) return;
+    const document = getDocument();
+    if (document === undefined) return;
+    const info = await client.paneGraphicsInfo(viewerPaneId);
+    if (!info.ok) return;
+    const contentWidthPx = pane.width * info.value.cellWidthPx;
+    if (!Number.isSafeInteger(contentWidthPx) || contentWidthPx <= 0 || contentWidthPx === lastWidthPx) return;
+    lastWidthPx = contentWidthPx;
+    rendering = true;
+    try {
+      const rendered = await renderResponse(document.text, document.formulas, { layout: { contentWidthPx } });
+      if (rendered.ok) {
+        await presenter.reflow(viewerPaneId, workspaceId, rendered.value);
+      }
+    } catch {
+      // Ignore render failures on resize; the previous image stays intact.
+    } finally {
+      rendering = false;
+    }
+  };
+
+  const result = client.subscribePaneLayout(viewerPaneId, workspaceId, handle);
+  return result.ok ? result.value : undefined;
 }
 
 function decodeViewerEnvironment(environment: ViewerEnvironment): {

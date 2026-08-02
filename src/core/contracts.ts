@@ -7,6 +7,7 @@ export interface Formula {
   display: boolean;
   start: number;
   end: number;
+  delimiter?: "dollar" | "paren" | "bracket";
 }
 
 export type BoundaryStrategy =

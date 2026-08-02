@@ -13,7 +13,7 @@ Verified release-candidate environment:
 - Herdr 0.7.5, protocol 17
 - macOS arm64
 - Ghostty 1.3.1
-- Claude Code, Codex CLI, Pi, and OpenCode
+- Claude Code, Codex CLI, Cursor, Pi, and OpenCode
 
 See [Compatibility](docs/compatibility.md) for exact versions and unverified combinations.
 
@@ -48,6 +48,7 @@ Install the Herdr integration for each coding agent you use:
 ```sh
 herdr integration install claude
 herdr integration install codex
+herdr integration install cursor
 herdr integration install pi
 herdr integration install opencode
 herdr integration status

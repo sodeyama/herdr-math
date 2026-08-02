@@ -39,7 +39,13 @@ describe("synthetic coding-agent answer corpus", () => {
   });
 
   it("covers every supported agent", () => {
-    expect([...new Set(cases.map(({ agent }) => agent))].sort()).toEqual(["claude", "codex", "opencode", "pi"]);
+    expect([...new Set(cases.map(({ agent }) => agent))].sort()).toEqual([
+      "claude",
+      "codex",
+      "cursor",
+      "opencode",
+      "pi"
+    ]);
   });
 
   it("covers the required scanner and boundary families", () => {

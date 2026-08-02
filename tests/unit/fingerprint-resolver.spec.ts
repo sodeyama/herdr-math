@@ -11,7 +11,7 @@ import { computePrototypeAnswerDelta, type PrototypeBoundaryStrategy } from "../
 
 interface BoundaryCase {
   id: string;
-  agent: "claude" | "codex" | "pi" | "opencode";
+  agent: "claude" | "codex" | "cursor" | "pi" | "opencode";
   baseline: string;
   completion: string;
   expectedAnswer: string;

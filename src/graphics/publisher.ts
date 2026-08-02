@@ -74,7 +74,8 @@ async function sendThroughManagedViewer(
     viewerPaneId,
     workspaceId: request.workspaceId,
     generation: request.generation,
-    image: request.image
+    image: request.image,
+    ...(request.document === undefined ? {} : { document: request.document })
   });
   return sent.ok ? success(undefined) : failure(sent.error);
 }

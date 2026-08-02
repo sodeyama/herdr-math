@@ -22,6 +22,7 @@ import {
   type HerdrServerInfo
 } from "./herdr/socket-client.js";
 import { isRendererRuntimeAvailable } from "./renderer/runtime-check.js";
+import { loadPluginConfig } from "./config/plugin-config.js";
 import { deriveViewerSourceToken, VIEWER_IDENTITY } from "./viewer/ownership.js";
 
 export type { DiagnoseEnvironment, DiagnosticCheck, DiagnosticReport } from "./diagnostics/model.js";
@@ -58,12 +59,13 @@ export async function runDiagnostics(
 
   const client = dependencies.client ?? new HerdrSocketClient(context.socketPath);
   const rendererCheck = dependencies.rendererCheck ?? isRendererRuntimeAvailable;
-  const [server, directories, renderer, source, graphics] = await Promise.all([
+  const [server, directories, renderer, source, graphics, directoryScope] = await Promise.all([
     safeCall(() => client.ping()),
     checkDirectories(context.configDirectory, context.stateDirectory),
     safeBoolean(rendererCheck),
     safeCall(() => client.paneGet(context.sourcePaneId)),
-    safeCall(() => client.paneGraphicsInfo(context.sourcePaneId))
+    safeCall(() => client.paneGraphicsInfo(context.sourcePaneId)),
+    safeDirectoryScopeCheck(context.configDirectory)
   ]);
   const checks: DiagnosticCheck[] = [
     diagnosticCheck("environment", "pass", "environment_ok", "Required Herdr plugin context is available."),
@@ -88,6 +90,7 @@ export async function runDiagnostics(
         )
   ];
   checks.push(...createGraphicsChecks(graphics));
+  checks.push(directoryScope);
   checks.push(await ownershipCheck(client, context, source));
   checks.push(
     diagnosticCheck(
@@ -151,6 +154,34 @@ async function ownershipCheck(
     "Multiple owned Herdr Math viewers were found.",
     "Close duplicate Herdr Math viewer panes, then complete another formula response."
   );
+}
+
+async function safeDirectoryScopeCheck(configDirectory: string): Promise<DiagnosticCheck> {
+  try {
+    const config = await loadPluginConfig(configDirectory);
+    if (config.allowedDirectories.length === 0) {
+      return diagnosticCheck(
+        "directory_scope",
+        "info",
+        "directory_scope_unrestricted",
+        "Herdr Math is not limited to specific directories."
+      );
+    }
+    return diagnosticCheck(
+      "directory_scope",
+      "pass",
+      "directory_scope_configured",
+      `Herdr Math is limited to ${config.allowedDirectories.length} configured directory root(s).`
+    );
+  } catch {
+    return diagnosticCheck(
+      "directory_scope",
+      "fail",
+      "plugin_config_invalid",
+      "Plugin config.json is missing or invalid.",
+      "Fix config.json in the plugin config directory, then run diagnostics again."
+    );
+  }
 }
 
 async function checkDirectories(configDirectory: string, stateDirectory: string): Promise<boolean> {

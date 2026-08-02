@@ -49,12 +49,13 @@ export class FullLifecycleRig {
     clientOptions: HerdrSocketClientOptions
   ) {
     this.client = new HerdrSocketClient(server.socketPath, clientOptions);
-    const presenter = new ViewerPresenter(this.client, () => Promise.resolve());
+    const presenter = new ViewerPresenter(this.client);
     this.#dependencies = {
       client: this.client,
       stateDirectory,
       sessionIdentity: server.socketPath,
       secret: SECRET,
+      pluginConfig: { allowedDirectories: [] },
       now: () => NOW,
       sleep: () => Promise.resolve(),
       timing: { completionDebounceMs: 0, stableReadIntervalMs: 0 },

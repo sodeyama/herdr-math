@@ -37,11 +37,13 @@ describe("graphics publisher", () => {
 
     server.setPaneRect("w1:p2", { x: 60, y: 0, width: 40, height: 10 });
     expect((await publish(server, client, image(), "w1:p2")).ok).toBe(true);
+    // 640px / 8px = 80 natural cols clamped to 40, 320px / 16px = 20 natural rows,
+    // pane shows 10 rows -> overflow 10 rows, bottom visible at viewport_row -10.
     expect(server.getGraphics("w1:p2")?.placement).toEqual({
       viewport_col: 0,
-      viewport_row: 0,
+      viewport_row: -10,
       grid_cols: 40,
-      grid_rows: 10
+      grid_rows: 20
     });
     expect(server.requests.filter(({ method }) => method === "pane.graphics.set")).toHaveLength(2);
     expect(server.requests.some(({ method }) => method === "pane.graphics.clear")).toBe(false);
@@ -155,7 +157,7 @@ function publish(
   renderedImage: RenderedImage,
   existingViewerPaneId?: string
 ) {
-  const presenter = new ViewerPresenter(client, () => Promise.resolve());
+  const presenter = new ViewerPresenter(client);
   return publishImage(
     {
       sourcePaneId: "w1:p1",

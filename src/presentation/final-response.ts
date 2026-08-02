@@ -23,6 +23,15 @@ interface ResponseLine extends StyledTerminalLine {
 }
 
 const SEPARATOR = /^\s*[─━═]{20,}\s*$/u;
+const CODEX_WORKED_FOOTER = /^\s*─+\s*Worked for\b/u;
+const CODEX_PROMPT = /^\s*›(?:\s|$)/u;
+const CURSOR_TOOL =
+  /^(?:Grepped|Searched|Read|Listed|Globbed|Wrote|Applied|Ran|Deleted|Updated|Built|Checked|Called|Explored|Task|Shell|Edited|Created|Used)\b/u;
+const CURSOR_SHELL = /^\$\s+\S/u;
+const CURSOR_STATUS_BAR = /^[\s▄▀▌▐▆▇█]+$/u;
+const CURSOR_FOOTER =
+  /^(?:→\s*Add a follow-up|\d+\s+task(?:\s|$)|(?:Composer|GPT|Claude|Sonnet|Opus|Fast|ctrl\+c to stop)\b|~\/|Tip:)/u;
+const CURSOR_ACTIVITY = /^[\u2800-\u28FF\u2500-\u257F].*(?:Reading|Running)\b/u;
 const LIST_ITEM = /^\s*(?:[-*+] |\d+[.)] )/u;
 const CJK_END = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー々〆ヵヶ]$/u;
 const CJK_START = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー々〆ヵヶ]/u;
@@ -62,6 +71,7 @@ function selectFinalLines(
 ): ResponseLine[] {
   if (agent === "claude") return selectClaude(lines);
   if (agent === "codex") return selectCodex(lines);
+  if (agent === "cursor") return selectCursor(lines);
   if (agent === "pi") return selectPi(lines, requirePiFooter);
   return selectOpenCode(lines, requireOpenCodeChrome);
 }
@@ -79,7 +89,13 @@ function selectClaude(lines: readonly ResponseLine[]): ResponseLine[] {
 function selectCodex(lines: readonly ResponseLine[]): ResponseLine[] {
   const separators = lines.flatMap((line, index) => (SEPARATOR.test(line.text) ? [index] : []));
   if (separators.length === 0) return [...lines];
-  if (separators.length < 2) throw new HerdrMathError("conclusion_boundary_failed");
+  if (separators.length === 1) {
+    const start = separators[0];
+    if (start === undefined) throw new HerdrMathError("conclusion_boundary_failed");
+    const block = trimBlankLines(lines.slice(start + 1, findCodexTailStart(lines, start + 1)));
+    if (block.some(({ text }) => text.trim() !== "")) return stripCodexAnswerMarker(block);
+    throw new HerdrMathError("conclusion_boundary_failed");
+  }
   for (let index = separators.length - 2; index >= 0; index -= 1) {
     const start = separators[index];
     const end = separators[index + 1];
@@ -88,6 +104,50 @@ function selectCodex(lines: readonly ResponseLine[]): ResponseLine[] {
     if (block.some(({ text }) => text.trim() !== "")) return stripCodexAnswerMarker(block);
   }
   throw new HerdrMathError("conclusion_boundary_failed");
+}
+
+function findCodexTailStart(lines: readonly ResponseLine[], fromIndex: number): number {
+  for (let index = fromIndex; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line === undefined) break;
+    if (SEPARATOR.test(line.text) || CODEX_WORKED_FOOTER.test(line.text) || CODEX_PROMPT.test(line.text)) {
+      return index;
+    }
+  }
+  return lines.length;
+}
+
+function selectCursor(lines: readonly ResponseLine[]): ResponseLine[] {
+  const tailIndex = lines.findIndex(({ text }) => isCursorTailLine(text));
+  const scoped = tailIndex === -1 ? lines : lines.slice(0, tailIndex);
+  const lastTool = findLastIndex(scoped, ({ text }) => isCursorToolLine(text));
+  if (lastTool === -1) return stripCursorAnswerMarker([...scoped]);
+  let start = lastTool + 1;
+  while (start < scoped.length && scoped[start]?.text.trim() === "") start += 1;
+  return stripCursorAnswerMarker(trimBlankLines(scoped.slice(start)));
+}
+
+function isCursorToolLine(text: string): boolean {
+  const trimmed = text.trim();
+  return CURSOR_SHELL.test(trimmed) || CURSOR_TOOL.test(trimmed);
+}
+
+function isCursorTailLine(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === "") return false;
+  return (
+    CURSOR_STATUS_BAR.test(trimmed) ||
+    CURSOR_FOOTER.test(trimmed) ||
+    CURSOR_ACTIVITY.test(trimmed) ||
+    /^\s*Run Every(?:thing|…)/u.test(trimmed)
+  );
+}
+
+function stripCursorAnswerMarker(lines: readonly ResponseLine[]): ResponseLine[] {
+  return lines.map((line) => ({
+    ...line,
+    text: line.text.replace(/^\s*•\s+/u, "")
+  }));
 }
 
 function selectPi(lines: readonly ResponseLine[], requireFooter: boolean): ResponseLine[] {
@@ -292,9 +352,18 @@ function trimKnownTailChrome(agent: SupportedAgent, lines: readonly ResponseLine
         ? /^\s*›(?:\s|$)/u
         : agent === "pi"
           ? /^\s*(?:Current prompt\s*>|└)/u
-          : /^\s*┃\s*prompt\s*:/iu;
-  const end = lines.findIndex(({ text }) => pattern.test(text));
-  return end === -1 ? [...lines] : lines.slice(0, end);
+          : agent === "cursor"
+            ? /^(?:→\s*Add a follow-up|\d+\s+task\s*$)/u
+            : /^\s*┃\s*prompt\s*:/iu;
+  let start = 0;
+  if (agent === "claude" || agent === "codex") {
+    while (start < lines.length && pattern.test(lines[start]?.text ?? "")) {
+      start += 1;
+    }
+  }
+  const scoped = lines.slice(start);
+  const end = scoped.findIndex(({ text }) => pattern.test(text));
+  return end === -1 ? [...scoped] : scoped.slice(0, end);
 }
 
 function removeCommonIndent(lines: readonly string[]): string[] {

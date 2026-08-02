@@ -14,6 +14,7 @@ import {
   validateViewerTransportIdentity,
   viewerSocketPath,
   viewerTransportFailure,
+  type ViewerRenderDocument,
   type ViewerTransportRequest,
   type ViewerTransportResponse
 } from "./transport-protocol.js";
@@ -27,6 +28,7 @@ export interface ViewerTransportServerOptions extends Pick<
   "stateDirectory" | "sourceToken" | "viewerPaneId" | "workspaceId"
 > {
   presenter: ViewerPresenter;
+  onDocument?: (document: ViewerRenderDocument) => void;
 }
 
 export interface ViewerTransportServer {
@@ -106,6 +108,7 @@ function receiveRequest(
         writeResponse(socket, { ok: false, error: decoded.error });
         return;
       }
+      if (decoded.value.document !== undefined) options.onDocument?.(decoded.value.document);
       const result = await options.presenter.present({
         viewerPaneId: options.viewerPaneId,
         workspaceId: options.workspaceId,

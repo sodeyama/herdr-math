@@ -183,7 +183,7 @@ function isValidEvent(event: LifecycleEvent): boolean {
     isFingerprintDigest(event.sessionKey) &&
     isStateIdentifier(event.workspaceId) &&
     isStateIdentifier(event.sourcePaneId) &&
-    ["claude", "codex", "pi", "opencode"].includes(event.agent) &&
+    ["claude", "codex", "cursor", "pi", "opencode"].includes(event.agent) &&
     ["screen_detection", "integration_hook"].includes(event.lifecycleAuthority) &&
     isFingerprintDigest(event.occupantKey) &&
     isCount(event.paneRevision) &&
@@ -195,7 +195,7 @@ function isValidCommit(commit: CompletionCommit): boolean {
   return (
     (commit.status === "done" || commit.status === "idle") &&
     isCount(commit.generation) &&
-    ["claude", "codex", "pi", "opencode"].includes(commit.agent) &&
+    ["claude", "codex", "cursor", "pi", "opencode"].includes(commit.agent) &&
     ["screen_detection", "integration_hook"].includes(commit.lifecycleAuthority) &&
     isFingerprintDigest(commit.occupantKey) &&
     isCount(commit.paneRevision) &&

@@ -72,7 +72,7 @@ describe("Herdr 0.7.5 public contract", () => {
       expect(validate(event), JSON.stringify(validate.errors)).toBe(true);
     }
 
-    expect(integrationContract.agents.map(({ id }) => id)).toEqual(["claude", "codex", "pi", "opencode"]);
+    expect(integrationContract.agents.map(({ id }) => id)).toEqual(["claude", "codex", "cursor", "pi", "opencode"]);
   });
 
   it("allows an event without an agent hint", () => {

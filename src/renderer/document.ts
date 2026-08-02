@@ -97,11 +97,20 @@ function validateFormula(text: string, formula: Formula, cursor: number, charact
   }
   const characters = [...formula.latex].length;
   assertLimit("formula_characters", characters, characterLimit);
-  const delimiter = formula.display ? "$$" : "$";
   const source = text.slice(formula.start, formula.end);
-  if (!source.startsWith(delimiter) || !source.endsWith(delimiter)) throw new HerdrMathError("invalid_latex");
-  if (source.slice(delimiter.length, -delimiter.length).trim() !== formula.latex) {
-    throw new HerdrMathError("invalid_latex");
+  if (formula.delimiter === "paren" || formula.delimiter === "bracket") {
+    const open = formula.delimiter === "paren" ? "\\(" : "\\[";
+    const close = formula.delimiter === "paren" ? "\\)" : "\\]";
+    if (!source.startsWith(open) || !source.endsWith(close)) throw new HerdrMathError("invalid_latex");
+    if (source.slice(open.length, -close.length).trim() !== formula.latex) {
+      throw new HerdrMathError("invalid_latex");
+    }
+  } else {
+    const delimiter = formula.display ? "$$" : "$";
+    if (!source.startsWith(delimiter) || !source.endsWith(delimiter)) throw new HerdrMathError("invalid_latex");
+    if (source.slice(delimiter.length, -delimiter.length).trim() !== formula.latex) {
+      throw new HerdrMathError("invalid_latex");
+    }
   }
 }
 

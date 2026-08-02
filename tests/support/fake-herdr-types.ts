@@ -18,6 +18,8 @@ export interface FakePaneState {
     kind: "id" | "path";
     value: string;
   } | null;
+  cwd?: string | null;
+  foreground_cwd?: string | null;
   title?: string | null;
   display_agent?: string | null;
   state_labels?: Record<string, string>;

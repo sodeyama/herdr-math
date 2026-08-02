@@ -43,6 +43,26 @@
     "event": "pane_agent_status_changed",
     "data": {
       "type": "pane_agent_status_changed",
+      "pane_id": "w1:p5",
+      "workspace_id": "w1",
+      "agent_status": "working",
+      "agent": "cursor"
+    }
+  },
+  {
+    "event": "pane_agent_status_changed",
+    "data": {
+      "type": "pane_agent_status_changed",
+      "pane_id": "w1:p5",
+      "workspace_id": "w1",
+      "agent_status": "done",
+      "agent": "cursor"
+    }
+  },
+  {
+    "event": "pane_agent_status_changed",
+    "data": {
+      "type": "pane_agent_status_changed",
       "pane_id": "w1:p3",
       "workspace_id": "w1",
       "agent_status": "working",

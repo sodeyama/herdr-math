@@ -20,6 +20,7 @@ export const ERROR_CODES = [
   "herdr_protocol_error",
   "state_locked",
   "state_corrupt",
+  "plugin_config_invalid",
   "internal_error"
 ] as const;
 
