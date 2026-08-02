@@ -56,7 +56,13 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
     }
 
     let (tail, _) = if completion.starts_with(baseline) {
-        (            completion.strip_prefix(baseline).map(str::to_string).unwrap_or_default(), 0)
+        (
+            completion
+                .strip_prefix(baseline)
+                .map(str::to_string)
+                .unwrap_or_default(),
+            0,
+        )
     } else {
         let bl: Vec<&str> = baseline.lines().collect();
         let cl: Vec<&str> = completion.lines().collect();
@@ -175,7 +181,13 @@ mod tests {
         };
         let completion = baseline
             .lines()
-            .map(|line| if line == "• Working frame 01" { "• Working frame 02" } else { line })
+            .map(|line| {
+                if line == "• Working frame 01" {
+                    "• Working frame 02"
+                } else {
+                    line
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
             + "\nResult: $1/3$.\n› ";
@@ -197,7 +209,8 @@ mod tests {
     fn appended_content_uses_the_last_prompt_as_the_boundary() {
         // cursor-tool-then-final from answer-corpus.json.
         let baseline = "Grepped pattern in src\n\n  • Working on the answer.\n";
-        let completion = format!("{baseline}\nRead package.json\n\n  • The relation is $E=mc^2$.\n");
+        let completion =
+            format!("{baseline}\nRead package.json\n\n  • The relation is $E=mc^2$.\n");
         // MVP keeps the tool-activity line; the answer boundary is still the
         // appended tail after the previous capture.
         assert_eq!(

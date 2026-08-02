@@ -132,10 +132,7 @@ mod tests {
     fn capture_request_pulls_bounded_history() {
         let pane = PaneId::new("%2").unwrap();
         let cmd = capture(&pane, 500);
-        assert_eq!(
-            cmd,
-            vec!["capture-pane", "-p", "-t", "%2", "-S", "-500"]
-        );
+        assert_eq!(cmd, vec!["capture-pane", "-p", "-t", "%2", "-S", "-500"]);
     }
 
     #[test]

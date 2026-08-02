@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use tmath_core::agent::{
-    PaneId, capture, display_pane, encode_document, encode_quit, find_answer, kill_pane,
-    shell_quote, split_viewer,
+    capture, display_pane, encode_document, encode_quit, find_answer, kill_pane, shell_quote,
+    split_viewer, PaneId,
 };
 use tmath_core::input::InputDecoder;
 use tmath_core::scroll_driver::is_exit_signal;
@@ -184,22 +184,30 @@ fn parse_agent_args(args: &[String]) -> Result<WatcherArgs, String> {
             }
             "--percent" => {
                 let value = args.get(index + 1).ok_or("--percent needs a value")?;
-                percent = value.parse().map_err(|_| format!("invalid percent {value:?}"))?;
+                percent = value
+                    .parse()
+                    .map_err(|_| format!("invalid percent {value:?}"))?;
                 index += 2;
             }
             "--wait-ms" => {
                 let value = args.get(index + 1).ok_or("--wait-ms needs a value")?;
-                wait_ms = value.parse().map_err(|_| format!("invalid wait-ms {value:?}"))?;
+                wait_ms = value
+                    .parse()
+                    .map_err(|_| format!("invalid wait-ms {value:?}"))?;
                 index += 2;
             }
             "--poll-ms" => {
                 let value = args.get(index + 1).ok_or("--poll-ms needs a value")?;
-                poll_ms = value.parse().map_err(|_| format!("invalid poll-ms {value:?}"))?;
+                poll_ms = value
+                    .parse()
+                    .map_err(|_| format!("invalid poll-ms {value:?}"))?;
                 index += 2;
             }
             "--history" => {
                 let value = args.get(index + 1).ok_or("--history needs a value")?;
-                history = value.parse().map_err(|_| format!("invalid history {value:?}"))?;
+                history = value
+                    .parse()
+                    .map_err(|_| format!("invalid history {value:?}"))?;
                 index += 2;
             }
             other if other.starts_with('-') => return Err(format!("unknown option {other:?}")),
@@ -218,7 +226,11 @@ fn parse_agent_args(args: &[String]) -> Result<WatcherArgs, String> {
     })
 }
 
-fn spawn_viewer_pane(args: &WatcherArgs, source: &PaneId, viewer_cmd: &str) -> Result<PaneId, String> {
+fn spawn_viewer_pane(
+    args: &WatcherArgs,
+    source: &PaneId,
+    viewer_cmd: &str,
+) -> Result<PaneId, String> {
     let split = split_viewer(args.percent, source, viewer_cmd);
     let output = tmux_output(&split)?;
     let pane = output
@@ -312,7 +324,8 @@ fn finish(peer: &mut Option<UnixStream>, viewer_pane: &PaneId) -> Result<i32, St
         let _ = stream.write_all(&encode_quit());
     }
     let _ = Command::new("tmux").args(kill_pane(viewer_pane)).status();
-    let _ = fs::remove_file(env::temp_dir().join(format!("tmath-agent-{}.sock", std::process::id())));
+    let _ =
+        fs::remove_file(env::temp_dir().join(format!("tmath-agent-{}.sock", std::process::id())));
     Ok(0)
 }
 

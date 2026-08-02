@@ -97,7 +97,12 @@ impl Decoder {
             if self.pending.len() < 4 {
                 return None;
             }
-            let len = u32::from_be_bytes([self.pending[0], self.pending[1], self.pending[2], self.pending[3]]) as usize;
+            let len = u32::from_be_bytes([
+                self.pending[0],
+                self.pending[1],
+                self.pending[2],
+                self.pending[3],
+            ]) as usize;
             if len == 0 || len > MAX_FRAME_BYTES {
                 // Not a valid frame header: drop one byte and resync.
                 self.pending.drain(..1);
@@ -160,7 +165,10 @@ mod tests {
         joined.extend_from_slice(&quit);
         let mut decoder = Decoder::new();
         decoder.push(&joined);
-        assert_eq!(decoder.next_message(), Some(Ok(Message::Document { text: "A".into() })));
+        assert_eq!(
+            decoder.next_message(),
+            Some(Ok(Message::Document { text: "A".into() }))
+        );
         assert_eq!(decoder.next_message(), Some(Ok(Message::Quit)));
         assert_eq!(decoder.next_message(), None);
     }
@@ -180,7 +188,10 @@ mod tests {
         let mut stream = vec![0xff, 0xff, 0xff, 0xff];
         stream.extend_from_slice(&good);
         decoder.push(&stream);
-        assert_eq!(decoder.next_message(), Some(Ok(Message::Document { text: "ok".into() })));
+        assert_eq!(
+            decoder.next_message(),
+            Some(Ok(Message::Document { text: "ok".into() }))
+        );
     }
 
     #[test]

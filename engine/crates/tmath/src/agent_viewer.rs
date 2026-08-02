@@ -18,7 +18,7 @@ use tmath_core::ipc::{RenderResponse, IPC_MAX_REQUEST_BYTES};
 use tmath_core::placement::{
     decode_png, emit_placed_block, emit_replaced_block, CellSize, PlacementLimits, PlacementTracker,
 };
-use tmath_core::scroll_driver::{ScrollDriver, is_exit_signal};
+use tmath_core::scroll_driver::{is_exit_signal, ScrollDriver};
 use tmath_core::terminal::{StdioTty, Terminal};
 
 use crate::render::{render_document_text, renderer_worker_path};
@@ -238,12 +238,10 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
 
     let (block, base_home) = match viewer.current.as_ref() {
         Some(previous) => {
-            let block = match viewer.tracker.replace(
-                previous.image_id,
-                width,
-                height,
-                viewer.cell,
-            ) {
+            let block = match viewer
+                .tracker
+                .replace(previous.image_id, width, height, viewer.cell)
+            {
                 Ok(block) => block,
                 Err(error) => {
                     eprintln!("agent-viewer: placement_limit ({error})");

@@ -13,5 +13,5 @@ pub mod tmux;
 pub use boundary::{find_answer, is_prompt_line, is_status_line, Answer};
 pub use codec::{encode_document, encode_quit, CodecError, Decoder, Message};
 pub use tmux::{
-    PaneId, capture, display_pane, kill_pane, shell_quote, split_viewer, valid_pane_id,
+    capture, display_pane, kill_pane, shell_quote, split_viewer, valid_pane_id, PaneId,
 };
