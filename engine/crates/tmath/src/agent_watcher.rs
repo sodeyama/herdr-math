@@ -111,15 +111,14 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
             }
         }
 
-        if !pane_alive(&viewer_pane) {
-            eprintln!("tmath agent: viewer pane closed; stopping");
-            return finish(&mut peer, &viewer_pane);
-        }
-
-        let Some(snapshot) = capture_source(&source, parsed.history)? else {
+        // Capture the source pane and detect the newest answer. Stopping is
+        // driven by the source pane closing or `q`/Ctrl-C; a missing viewer
+        // pane just means documents are dropped until one reconnects.
+        if !pane_alive(&source) {
             eprintln!("tmath agent: source pane closed; stopping");
             return finish(&mut peer, &viewer_pane);
-        };
+        }
+        let snapshot = capture_source(&source, parsed.history)?;
 
         if snapshot.len() > SNAPSHOT_MAX_BYTES {
             eprintln!("tmath agent: captured pane exceeds bound; skipping update");
@@ -127,8 +126,11 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
             match find_answer(&baseline, &snapshot) {
                 Some(answer) => match pending.as_mut() {
                     Some((text, consumed_snapshot, since)) => {
-                        let quiet_same = *consumed_snapshot == snapshot;
-                        if *text != answer.text || quiet_same {
+                        // The answer text is still growing: restart the
+                        // debounce. An unchanged text is a settled answer, so
+                        // only the consumed snapshot advances and the timer
+                        // keeps running to the wait window.
+                        if *text != answer.text {
                             *text = answer.text.clone();
                             *since = Instant::now();
                         }
@@ -227,8 +229,8 @@ fn spawn_viewer_pane(args: &WatcherArgs, source: &PaneId, viewer_cmd: &str) -> R
     Ok(pane)
 }
 
-fn capture_source(pane: &PaneId, history: u32) -> Result<Option<String>, String> {
-    tmux_output(&capture(pane, history)).map(Some)
+fn capture_source(pane: &PaneId, history: u32) -> Result<String, String> {
+    tmux_output(&capture(pane, history))
 }
 
 fn pane_alive(pane: &PaneId) -> bool {
@@ -271,12 +273,17 @@ fn accept_peer(listener: &UnixListener) -> Option<UnixStream> {
 }
 
 fn stdin_has_input() -> bool {
+    use rustix::event::{PollFlags, Timespec};
     let stdin = io::stdin();
-    let mut fds = [rustix::event::PollFd::new(
-        &stdin,
-        rustix::event::PollFlags::IN,
-    )];
-    rustix::event::poll(&mut fds, None).map(|n| n > 0).unwrap_or(false)
+    let mut fds = [rustix::event::PollFd::new(&stdin, PollFlags::IN)];
+    // Zero timeout: this is a non-blocking readiness check.
+    let timeout = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    rustix::event::poll(&mut fds, Some(&timeout))
+        .map(|n| n > 0)
+        .unwrap_or(false)
 }
 
 /// Writes a document message to the viewer, tolerating a not-yet-connected or
@@ -305,6 +312,7 @@ fn finish(peer: &mut Option<UnixStream>, viewer_pane: &PaneId) -> Result<i32, St
         let _ = stream.write_all(&encode_quit());
     }
     let _ = Command::new("tmux").args(kill_pane(viewer_pane)).status();
+    let _ = fs::remove_file(env::temp_dir().join(format!("tmath-agent-{}.sock", std::process::id())));
     Ok(0)
 }
 

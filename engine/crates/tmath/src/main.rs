@@ -226,7 +226,7 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
     );
     let mut stdout = io::stdout().lock();
     stdout
-        .write_all(&placement)
+        .write_all(&tmath_core::kitty::wrapped_for_tty(&placement))
         .map_err(|error| format!("write placement: {error}"))?;
     stdout
         .flush()

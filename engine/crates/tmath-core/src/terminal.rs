@@ -212,7 +212,7 @@ pub struct StdioTty {
 
 impl Tty for StdioTty {
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-        io::stdout().lock().write_all(bytes)
+        io::stdout().lock().write_all(&crate::kitty::wrapped_for_tty(bytes))
     }
 
     fn flush(&mut self) -> io::Result<()> {

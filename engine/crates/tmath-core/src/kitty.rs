@@ -12,6 +12,33 @@ use miniz_oxide::deflate::compress_to_vec_zlib;
 /// Maximum size of each base64 chunk inside one inline transmit.
 pub const KITTY_CHUNK_SIZE: usize = 4096;
 
+/// Returns true when the process runs inside tmux. Under tmux, Kitty sequences
+/// must be DCS-wrapped for passthrough (see [`wrapped_for_tty`]).
+pub fn inside_tmux() -> bool {
+    std::env::var_os("TMUX").is_some()
+}
+
+/// Wraps terminal output in tmux's DCS passthrough envelope when running under
+/// tmux, because tmux only forwards `ESC P ... ESC \\` (DCS) to the attached
+/// client; bare Kitty APC sequences (`ESC _ G`) are otherwise swallowed by
+/// tmux. Passthrough must also be enabled on the tmux window
+/// (`allow-passthrough on`). Outside tmux the bytes are returned unchanged.
+pub fn wrapped_for_tty(bytes: &[u8]) -> Vec<u8> {
+    if !inside_tmux() {
+        return bytes.to_vec();
+    }
+    dcs_wrap(bytes)
+}
+
+/// Wraps bytes in the DCS passthrough envelope: `ESC P ... ESC \\`.
+pub fn dcs_wrap(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + 4);
+    out.extend_from_slice(b"\x1bP");
+    out.extend_from_slice(bytes);
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
 /// How an image is anchored to the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
@@ -474,6 +501,12 @@ pub fn placeholder_grid(image_id: u32, cols: u32, rows: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dcs_wrap_uses_the_passthrough_envelope() {
+        let wrapped = dcs_wrap(b"\x1b_Ga=T,q=2\x1b\\");
+        assert_eq!(wrapped, b"\x1bP\x1b_Ga=T,q=2\x1b\\\x1b\\");
+    }
 
     #[test]
     fn transmit_emits_single_chunk_for_small_images() {

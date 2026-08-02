@@ -179,22 +179,26 @@ fn scroll_offset(scroll: &ScrollDriver, rows: u32) -> i64 {
 }
 
 fn stream_readable(stream: &UnixStream) -> bool {
-    let mut fds = [rustix::event::PollFd::new(
-        stream,
-        rustix::event::PollFlags::IN,
-    )];
-    rustix::event::poll(&mut fds, None)
+    use rustix::event::{PollFlags, Timespec};
+    let mut fds = [rustix::event::PollFd::new(stream, PollFlags::IN)];
+    let timeout = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    rustix::event::poll(&mut fds, Some(&timeout))
         .map(|n| n > 0)
         .unwrap_or(false)
 }
 
 fn stdin_readable() -> bool {
+    use rustix::event::{PollFlags, Timespec};
     let stdin = io::stdin();
-    let mut fds = [rustix::event::PollFd::new(
-        &stdin,
-        rustix::event::PollFlags::IN,
-    )];
-    rustix::event::poll(&mut fds, None)
+    let mut fds = [rustix::event::PollFd::new(&stdin, PollFlags::IN)];
+    let timeout = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    rustix::event::poll(&mut fds, Some(&timeout))
         .map(|n| n > 0)
         .unwrap_or(false)
 }
@@ -284,7 +288,7 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     };
     let mut stdout = io::stdout().lock();
     stdout
-        .write_all(&bytes)
+        .write_all(&tmath_core::kitty::wrapped_for_tty(&bytes))
         .map_err(|error| format!("write placement: {error}"))?;
     stdout
         .flush()
@@ -333,7 +337,7 @@ fn reemit_if_moved(viewer: &mut Viewer) -> Result<bool, String> {
     }
     let mut stdout = io::stdout().lock();
     stdout
-        .write_all(&bytes)
+        .write_all(&tmath_core::kitty::wrapped_for_tty(&bytes))
         .map_err(|error| format!("write scroll placement: {error}"))?;
     stdout
         .flush()
