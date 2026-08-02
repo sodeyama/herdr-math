@@ -9,3 +9,5 @@ description = "Terminal-facing core for the tmath math/document renderer."
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
+miniz_oxide = { workspace = true }

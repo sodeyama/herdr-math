@@ -8,6 +8,8 @@ edition = "2021"
 publish = false
 
 [workspace.dependencies]
+base64 = "0.22"
+miniz_oxide = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
