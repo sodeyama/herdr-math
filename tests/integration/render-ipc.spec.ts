@@ -92,4 +92,15 @@ describe("one-shot render subprocess transport", () => {
     if (response.ok) return;
     expect(response.error.code).toBe("renderer_input_limit");
   });
+
+  it("fails closed with a stable error when the scanner limit is exceeded", async () => {
+    // 21 formulas exceeds the scanner's maxFormulaCount (20). The subprocess
+    // must return a stable JSON error instead of crashing without a response.
+    const text = Array.from({ length: 21 }, (_, index) => `math here $x_{${index}}$`).join(" ");
+    const response = await renderSubprocess(JSON.stringify({ protocol: "tmath-render/1", kind: "document", text }));
+    expect(response.ok).toBe(false);
+    if (response.ok) return;
+    expect(response.error.code).toBe("scanner_input_limit");
+    expect(response.error.details).toMatchObject({ limit_kind: "formula_count", limit: 20, actual: 21 });
+  });
 });

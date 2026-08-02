@@ -52,8 +52,16 @@ export async function main(): Promise<number> {
   }
 
   const text = request.text ?? "";
-  const outcome = await renderResponse(text, scanLatex(text), options);
-  return finish(request.protocol, outcome);
+  try {
+    const outcome = await renderResponse(text, scanLatex(text), options);
+    return finish(request.protocol, outcome);
+  } catch (error) {
+    // The scanner throws a HerdrMathError (e.g. scanner_input_limit) that the
+    // renderer never sees; it must become a stable, safe JSON error record
+    // rather than crashing the subprocess.
+    writeError(error instanceof HerdrMathError ? error : new HerdrMathError("renderer_failed", {}, true));
+    return 0;
+  }
 }
 
 function finish(protocol: string, outcome: OperationResult<RenderedImage>): number {
