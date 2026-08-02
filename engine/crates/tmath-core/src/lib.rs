@@ -5,6 +5,9 @@
 //! parsing, and the scroll state machine. This crate has no Herdr coupling and
 //! never touches a socket, manifest, or plugin runtime.
 
+pub mod kitty;
+pub mod terminal;
+
 /// Returns the crate version from the package manifest.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

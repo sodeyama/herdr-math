@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 base64 = { workspace = true }
 miniz_oxide = { workspace = true }
+rustix = { workspace = true }

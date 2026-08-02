@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 base64 = "0.22"
 miniz_oxide = "0.8"
+rustix = { version = "1", features = ["termios", "stdio", "event"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
