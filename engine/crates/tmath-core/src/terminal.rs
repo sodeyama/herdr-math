@@ -130,6 +130,21 @@ impl<T: Tty> Terminal<T> {
             .unwrap_or(false))
     }
 
+    /// Probes whether the terminal can display images. A `a=q` query with a
+    /// minimal payload is answered with `Gi=<id>;OK` when graphics work;
+    /// missing, negative, or truncated replies mean unsupported.
+    pub fn probe_graphics_support(&mut self) -> io::Result<bool> {
+        const PROBE_ID: u32 = u32::MAX;
+        self.io.write_all(
+            format!("\x1b_Gi={PROBE_ID},a=q,f=32,s=1,v=1;AAAAAAAAAAAAAAAAAAAAAA==\x1b\\")
+                .as_bytes(),
+        )?;
+        self.io.flush()?;
+        Ok(self
+            .read_report(Duration::from_millis(300), parse_graphics_probe)?
+            .unwrap_or(false))
+    }
+
     /// Reads until `parse` recognizes a complete reply, within the timeout and
     /// a bounded byte count.
     fn read_report<R>(
@@ -282,6 +297,17 @@ pub(crate) fn parse_decrqm_1016(buf: &[u8]) -> Option<bool> {
     let start = buf.windows(8).position(|w| w == b"\x1b[?1016;")? + 8;
     let ps = *buf.get(start)?;
     Some(ps == b'1' || ps == b'3')
+}
+
+/// Parses a Kitty `a=q` probe reply: `Gi=<id>;OK` reports support.
+pub(crate) fn parse_graphics_probe(buf: &[u8]) -> Option<bool> {
+    let needle = b"Gi=4294967295;";
+    let pos = buf.windows(needle.len()).position(|w| w == needle)?;
+    let rest = &buf[pos + needle.len()..];
+    if rest.len() < 2 {
+        return None;
+    }
+    Some(rest.starts_with(b"OK"))
 }
 
 #[cfg(test)]
@@ -498,5 +524,47 @@ mod tests {
         assert_eq!(parse_decrqm_1016(b"\x1b[?1016;3$y"), Some(true));
         assert_eq!(parse_decrqm_1016(b"noise\x1b[?1016;3$y\n"), Some(true));
         assert_eq!(parse_decrqm_1016(b"\x1b[?1016;"), None, "partial");
+    }
+
+    #[test]
+    fn graphics_probe_parses_ok_and_missing_replies() {
+        assert_eq!(
+            parse_graphics_probe(b"\x1b_Gi=4294967295;OK\x1b\\"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_graphics_probe(b"noise\x1b_Gi=4294967295;OK\x1b\\more"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_graphics_probe(b"\x1b_Gi=4294967295;"),
+            None,
+            "partial"
+        );
+        assert_eq!(
+            parse_graphics_probe(b"\x1b_Gi=4294967294;OK\x1b\\"),
+            None,
+            "wrong id"
+        );
+    }
+
+    #[test]
+    fn graphics_support_probe_is_flaky_positive_on_ok_reply() {
+        let tty = FakeTty::new(
+            &[(
+                b"\x1b_Gi=4294967295".as_slice(),
+                b"\x1b_Gi=4294967295;OK\x1b\\",
+            )],
+            WindowSize {
+                cols: 80,
+                rows: 24,
+                width_px: 800,
+                height_px: 240,
+            },
+        );
+        let mut term = Terminal::new(tty, 4).unwrap();
+        let out = String::from_utf8(term.io.writes.clone()).unwrap();
+        assert!(out.contains("a=q,f=32,s=1,v=1"));
+        assert!(term.probe_graphics_support().unwrap());
     }
 }

@@ -9,6 +9,7 @@ pub mod ipc;
 pub mod kitty;
 pub mod mouse;
 pub mod native;
+pub mod placement;
 pub mod scroll;
 pub mod terminal;
 

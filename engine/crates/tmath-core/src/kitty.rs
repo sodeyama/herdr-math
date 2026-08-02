@@ -135,13 +135,19 @@ pub fn kitty_delete(_image_id: u32) -> Vec<u8> {
     b"\x1b_Ga=d,d=A,q=2\x1b\\".to_vec()
 }
 
+/// Builds the sequence that deletes one image by id, leaving every other image
+/// intact. Used to replace or remove a single placed block.
+pub fn kitty_delete_id(image_id: u32) -> Vec<u8> {
+    format!("\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\").into_bytes()
+}
+
 /// The character used on each placeholder cell. Persisted text must never
 /// contain it; it is a private-use character reserved for this protocol.
-const PLACEHOLDER: char = '\u{10EEEE}';
+pub const PLACEHOLDER: char = '\u{10EEEE}';
 
 /// Diacritics that encode row/column indices on placeholder cells, from
 /// https://sw.kovidgoyal.net/kitty/_downloads/f0a0de9ec8d9ff4456206db8e0814937/rowcolumn-diacritics.txt
-const ROW_COLUMN_DIACRITICS: [char; 297] = [
+pub(crate) const ROW_COLUMN_DIACRITICS: [char; 297] = [
     '\u{0305}',
     '\u{030D}',
     '\u{030E}',
