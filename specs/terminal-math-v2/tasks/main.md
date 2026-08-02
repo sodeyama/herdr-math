@@ -428,7 +428,9 @@ rollback and its spec is marked superseded, never deleted.
 - Commit: `docs(compat): record ghostty standalone evidence`
 
 Progress (T-701, T-702): committed via `3e279e5` plus the Phase 6 docs. Evidence:
-`docs/evidence/2026-08-02-tmath-v2-phase6.md`. T-703 remains a manual Ghostty runtime step.
+`docs/evidence/2026-08-02-tmath-v2-phase6.md`. T-703 remains a manual Ghostty runtime step with
+the exact procedure recorded in that evidence; it must be completed before any runtime release
+claim.
 
 ## Phase 7 - Release Gate (outline)
 

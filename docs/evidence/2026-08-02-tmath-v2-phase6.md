@@ -82,6 +82,31 @@ cargo fmt --check    # OK
   compatibility, contribution, license, changelog, and known-limit docs describe the standalone
   product; V1 is explicitly superseded.
 
+## T-703: Ghostty compatibility evidence (manual)
+
+The real Ghostty matrix requires a human-in-the-loop session: launching the macOS GUI terminal,
+rendering multi-block documents, and visually verifying placement, scrollback anchoring, mouse
+wheel scrolling, keyboard fallback, replacement, invalid preservation, and clean exit. The
+harness cannot substitute an unattended run for that visual evidence.
+
+Manual procedure (to be run in a real Ghostty window and recorded here):
+
+```sh
+open -na Ghostty --args -e bash -lc '
+  cd <path-to-worktree>
+  export TMATH_RENDER_WORKER=$PWD/dist/renderer/subprocess.js
+  printf "# Demo\n\nProse $E=mc^2$.\n\n$$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n" \
+    | ./target/debug/tmath render -
+  ./target/debug/tmath diagnose
+'
+```
+
+Expected: one image placed at the cursor row in the main buffer; terminal scrollback carries the
+image; mouse wheel and `PgUp`/`PgDn`/`j`/`k` scroll the document; `q`/Ctrl-C reset the terminal;
+invalid input preserves earlier placements; `tmath diagnose` reports Kitty graphics support.
+Recording that evidence completes `AT-2-700`; kitty and WezTerm remain P1 until the same matrix
+passes (`AT-2-701`).
+
 ## Commits
 
 - `1e9b118` `docs(spec): expand phase 5 hardening tasks`
