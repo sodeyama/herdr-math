@@ -38,6 +38,7 @@
     "format": "prettier --write package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
     "format:check": "prettier --check package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
     "install:browser": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install --only-shell chromium",
+    "install:local": "bash scripts/install.sh",
     "lint": "eslint src tests eslint.config.js",
     "postinstall": "npm run install:browser",
     "security:check": "node scripts/security-check.mjs",
