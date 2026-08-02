@@ -24,9 +24,9 @@
 
 ## Current Next Task
 
-Continue with **T-100** (Phase 0, Rust terminal surface). Phase 0 is fully broken out below;
-Phases 1-7 are outlines that will be expanded as each phase approaches, per the plan's phased
-approach.
+Phase 0 (Rust terminal surface) is complete through `9a8a60f`; resume with **T-201** (Phase 1,
+render transport) next. Until a real Kitty-graphics terminal run is recorded, Phase 0 claims no
+runtime or release behavior.
 
 ---
 
@@ -120,6 +120,10 @@ The TypeScript renderer is untouched in this phase.
 - Acceptance: `AT-2-004`, `AT-2-005`; every Phase 0 case passes.
 - Evidence: Contract, Static
 - Commit: `docs(test): record phase 0 terminal-surface evidence`
+
+Progress: T-100 through T-107 complete via commits `83111fd` (docs),
+`958b9f3` (workspace), `102d014` (kitty), `764d8c6` (terminal), `aad464d` (mouse),
+`d21b7c7` (scroll), `9a8a60f` (native). Evidence: `docs/evidence/2026-08-02-tmath-v2-phase0.md`.
 
 ---
 

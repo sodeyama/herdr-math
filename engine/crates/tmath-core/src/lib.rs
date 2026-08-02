@@ -2,8 +2,8 @@
 //!
 //! Phase 0 ports the pieces of the reference pixel-core crate that own the
 //! terminal: Kitty graphics escape construction, terminal init/reset, mouse
-//! parsing, and the scroll state machine. This crate has no Herdr coupling and
-//! never touches a socket, manifest, or plugin runtime.
+//! parsing, and the scroll state machine. This crate never touches a socket,
+//! manifest, or plugin runtime.
 
 pub mod kitty;
 pub mod mouse;

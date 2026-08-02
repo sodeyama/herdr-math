@@ -2,7 +2,7 @@
 
 ## Status
 
-- Plan state: In progress — Phase 0 (Rust terminal surface) under implementation
+- Plan state: In progress — Phase 0 (Rust terminal surface) complete; Phase 1 (render transport) next
 - Target release: `0.2.0` (first standalone release without a Herdr runtime)
 - Last updated: August 2, 2026
 - Acceptance contract: `../tests/main.md`
