@@ -19,11 +19,24 @@ use tmath_core::ipc::{
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The location of the built one-shot renderer subprocess.
+///
+/// Resolution order: the `TMATH_RENDER_WORKER` environment variable, then the
+/// installed layout (`<install>/renderer/dist/renderer/subprocess.js` next to
+/// `<install>/bin/tmath`). No environment setup is required after an install
+/// via `scripts/install.sh`.
 pub fn renderer_worker_path() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("TMATH_RENDER_WORKER") {
         return Ok(PathBuf::from(path));
     }
-    Err("TMATH_RENDER_WORKER must point at the built render subprocess".into())
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("../renderer/dist/renderer/subprocess.js");
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    Err("renderer subprocess not found; set TMATH_RENDER_WORKER or run scripts/install.sh".into())
 }
 
 /// Renders a full document (Markdown + `$...$`/`$$...$$` math) through the
