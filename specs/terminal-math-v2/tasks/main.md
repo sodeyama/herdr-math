@@ -127,14 +127,57 @@ Progress: T-100 through T-107 complete via commits `83111fd` (docs),
 
 ---
 
-## Phase 1 - Render Transport (outline)
+## Phase 1 - Render Transport
 
-- **T-201**: Define the versioned JSON IPC contract between Rust and `tmath-render`.
-- **T-202**: Wire the existing TypeScript renderer as a one-shot subprocess reading one request
-  and writing one response; enforce size/timeout/trust limits at the boundary.
-- **T-203**: Add IPC contract fixtures and integration tests for order, limits, and one-shot exit.
-- **T-204**: Add the renderer subprocess entrypoint and a `tmath render` placeholder that can drive
-  it for piped input.
+The goal of Phase 1 is the versioned JSON IPC between the Rust `tmath` binary and the
+one-shot TypeScript renderer subprocess, reusing the existing `renderer/*` pipeline. The
+subprocess must read exactly one bounded request on stdin, write exactly one bounded response
+(a transparent PNG plus dimensions, or a stable error) on stdout, and exit. The IPC boundary
+enforces size, timeout, and trust limits.
+
+### T-201: Define the versioned render IPC contract
+
+- Scope: Define the `tmath-render/1` protocol: a request carrying the source document, optional
+  pre-scanned formulas, and render options; a success response carrying width, height, byte size,
+  renderer name, and base64 PNG; and an error response carrying a safe error record. Encode the
+  protocol version and the bounded request/response size limits on both sides (TypeScript types and
+  Rust serde structs) and add contract fixtures.
+- Dependencies: T-107
+- Acceptance: `AT-2-200`, `AT-2-202`
+- Evidence: Unit, Contract
+- Commit: `feat(ipc): define versioned render contract`
+
+### T-202: Add the one-shot renderer subprocess
+
+- Scope: Add a TS entrypoint that reads one bounded JSON request on stdin, renders the document
+  with the existing pipeline (run the scanner when formulas are absent), applies the render timeout
+  and trust policy, writes one bounded JSON response on stdout, and exits. It must never stay
+  running after the response.
+- Dependencies: T-201
+- Acceptance: `AT-2-201`, `AT-2-203`
+- Evidence: Contract, Integration
+- Commit: `feat(renderer): add one-shot render subprocess`
+
+### T-203: Add render IPC fixtures and integration tests
+
+- Scope: Add request/response fixtures covering protocol version, formula and prose-plus-math
+  documents, invalid LaTeX, over-limit input, and errors. Add integration tests running the
+  subprocess end to end for one-request/one-response ordering, size limits, render timeout, trust
+  rejection, and one-shot exit behavior.
+- Dependencies: T-202
+- Acceptance: `AT-2-200`, `AT-2-201`, `AT-2-202`
+- Evidence: Contract, Integration
+- Commit: `test(ipc): cover the render transport contract`
+
+### T-204: Add a `tmath render` placeholder driving the subprocess
+
+- Scope: Add the Rust `tmath` binary with a `render` placeholder that reads a whole request (file
+  or `-` for stdin) and spawns the TS subprocess over pipes, forwarding the request and the bounded
+  response with clean exit codes. No placement or input loop yet; the transport is the deliverable.
+- Dependencies: T-202
+- Acceptance: `AT-2-200`, `AT-2-201`
+- Evidence: Contract, Integration
+- Commit: `feat(cli): add tmath render transport placeholder`
 
 ## Phase 2 - Placement and Scrollback Anchoring (outline)
 
