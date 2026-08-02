@@ -66,6 +66,8 @@ terminal images."
 - `tmath render <file | ->` over a file or stdin with bounded reads.
 - `tmath diagnose` for local capability checks (renderer subprocess, node, stdout terminal,
   Kitty graphics probe).
+- `tmath agent` / `tmath agent-viewer` (P1, experimental): watch a tmux pane running a coding
+  agent and show each finished answer as rendered Markdown + math in a viewer pane.
 - `tmath --help` / `tmath --version`.
 - Inline math delimited by `$...$` and display math by `$$...$$`; `\(...\)` and `\[...\]`
   retained.
@@ -204,6 +206,8 @@ input, timeout, and missing capabilities.
 
 Future versions may evaluate:
 
+- `tmath agent` watching a coding agent's pane and showing its answers in a viewer pane
+  (P1, in progress as Phase 8).
 - `tmath watch <file>` re-rendering on change.
 - `tmath ls` listing active placements.
 - Linux and Windows support.

@@ -49,6 +49,34 @@ a tall rendered document; `q` or Ctrl-C resets the terminal.
 
 If the built render subprocess is located elsewhere, set `TMATH_RENDER_WORKER` to its path.
 
+## Show a coding agent's answers in a viewer pane (experimental)
+
+`tmath agent` watches a tmux pane running a coding agent (Claude Code, Codex,
+opencode, Cursor, pi, and similar) and shows each finished answer as rendered
+Markdown + math in a right-hand viewer pane. This is a P1/experimental
+feature; the `0.2.0` release does not depend on it.
+
+```sh
+# Inside tmux. tmux 3.2+, with passthrough enabled for the window:
+tmux set-option -t <window> -w allow-passthrough on
+
+# Pane 1: run your coding agent.
+# Pane 2: watch pane 1 (use its pane id, e.g. %0):
+env TMATH_RENDER_WORKER=/abs/path/dist/renderer/subprocess.js \
+  /abs/path/target/debug/tmath agent --source-pane %0
+```
+
+The watcher creates the viewer pane, prints `tmath agent: watching ...` once,
+and then logs only bounded status to stderr. `q`/Ctrl-C stops it. Inside the
+viewer pane, the wheel and arrow keys scroll the current answer and `q`/
+Ctrl-C closes it.
+
+Known limitation: inside a tmux pane, Kitty images require the outer terminal
+to relay both the passthrough sequence and its reply. On the verified
+Ghostty 1.3.1 + tmux 3.5a setup the reply is not relayed yet, so the viewer
+fails closed with `no Kitty graphics support`. A direct (non-tmux) Ghostty
+terminal displays placements correctly.
+
 ## Diagnose
 
 ```sh

@@ -40,6 +40,15 @@ release matrix is repeated. A future compatibility claim must include clean inst
 rendering, placement, scrollback scroll, mouse and keyboard scrolling, failure preservation, and
 clean-exit evidence.
 
+## Agent integration (P1, experimental)
+
+`tmath agent` / `tmath agent-viewer` (Phase 8) run inside tmux 3.2+ and rely
+on the tmux DCS passthrough envelope (`allow-passthrough on`). Verified on a
+direct Ghostty terminal (placements display correctly); images inside a
+Ghostty 1.3.1 + tmux 3.5a pane are **not yet verified** — the `a=q` probe reply
+is not relayed back through tmux, so the viewer fails closed with a clear
+diagnostic. kitty and WezTerm tmux relay behavior is P1.
+
 ## Evidence
 
 - [Phase 0 terminal surface](evidence/2026-08-02-tmath-v2-phase0.md)

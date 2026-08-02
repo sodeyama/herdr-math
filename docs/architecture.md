@@ -139,6 +139,33 @@ input, delimiter-run, formula-count, and formula-character limits.
 Parses commands and options, reads the bounded document, drives the render subprocess, places in
 a terminal or prints a summary, and reports diagnostics.
 
+### 9. Agent integration (P1, experimental)
+
+Phase 8 adds two `tmath` subcommands that reuse the renderer and placement
+pipeline to show a coding agent's finished answers in a separate tmux pane:
+
+- `tmath-core::agent::boundary` — `find_answer(baseline, completion)` over
+  `tmux capture-pane` snapshots: exact/stable-prefix detection, repainted
+  working-frame and trailing-prompt stripping, and fail-closed rejection of
+  prompt-only, pure-repaint, and unrecoverable rewrites.
+- `tmath-core::agent::tmux` — a fixed allowlisted `tmux` CLI surface (split /
+  capture / display / kill) with validated pane ids; no agent content reaches
+  a shell.
+- `tmath-core::agent::codec` — bounded uns across a Unix socket with
+  length-prefixed JSON frames (`document`/`quit`).
+- `tmath agent` (watcher) owns the socket, splits the viewer pane, polls the
+  source pane, debounces, and emits each answer document.
+- `tmath agent-viewer` (in the viewer pane) renders each document through the
+  one-shot renderer, replaces the previous placement by image id, scrolls by
+  re-placing at a shifted home row, and closes on `q`/Ctrl-C.
+- Under `$TMUX`, every Kitty emit is wrapped in the tmux DCS passthrough
+  envelope (`kitty::wrapped_for_tty`, `ESC P ... ESC \`).
+
+Known limitation (recorded in `compatibility.md`): on the verified
+Ghostty 1.3.1 + tmux 3.5a setup the `a=q` probe reply is not relayed back
+through tmux, so images inside a tmux pane fail closed until the relay is
+resolved; a direct Ghostty terminal displays placements correctly.
+
 ## Concurrency and Atomicity
 
 Single-invocation semantics keep concurrency simple:

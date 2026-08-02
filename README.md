@@ -14,7 +14,9 @@ It runs in any Kitty-graphics-capable terminal such as Ghostty, kitty, or WezTer
 > (v0.1.0) to the standalone terminal-math renderer. The refactor plan is in
 > [specs/terminal-math-v2/plans/main.md](specs/terminal-math-v2/plans/main.md). Core
 > implementation is complete through Phase 5; release-gate evidence (real Ghostty run,
-> install, and tagged release) is still outstanding.
+> install, and tagged release) is still outstanding. A P1/experimental agent
+> integration (`tmath agent`, tmux viewer) is in Phase 8; see
+> [getting-started.md](docs/getting-started.md).
 
 ## Planned use
 
@@ -22,6 +24,9 @@ It runs in any Kitty-graphics-capable terminal such as Ghostty, kitty, or WezTer
 # Render a Markdown/LaTeX document and anchor the images in the terminal
 terminal-math render ./notes.md
 terminal-math render -          # read from stdin
+
+# Show a coding agent's finished answers (with rendered math) in a viewer pane
+tmath agent --source-pane %0    # inside tmux, watching pane %0 (experimental)
 ```
 
 ## Product boundaries
