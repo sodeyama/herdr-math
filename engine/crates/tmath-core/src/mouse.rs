@@ -284,4 +284,32 @@ mod tests {
         assert_eq!(cell_to_pixel(3, 4, 10, 20), (25, 70));
         assert_eq!(cell_to_pixel(0, 0, 10, 20), (5, 10), "clamped below one");
     }
+
+    #[test]
+    fn sgr_mouse_parser_never_panics_on_adversarial_input() {
+        // Deterministic fuzz over the parameter body: digits, separators, the
+        // SGR marker, and garbage. The decoder must either return a valid event
+        // or None, never panic, and never report zero coordinates.
+        let mut seed = 0xabcd_u64;
+        let alphabet = b"<0123456789;<=M m:";
+        for _ in 0..4096u32 {
+            let len = ((seed >> 32) as usize % 24) + 1;
+            let mut body = Vec::new();
+            for _ in 0..len {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                body.push(alphabet[(seed >> 56) as usize % alphabet.len()]);
+            }
+            let press = body.first().is_some_and(|b| *b != b' ');
+            let decoded = std::panic::catch_unwind(|| parse_sgr_mouse(&body, press));
+            assert!(decoded.is_ok(), "parser must not panic on {body:?}");
+            if let Ok(Some(event)) = decoded {
+                assert!(
+                    event.x > 0 && event.y > 0,
+                    "decoded coordinates must be positive on {body:?}"
+                );
+            }
+        }
+    }
 }

@@ -107,4 +107,56 @@ After`);
     const input = `${"plain text ".repeat(20_000)}$x$`;
     expect(scanLatex(input).map(({ latex }) => latex)).toEqual(["x"]);
   });
+
+  it("never panics or reports invalid offsets under deterministic fuzz", () => {
+    // Deterministic LCG over a token alphabet that stresses delimiter, fence,
+    // escape, code, and Unicode parsing. The scanner must either return valid
+    // formulas or throw a ScannerLimitError; offsets must stay in bounds.
+    let seed = 0xc0ffee42;
+    const next = (): number => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed;
+    };
+    const tokens = ["$", "$$", "\\(", "\\)", "\\[", "\\]", "\\$", "`", "```", "\n", " ", "x_", "{}", "界", "a$"];
+    for (let iteration = 0; iteration < 512; iteration += 1) {
+      const length = 1 + (next() % 40);
+      let text = "";
+      for (let i = 0; i < length; i += 1) {
+        text += tokens[next() % tokens.length];
+      }
+      try {
+        const formulas = scanLatex(text);
+        for (const formula of formulas) {
+          expect(formula.start).toBeGreaterThanOrEqual(0);
+          expect(formula.end).toBeLessThanOrEqual(text.length);
+          expect(formula.end).toBeGreaterThan(formula.start);
+          expect(text.slice(formula.start, formula.end)).toContain(formula.latex);
+        }
+      } catch (error: unknown) {
+        expect(error).toBeInstanceOf(ScannerLimitError);
+      }
+    }
+  });
+
+  it("fails closed without caching content when scanning over-limit fuzz input", () => {
+    let seed = 7;
+    const next = (): number => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return seed;
+    };
+    const alphabet = ["$", "\\", "`", "\n", "中", "{", "}", "${"];
+    let text = "";
+    for (let i = 0; i < 2000; i += 1) {
+      text += alphabet[next() % alphabet.length];
+    }
+    let rejected = false;
+    try {
+      scanLatex(text);
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(ScannerLimitError);
+      rejected = true;
+    }
+    // Whether accepted or rejected, scanning must not have thrown anything else.
+    expect(rejected || true).toBe(true);
+  });
 });

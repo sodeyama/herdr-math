@@ -567,4 +567,35 @@ mod tests {
         let out = String::from_utf8(term.io.writes.clone()).unwrap();
         assert!(out.contains("a=q,f=32,s=1,v=1"));
     }
+
+    #[test]
+    fn probe_parsers_never_panic_on_adversarial_input() {
+        // Deterministic fuzz over reply bytes for the cell-size, pixel-mouse,
+        // and graphics-probe decoders. They must return a value or None, never
+        // panic, and never report a zero/inverted cell or spurious support.
+        let mut seed = 0xfeed_u64;
+        let alphabet = b"\x1b[?;=0123456789$tyOKGi";
+        for _ in 0..4096u32 {
+            let len = ((seed >> 32) as usize % 40) + 1;
+            let mut buf = Vec::new();
+            for _ in 0..len {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                buf.push(alphabet[(seed >> 56) as usize % alphabet.len()]);
+            }
+            let cell = std::panic::catch_unwind(|| parse_cell_size_report(&buf));
+            assert!(cell.is_ok(), "cell-size parser must not panic on {buf:?}");
+            if let Ok(Some((w, h))) = cell {
+                assert!(w > 0 && h > 0, "cell size must be positive on {buf:?}");
+            }
+            let decrqm = std::panic::catch_unwind(|| parse_decrqm_1016(&buf));
+            assert!(decrqm.is_ok(), "DECRQM parser must not panic on {buf:?}");
+            let probe = std::panic::catch_unwind(|| parse_graphics_probe(&buf));
+            assert!(
+                probe.is_ok(),
+                "graphics probe parser must not panic on {buf:?}"
+            );
+        }
+    }
 }
