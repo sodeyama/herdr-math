@@ -351,7 +351,25 @@ fn viewer_command(
 }
 
 fn capture_source(pane: &PaneId, history: u32) -> Result<String, String> {
-    tmux_output(&capture(pane, history))
+    let snapshot = tmux_output(&capture(pane, history))?;
+    Ok(strip_own_log_lines(&snapshot))
+}
+
+/// Drops this watcher's own stderr banner/status lines from a captured
+/// snapshot. When the source pane is the watcher's own controlling terminal
+/// (self-watch), those lines land directly in the captured pane and would
+/// otherwise be mistaken for fresh answer content, causing the watcher to
+/// treat its own logging as an endless stream of new "answers".
+fn strip_own_log_lines(snapshot: &str) -> String {
+    const OWN_LOG_PREFIX: &str = "tmath agent: ";
+    snapshot
+        .lines()
+        .map(|line| match line.find(OWN_LOG_PREFIX) {
+            Some(index) => &line[..index],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn pane_alive(pane: &PaneId) -> bool {
@@ -463,6 +481,29 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn strip_own_log_lines_removes_a_full_log_line() {
+        let snapshot = "❯ prompt\n\ntmath agent: document_sent bytes=119\n";
+        assert_eq!(strip_own_log_lines(snapshot), "❯ prompt\n\n");
+    }
+
+    #[test]
+    fn strip_own_log_lines_truncates_a_line_that_ends_with_a_log_message() {
+        // Self-watch: the watcher's own stderr banner lands mid-line, right
+        // after the last answer line captured from the same pane/tty.
+        let snapshot = "  └ Successfully loaded skilltmath agent: document_sent bytes=119\n";
+        assert_eq!(
+            strip_own_log_lines(snapshot),
+            "  └ Successfully loaded skill"
+        );
+    }
+
+    #[test]
+    fn strip_own_log_lines_leaves_unrelated_content_untouched() {
+        let snapshot = "❯ Derive the result.\nThe answer is $x=2$.\n❯ ";
+        assert_eq!(strip_own_log_lines(snapshot), snapshot);
     }
 
     #[test]
