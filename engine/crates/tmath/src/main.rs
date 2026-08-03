@@ -196,9 +196,7 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
     // so graphics support is assumed (fire-and-forget transmits); everywhere
     // else the probe stays mandatory and fail-closed.
     if tmath_core::kitty::inside_tmux() {
-        eprintln!(
-            "tmath: tmux passthrough assumed; require allow-passthrough on the tmux window"
-        );
+        eprintln!("tmath: tmux passthrough assumed; require allow-passthrough on the tmux window");
     } else if !terminal
         .probe_graphics_support()
         .map_err(|error| format!("probe graphics: {error}"))?

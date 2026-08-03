@@ -248,12 +248,21 @@ impl Default for StdioTty {
     }
 }
 
-/// Opens `/dev/tty` when stdin is not a terminal so interactive control still
-/// reaches the real terminal; `None` when stdin is the terminal or no
-/// controlling terminal exists (a non-interactive run).
+/// Opens a control device for probes and input when stdin is not a terminal.
+///
+/// stdout is preferred: it is the original terminal descriptor, which `poll(2)`
+/// reports as `POLLIN` when the emulator answers a query. A freshly opened
+/// `/dev/tty` descriptor reports the readiness as `POLLPRI` on macOS instead of
+/// `POLLIN`, which readiness checks would miss. `/dev/tty` remains a fallback.
 fn open_control_terminal() -> Option<File> {
     if io::stdin().is_terminal() {
         return None;
+    }
+    if io::stdout().is_terminal() {
+        let stdout = io::stdout();
+        if let Ok(owned) = stdout.as_fd().try_clone_to_owned() {
+            return Some(File::from(owned));
+        }
     }
     std::fs::OpenOptions::new()
         .read(true)

@@ -36,11 +36,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   so the worker runs when its path is under a symlinked directory, and the process drains stdout
   before exiting so larger responses are never truncated.
 - `tmath render -` with a piped document no longer fails with
-  `Inappropriate ioctl for device`: when stdin is not a terminal the controlling
-  terminal (`/dev/tty`) is used for raw mode, probes, and input, so piping a
-  document into `tmath render -` places the image in a real Kitty-capable
-  terminal. `tmath render` also assumes tmux passthrough inside tmux, matching
-  `tmath agent-viewer`.
+  `Inappropriate ioctl for device`: when stdin is not a terminal the original
+  stdout descriptor is used for raw mode, probes, and input. (A freshly opened
+  `/dev/tty` descriptor was tried first, but macOS `poll(2)` reports its
+  readiness as `POLLPRI` rather than `POLLIN`, which made capability probes
+  time out and leak the terminal's reply.) `tmath render` also assumes tmux
+  passthrough inside tmux, matching `tmath agent-viewer`.
 
 ### Security
 
