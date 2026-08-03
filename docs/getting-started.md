@@ -69,8 +69,13 @@ cat notes.md | ./target/debug/tmath render -
 
 Terminal Math renders `$...$` and `$$...$$` equations and the strict allowlisted Markdown subset
 (headings, emphasis, lists, quotes, tables, code blocks, inert links). The image is placed into
-the main terminal buffer so it scrolls with the shell scrollback. Mouse wheel and keyboard scroll
-a tall rendered document; `q` or Ctrl-C resets the terminal.
+the main terminal buffer so it scrolls with the shell scrollback.
+
+- With a file argument in a terminal, the document stays interactive: mouse wheel and keyboard
+  scroll it, and `q` or Ctrl-C returns to the shell.
+- With a piped document (`tmath render -`), the image is placed and the command returns right
+  away, since the pipeline cannot receive key input; scroll the image with the normal terminal
+  scrollback (or use `tmath agent` for an interactive viewer pane).
 
 If the built render subprocess is located elsewhere, set `TMATH_RENDER_WORKER` to its path.
 

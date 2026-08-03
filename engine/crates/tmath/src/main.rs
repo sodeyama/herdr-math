@@ -243,7 +243,14 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
         .map_err(|error| format!("flush placement: {error}"))?;
     drop(stdout);
 
-    run_scroll_loop(terminal.tty_mut()).map_err(|error| format!("input loop: {error}"))?;
+    // When the document came from the terminal (file argument), enter the
+    // interactive scroll loop so the user can scroll with the wheel/keys and
+    // exit with `q`. When it came from a pipe (`tmath render -`), the user
+    // cannot type into it, so holding the terminal would hang the shell;
+    // instead place the scrollback-anchored image and return immediately.
+    if io::stdin().is_terminal() {
+        run_scroll_loop(terminal.tty_mut()).map_err(|error| format!("input loop: {error}"))?;
+    }
     terminal
         .reset()
         .map_err(|error| format!("reset terminal: {error}"))?;

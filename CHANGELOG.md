@@ -44,6 +44,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   passthrough inside tmux, matching `tmath agent-viewer`, and enables the
   window's `allow-passthrough` option automatically (best-effort) when running
   under tmux.
+- `tmath render -` no longer holds the terminal after placing: when the
+  document comes from a pipe, the image is placed and the command returns
+  immediately (the image stays in the terminal scrollback), instead of
+  blocking the shell in an input loop the pipeline cannot drive.
 
 ### Security
 
