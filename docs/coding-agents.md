@@ -8,12 +8,16 @@ same command works for Claude Code, Codex, opencode, Cursor Agent, and pi.
 After [one `tmath` install](getting-started.md#install), every agent also gets
 the `tmath` skill linked into its skills directory, so you can ask an agent to
 "show this as math" and it will pipe the Markdown/LaTeX through `tmath render`.
+The installer also offers an opt-in shell integration
+([Auto-watch](#auto-watch-opt-in-per-directory) below) that starts the
+watcher automatically for allowlisted directories, so you never have to find
+a pane id by hand.
 
 ## Setup once (tmux)
 
 ```sh
-# inside tmux (tmath enables passthrough automatically; manual is optional)
-tmux set-option -t <window> -w allow-passthrough on   # requires 3.2+
+# Optional: only needed when forcing the DCS passthrough route
+tmux set-option -t <window> -w allow-passthrough on   # requires 3.3+
 which tmath && tmath diagnose                         # verify install
 ```
 
@@ -33,6 +37,39 @@ answer (prose + typeset `$...$`/`$$...$$` math), logs only bounded status to
 stderr, and stops on `q`/Ctrl-C. Scroll the viewer with the wheel or arrow
 keys; `q`/Ctrl-C closes it.
 
+## Auto-watch (opt-in, per directory)
+
+Instead of finding a pane id and running `tmath agent` by hand, install the
+shell integration once and let it start the watcher for you:
+
+```sh
+tmath agent-enable            # allowlist the current directory (+ subdirectories)
+tmath agent-disable           # remove it again
+tmath agent-allowed            # check the current directory (silent, exit code only)
+```
+
+`scripts/install.sh` installs `$APP/shell/tmath-agent.sh` and sources it from
+`~/.zshrc`/`~/.bashrc` via a marker-delimited block (`TMATH_SKIP_SHELL_INTEGRATION=1`
+skips this). It wraps `claude`, `codex`, `opencode`, `cursor-agent`, and `pi`:
+
+- **Not allowlisted, or `tmath` missing**: the real command runs unmodified;
+  `tmath` never runs.
+- **Allowlisted, inside tmux**: a `tmath agent --source-pane <this pane>`
+  watcher starts in the background, then the real command runs in the
+  foreground of the same pane. A pane-scoped lock file prevents starting a
+  second watcher for a pane that already has one; a lock left behind by a
+  watcher that died is reclaimed automatically.
+- **Allowlisted, outside tmux, interactive terminal**: a new tmux session is
+  created with the agent command in one pane and the watcher in a second pane
+  (an explicit two-pane session, since a plain `tmux new-session <cmd>` never
+  sources shell rc files), and the session is attached.
+- **Allowlisted, outside tmux, non-interactive** (piped or redirected):
+  passes through untouched, same as not being allowlisted.
+
+The allowlist lives at `${XDG_CONFIG_HOME:-~/.config}/tmath/agent-allowlist`
+(one canonicalized absolute path per line) and starts empty after install, so
+nothing changes until you run `tmath agent-enable`.
+
 ## Per-agent notes
 
 All agents appear the same to the watcher (a pane + text). The differences are
@@ -43,8 +80,8 @@ the prompt glyph the watcher recognizes and known boundary limitations.
 | Claude Code | `claude` | `❯` | Yes | Verified prompt glyph; matches the corpus fixture. |
 | Codex | `codex` | `›` | Yes | Working frames (`• Working …`) are not treated as answers. |
 | opencode | `opencode` | `┃ prompt:` | Yes | `┃ answer:` lines are kept as content; only `┃ prompt:` acts as the boundary. |
-| Cursor Agent | `cursor-agent` | `>` | Partial | Plain-text prompts are recognized when they start a line; aggressive in-progress repaints can reset the boundary. |
-| pi | `pi` | `Current prompt > …` (inline) | Not yet | Prompts are inline plain text; answer-boundary detection for pi is a P1 item (spec T-905). |
+| Cursor Agent | `cursor-agent` | `>` | Yes | Tool-activity prefixes are removed before the final answer is rendered. |
+| pi | `pi` | `Current prompt > …` (inline) | Yes | Repeated contextual prompt anchors recover answers after full-screen repaint or capture truncation. |
 
 General guidance:
 
@@ -56,10 +93,16 @@ General guidance:
 - **Boundary confusion** (big repaint, pane cleared, resize): the watcher
   fails closed and logs `boundary_failed`; it re-anchors on the next stable
   answer rather than rendering a broken split.
-- **Terminals**: inside tmux, queries cannot round-trip, so the viewer uses
-  optimistic passthrough; it requires `allow-passthrough on` and a
-  Kitty-graphics outer terminal. Outside tmux, `tmath render` probes normally
-  and fails closed when Kitty is missing.
+- **Terminals**: inside tmux, queries cannot round-trip reliably. The default
+  route sends only Kitty graphics commands to the attached client tty while
+  cursor movement and placeholder cells stay in tmux. This works around DCS
+  relay differences in Ghostty and cmux. Set
+  `TMATH_TMUX_TRANSPORT=passthrough` to use individually wrapped, ESC-doubled
+  DCS commands instead. Outside tmux, `tmath render` probes normally and fails
+  closed when Kitty is missing.
+- **Captured tool stdout**: a coding agent's shell tool may capture stdout, so
+  an agent-launched `tmath render -` is not guaranteed to reach the visible
+  terminal. The watcher + viewer pane is the standard agent workflow.
 
 ## Let an agent show math to you
 
@@ -77,10 +120,16 @@ readable image next to the conversation. If the terminal lacks Kitty support
 
 - `tmath: renderer subprocess not found` — re-run the installer, or set
   `TMATH_RENDER_WORKER=/abs/path/dist/renderer/subprocess.js`.
-- Viewer pane opens then closes — the outer terminal did not relay the image:
-  confirm `allow-passthrough on` on the tmux window and run `tmath diagnose`.
+- Viewer pane opens then closes — run `tmath diagnose` inside the source tmux
+  session and confirm that a visible client tty and a known Kitty terminal are
+  reported. For forced DCS passthrough, also confirm `allow-passthrough on`.
 - Nothing updates — the agent repainted the whole pane (boundary reset); wait
   for the next finished answer, and check the watcher stderr for
   `boundary_failed`.
 - `kitty graphics: unsupported` in `tmath diagnose` — the current terminal does
   not support the Kitty graphics protocol.
+- Auto-watch never starts — check `tmath agent-allowed` in the directory you
+  expect it to fire from (silent; exit `0` means allowlisted, exit `1` means
+  not). If it is allowlisted and still nothing happens, confirm the shell rc
+  file was updated (`grep -A2 'tmath shell integration' ~/.zshrc`) and that
+  you started a new shell after installing.

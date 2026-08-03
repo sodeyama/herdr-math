@@ -87,7 +87,7 @@ Markdown + math in a right-hand viewer pane. This is a P1/experimental
 feature; the `0.2.0` release does not depend on it.
 
 ```sh
-# Inside tmux (tmath enables passthrough automatically, so this is optional):
+# Optional, only when forcing TMATH_TMUX_TRANSPORT=passthrough:
 tmux set-option -t <window> -w allow-passthrough on
 
 # Pane 1: run your coding agent.
@@ -101,17 +101,47 @@ path to the viewer automatically. `q`/Ctrl-C stops the watcher. Inside the
 viewer pane, the wheel and arrow keys scroll the current answer and `q`/
 Ctrl-C closes it.
 
-Inside tmux, tmux cannot relay query replies, so the viewer skips its
-graphics probe (optimistic passthrough) and enables the window's
-`allow-passthrough` option automatically; images are carried to the outer
-terminal with the tmux passthrough envelope `ESC Ptmux; ...`. Requirements:
-tmux 3.2+ and a Kitty-graphics-capable outer terminal (Ghostty, kitty, ...).
-If the outer terminal does not relay the transmit, nothing is displayed, but
-nothing crashes. Outside tmux, `tmath render` and the viewer probe normally and
-fail closed on missing Kitty support.
+Inside tmux, query replies are not reliable, so the viewer uses a
+graphics-only route to the attached client's tty by default. Cursor movement,
+terminal modes, and Unicode placeholder cells continue through tmux normally,
+which preserves pane clipping and redraw. This route is verified with Ghostty
+1.3.1 and cmux 0.64.12 on tmux 3.5a. Set
+`TMATH_TMUX_TRANSPORT=passthrough` to force the standards-based route; each
+Kitty APC is independently ESC-doubled and requires tmux 3.3+ with
+`allow-passthrough on`. Unknown outer terminals fail closed before placeholder
+output. Outside tmux, `tmath render` probes normally.
 
 Per-agent notes (Claude Code, Codex, opencode, Cursor Agent, pi): see
 [Coding agents](coding-agents.md).
+
+### Auto-watch (opt-in, per directory)
+
+Starting `tmath agent` by hand still requires finding the source pane id.
+`scripts/install.sh` also installs an opt-in shell integration that wraps
+`claude`, `codex`, `opencode`, `cursor-agent`, and `pi` and starts the watcher
+automatically — but only inside directories you explicitly allowlist. Right
+after install, the allowlist is empty, so nothing changes until you opt in:
+
+```sh
+# Allow auto-watch for the current directory (and its subdirectories):
+tmath agent-enable
+
+# Remove it again:
+tmath agent-disable
+
+# Check whether the current directory is allowlisted (silent, exit code only):
+tmath agent-allowed
+```
+
+Once a directory is allowlisted, running `claude` (or another wrapped
+command) there starts a `tmath agent` watcher in the background for that
+pane — inside tmux, in the current pane; outside tmux with an interactive
+terminal, in a new two-pane tmux session (agent pane + watcher pane) that
+gets attached automatically. Non-interactive invocations (pipes, redirects)
+always pass through untouched.
+
+Set `TMATH_SKIP_SHELL_INTEGRATION=1` before running the installer to skip the
+`~/.zshrc`/`~/.bashrc` edit entirely.
 
 ## Diagnose
 

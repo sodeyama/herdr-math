@@ -23,12 +23,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Bounded, privacy-preserving logs, stable error records, and fuzz/adversarial parser coverage.
 - The Herdr plugin contract (`herdr-plugin.toml`, `src/herdr`, viewer, graphics, manifest,
   boundary, state, events, config, presentation, diagnostics) removed; V1 is superseded.
-- `tmath agent` / `tmath agent-viewer`: watch a tmux pane running a coding agent and show each
-  finished answer (prose + typeset math) in a viewer pane, with tmux passthrough support.
+- `tmath agent` / `tmath agent-viewer`: watch a tmux pane running a coding
+  agent and show each finished answer (prose + typeset math) in a viewer pane.
+  The default validated client-tty graphics route supports Ghostty and cmux;
+  `TMATH_TMUX_TRANSPORT=passthrough` selects stable tmux DCS passthrough.
 - One-command install (`scripts/install.sh`, `npm run install:local`): builds and installs the
   binary + renderer to `~/.local/share/tmath`, a `~/.local/bin/tmath` launcher, renderer
   auto-discovery (no `TMATH_RENDER_WORKER` needed), and a `tmath` skill linked into coding-agent
   skill directories (Claude Code, Codex, Cursor, opencode, pi).
+- Opt-in shell auto-watch: `tmath agent-enable`/`agent-disable`/`agent-allowed` manage a
+  per-directory allowlist, and `scripts/install.sh` sources a shell wrapper from
+  `~/.zshrc`/`~/.bashrc` (`TMATH_SKIP_SHELL_INTEGRATION=1` to skip) that starts a background
+  `tmath agent` watcher automatically when `claude`, `codex`, `opencode`, `cursor-agent`, or `pi`
+  runs in an allowlisted directory.
 
 ### Fixed
 
@@ -50,6 +57,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   blocking the shell in an input loop the pipeline cannot drive.
 - `tmath render` places the image directly below the current command line
   (cursor-relative home row) instead of at the top row of the terminal.
+- `tmath render` no longer adds a spurious blank line before the image when
+  the shell has already moved the cursor to the start of a line (e.g. right
+  after a piped `tmath render -`): the cursor column is queried via `CSI 6n`
+  and the placement only advances a line when the cursor is not already at
+  column 1.
+- tmux graphics now double embedded `ESC` bytes and wrap each Kitty APC
+  independently; terminal modes, cursor movement, and placeholder cells remain
+  pane-local. Agent viewer scrolling crops and replaces the visible RGBA
+  viewport, and replacement clears stale placeholder cells.
+- Agent answer boundaries now cover pi contextual repaints, opencode sliding
+  capture windows, and Cursor CLI tool-activity prefixes.
 
 ### Security
 
