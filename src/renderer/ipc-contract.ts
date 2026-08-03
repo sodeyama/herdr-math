@@ -15,8 +15,12 @@ import type { RendererLayout } from "./layout.js";
 
 export const IPC_PROTOCOL = "tmath-render/1";
 
-/** Maximum bytes read for a request payload before the boundary rejects it. */
-export const IPC_MAX_REQUEST_BYTES = 1024 * 1024;
+/**
+ * Maximum bytes read for a request payload before the boundary rejects it.
+ * Sized above `POLICY_LIMITS.scannerInputBytes` (160 MiB) to leave room for
+ * JSON envelope overhead (escaping, field names) around the source document.
+ */
+export const IPC_MAX_REQUEST_BYTES = 192 * 1024 * 1024;
 
 /** Maximum bytes accepted for a response payload (PNG + envelope). */
 export const IPC_MAX_RESPONSE_BYTES = 768 * 1024;

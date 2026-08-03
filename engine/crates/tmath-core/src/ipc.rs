@@ -9,8 +9,10 @@
 /// Protocol version shared with `src/renderer/ipc-contract.ts`.
 pub const IPC_PROTOCOL: &str = "tmath-render/1";
 
-/// Maximum bytes accepted for a request payload.
-pub const IPC_MAX_REQUEST_BYTES: usize = 1024 * 1024;
+/// Maximum bytes accepted for a request payload. Sized above
+/// `POLICY_LIMITS.scannerInputBytes` (160 MiB) to leave room for JSON envelope
+/// overhead (escaping, field names) around the source document.
+pub const IPC_MAX_REQUEST_BYTES: usize = 192 * 1024 * 1024;
 
 /// Maximum bytes accepted for a response payload (PNG + envelope).
 pub const IPC_MAX_RESPONSE_BYTES: usize = 768 * 1024;
