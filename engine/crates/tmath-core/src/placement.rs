@@ -286,6 +286,33 @@ pub fn emit_placed_block(
     out
 }
 
+/// Builds the byte sequence that places a block directly below the current
+/// cursor position instead of at an absolute home row, so an interactive or
+/// piped render appears right under the command line rather than at the top of
+/// the terminal. The cursor is advanced to the start of the next line, the
+/// virtual placement is transmitted, and the placeholder grid is written over
+/// the cells the cursor now sits on.
+pub fn emit_placed_block_cursor(
+    image_id: u32,
+    width_px: u32,
+    height_px: u32,
+    rgba: &[u8],
+    cols: u32,
+    rows: u32,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(&kitty::kitty_transmit_placed(
+        image_id,
+        width_px,
+        height_px,
+        rgba,
+        Placement::Cells { cols, rows },
+    ));
+    out.extend_from_slice(&placeholder_grid_at_cursor(image_id, cols, rows));
+    out
+}
+
 /// Builds the byte sequence that replaces a block: delete the stale image by id
 /// first, then place the new image at the same home row.
 pub fn emit_replaced_block(
@@ -474,6 +501,29 @@ mod tests {
         assert_eq!(tracker.home_row_of(a.image_id), Some(1));
         assert_eq!(tracker.home_row_of(b.image_id), Some(2));
         assert_eq!(tracker.home_row_of(999), None);
+    }
+
+    #[test]
+    fn cursor_relative_placement_advances_one_line() {
+        let out = emit_placed_block_cursor(9, 12, 24, &[0xab; 12 * 24 * 4], 1, 1);
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.starts_with("\r\n"),
+            "cursor advances to the next line first"
+        );
+        assert!(
+            text.contains("i=9,U=1,c=1,r=1,q=2"),
+            "virtual placement keys"
+        );
+        assert!(
+            text.contains("\x1b[38;2;0;0;9m"),
+            "image id encoded as color"
+        );
+        assert!(text.ends_with("\x1b[39m"), "color reset at the end");
+        assert!(
+            !text.contains("[1;1H"),
+            "no absolute home-row move for a cursor-relative placement"
+        );
     }
 
     #[test]

@@ -19,7 +19,8 @@ use base64::Engine as _;
 use serde_json::json;
 use tmath_core::ipc::{RenderOptions, RenderResponse, IPC_MAX_REQUEST_BYTES};
 use tmath_core::placement::{
-    decode_png, emit_placed_block, CellSize, PlacementError, PlacementLimits, PlacementTracker,
+    decode_png, emit_placed_block_cursor, CellSize, PlacementError, PlacementLimits,
+    PlacementTracker,
 };
 use tmath_core::terminal::{StdioTty, Terminal, Tty};
 
@@ -200,7 +201,9 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
         if enable_tmux_passthrough() {
             eprintln!("tmath: tmux passthrough enabled (allow-passthrough on)");
         } else {
-            eprintln!("tmath: tmux passthrough assumed; run 'tmux set-option -w allow-passthrough on'");
+            eprintln!(
+                "tmath: tmux passthrough assumed; run 'tmux set-option -w allow-passthrough on'"
+            );
         }
     } else if !terminal
         .probe_graphics_support()
@@ -224,16 +227,8 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
             },
         )
         .map_err(|error: PlacementError| format!("place image: {error}"))?;
-    let home_row = tracker.home_row_for_next().max(1);
-    let placement = emit_placed_block(
-        block.image_id,
-        width,
-        height,
-        &rgba,
-        block.cols,
-        block.rows,
-        home_row,
-    );
+    let placement =
+        emit_placed_block_cursor(block.image_id, width, height, &rgba, block.cols, block.rows);
     let mut stdout = io::stdout().lock();
     stdout
         .write_all(&tmath_core::kitty::wrapped_for_tty(&placement))
@@ -311,7 +306,8 @@ pub(crate) fn enable_tmux_passthrough() -> bool {
         .unwrap_or(false)
 }
 
-fn read_document(path: &str) -> Result<String, String> {    let mut text = String::new();
+fn read_document(path: &str) -> Result<String, String> {
+    let mut text = String::new();
     if path == "-" {
         io::stdin()
             .take((IPC_MAX_REQUEST_BYTES + 1) as u64)

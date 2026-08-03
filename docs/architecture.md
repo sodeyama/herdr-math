@@ -116,8 +116,9 @@ through the state machine, clamping to `[0, max]`. `is_exit_signal` recognizes `
 ### 5. Placement (`placement.rs`)
 
 The tracker assigns image ids, enforces concurrent-placement and total-pixel limits, and stacks
-blocks in source order. `emit_placed_block` moves the cursor home, transmits the virtual
-placement, and writes the placeholder grid; replacement emits a scoped delete first.
+blocks in source order. `emit_placed_block_cursor` advances one line from the
+current cursor and transmits the virtual placement over the cells there, so an
+interactive or piped render appears directly under the command line; replacement emits a scoped delete first.
 
 ### 6. Scanner (`src/scanner/scan-latex.ts`)
 

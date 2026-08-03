@@ -48,6 +48,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   document comes from a pipe, the image is placed and the command returns
   immediately (the image stays in the terminal scrollback), instead of
   blocking the shell in an input loop the pipeline cannot drive.
+- `tmath render` places the image directly below the current command line
+  (cursor-relative home row) instead of at the top row of the terminal.
 
 ### Security
 
