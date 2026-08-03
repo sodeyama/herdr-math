@@ -75,6 +75,7 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     // renderer worker path must be passed explicitly on the command line.
     let viewer_cmd = viewer_command(&exe, &worker, &socket_path);
     let viewer_pane = spawn_viewer_pane(&parsed, &source, &viewer_cmd)?;
+    let _ = crate::enable_tmux_passthrough();
 
     eprintln!(
         "tmath agent: watching {} → {}; q/Ctrl-C to stop",

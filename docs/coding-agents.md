@@ -12,8 +12,8 @@ the `tmath` skill linked into its skills directory, so you can ask an agent to
 ## Setup once (tmux)
 
 ```sh
-# inside tmux
-tmux set-option -t <window> -w allow-passthrough on   # images, requires 3.2+
+# inside tmux (tmath enables passthrough automatically; manual is optional)
+tmux set-option -t <window> -w allow-passthrough on   # requires 3.2+
 which tmath && tmath diagnose                         # verify install
 ```
 

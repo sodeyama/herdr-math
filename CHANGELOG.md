@@ -41,7 +41,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `/dev/tty` descriptor was tried first, but macOS `poll(2)` reports its
   readiness as `POLLPRI` rather than `POLLIN`, which made capability probes
   time out and leak the terminal's reply.) `tmath render` also assumes tmux
-  passthrough inside tmux, matching `tmath agent-viewer`.
+  passthrough inside tmux, matching `tmath agent-viewer`, and enables the
+  window's `allow-passthrough` option automatically (best-effort) when running
+  under tmux.
 
 ### Security
 

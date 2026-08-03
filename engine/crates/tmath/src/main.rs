@@ -193,10 +193,15 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
     let mut terminal = Terminal::new(StdioTty::default(), 1)
         .map_err(|error| format!("initialize terminal: {error}"))?;
     // Inside tmux, capability queries cannot round-trip through passthrough,
-    // so graphics support is assumed (fire-and-forget transmits); everywhere
-    // else the probe stays mandatory and fail-closed.
+    // so graphics support is assumed. Enable the window's passthrough option
+    // so the forwarded image reaches the outer terminal; everywhere else the
+    // probe stays mandatory and fail-closed.
     if tmath_core::kitty::inside_tmux() {
-        eprintln!("tmath: tmux passthrough assumed; require allow-passthrough on the tmux window");
+        if enable_tmux_passthrough() {
+            eprintln!("tmath: tmux passthrough enabled (allow-passthrough on)");
+        } else {
+            eprintln!("tmath: tmux passthrough assumed; run 'tmux set-option -w allow-passthrough on'");
+        }
     } else if !terminal
         .probe_graphics_support()
         .map_err(|error| format!("probe graphics: {error}"))?
@@ -285,8 +290,21 @@ fn run_scroll_loop(tty: &mut StdioTty) -> std::io::Result<()> {
     }
 }
 
-fn read_document(path: &str) -> Result<String, String> {
-    let mut text = String::new();
+/// Best-effort enable of tmux passthrough for the current window, so an image
+/// carrying tmux DCS sequences is forwarded to the outer terminal. Returns
+/// whether tmux reported success.
+pub(crate) fn enable_tmux_passthrough() -> bool {
+    Command::new("tmux")
+        .args(["set-option", "-w", "allow-passthrough", "on"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn read_document(path: &str) -> Result<String, String> {    let mut text = String::new();
     if path == "-" {
         io::stdin()
             .take((IPC_MAX_REQUEST_BYTES + 1) as u64)

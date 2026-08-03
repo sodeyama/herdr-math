@@ -82,13 +82,12 @@ Markdown + math in a right-hand viewer pane. This is a P1/experimental
 feature; the `0.2.0` release does not depend on it.
 
 ```sh
-# Inside tmux. tmux 3.2+, with passthrough enabled for the window:
+# Inside tmux (tmath enables passthrough automatically, so this is optional):
 tmux set-option -t <window> -w allow-passthrough on
 
 # Pane 1: run your coding agent.
 # Pane 2: watch pane 1 (use its pane id, e.g. %0):
-env TMATH_RENDER_WORKER=/abs/path/dist/renderer/subprocess.js \
-  /abs/path/target/debug/tmath agent --source-pane %0
+tmath agent --source-pane %0
 ```
 
 The watcher creates the viewer pane, prints `tmath agent: watching ...` once,
@@ -98,13 +97,13 @@ viewer pane, the wheel and arrow keys scroll the current answer and `q`/
 Ctrl-C closes it.
 
 Inside tmux, tmux cannot relay query replies, so the viewer skips its
-graphics probe (optimistic passthrough) and logs a short stderr warning;
-images are carried to the outer terminal with the tmux passthrough envelope
-`ESC Ptmux; ...`. Requirements: tmux `allow-passthrough on` (shown above) and
-a Kitty-graphics-capable outer terminal (Ghostty, kitty, ...). If the outer
-terminal does not relay the transmit, nothing is displayed, but nothing
-crashes. Outside tmux, `tmath render` and the viewer probe normally and fail
-closed on missing Kitty support.
+graphics probe (optimistic passthrough) and enables the window's
+`allow-passthrough` option automatically; images are carried to the outer
+terminal with the tmux passthrough envelope `ESC Ptmux; ...`. Requirements:
+tmux 3.2+ and a Kitty-graphics-capable outer terminal (Ghostty, kitty, ...).
+If the outer terminal does not relay the transmit, nothing is displayed, but
+nothing crashes. Outside tmux, `tmath render` and the viewer probe normally and
+fail closed on missing Kitty support.
 
 Per-agent notes (Claude Code, Codex, opencode, Cursor Agent, pi): see
 [Coding agents](coding-agents.md).
