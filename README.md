@@ -38,6 +38,10 @@ terminal-math render -          # read from stdin
 
 # Show a coding agent's finished answers (with rendered math) in a viewer pane
 tmath agent --source-pane %0    # inside tmux, watching pane %0 (experimental)
+
+# Or opt a directory into starting that watcher automatically for claude/codex/
+# opencode/cursor-agent/pi (installed by scripts/install.sh, disabled by default)
+tmath agent-enable
 ```
 
 ## Product boundaries

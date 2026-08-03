@@ -1,10 +1,17 @@
 # Terminal Math — Session Handoff (2026-08-03)
 
-Passing this repo's current state, delivery history, and the open debugging
-thread to the next working session. Repo: `sodeyama/terminal-math` (public
-identity: `tmath`, product "Terminal Math").
+Passing this repo's current state and delivery history to the next working
+session. Repo: `sodeyama/terminal-math` (public identity: `tmath`, product
+"Terminal Math").
 
-## Current state
+**Update (later on 2026-08-03):** the "CURRENT OPEN PROBLEM" below (tmux
+image pixels not displaying) has been root-caused and fixed — see
+[Resolution](#resolution-2026-08-03-later) at the end of this document
+before reading the investigation notes as still-open. A further session
+also added opt-in shell auto-watch (`tmath agent-enable`); see
+[docs/coding-agents.md](coding-agents.md#auto-watch-opt-in-per-directory).
+
+## Current state (as of the original handoff)
 
 - `main` at `b21294f` (`fix(placement): place renders below the command line...`), pushed to
   `origin/main` (`git@github.com:sodeyama/terminal-math.git`). Working tree clean.
@@ -138,3 +145,37 @@ placed width=480 height=24 image_id=1
   (boundary/codec/tmux), `src/renderer/subprocess.ts` (entry realpath + drain fix).
 - Docs: `docs/coding-agents.md`, `docs/getting-started.md`, `docs/architecture.md`,
   `specs/terminal-math-v2/{tests,plans,tasks}/main.md` (Phase 8), `docs/evidence/*`.
+
+## Resolution (2026-08-03, later)
+
+The root cause matched hypothesis 5 above (wrap scope): `wrapped_for_tty` DCS-wrapped the
+*entire* emit (transmit + placeholder grid + cursor moves) in one `\ePtmux;...` envelope and did
+not double embedded `ESC` bytes inside it, so tmux either swallowed pane-local output alongside
+the graphics command or forwarded a malformed passthrough string.
+
+Fix, landed as structured pane-local/graphics operations
+(`engine/crates/tmath-core/src/placement.rs::TerminalOp`, `engine/crates/tmath/src/
+terminal_output.rs`):
+
+- Kitty APC upload chunks are framed as independent commands
+  (`kitty_transmit_placed_commands`) instead of one concatenated blob.
+- Each Kitty APC is wrapped in its own `\ePtmux;...\e\\` envelope with every embedded `ESC`
+  doubled (`kitty::dcs_wrap`); pane-local bytes (cursor movement, terminal modes, placeholder
+  cells, color CSI, line breaks) are written as normal tmux pane output, never wrapped.
+- A graphics route is selected per environment
+  (`terminal_output::selected_route`/`Route::{Direct,TmuxPassthrough,TmuxClientTty}`): the
+  default inside tmux writes only Kitty commands directly to the attached client's tty (bypassing
+  tmux's DCS relay entirely for graphics), with `TMATH_TMUX_TRANSPORT=passthrough` selecting the
+  corrected DCS route. Outside tmux, direct writes are used as before.
+- `known_outer_terminal()` fails closed (refuses placeholder output) unless the outer terminal is
+  advertised or otherwise verified as Kitty-capable, instead of assuming any tmux client can
+  display graphics.
+
+Verified with controlled pixel display on Ghostty 1.3.1 + tmux 3.5a (both routes) and cmux
+0.64.12 + tmux 3.5a (client-tty route) — see
+[docs/evidence/2026-08-03-tmath-tmux-graphics.md](evidence/2026-08-03-tmath-tmux-graphics.md).
+Resize, detach/attach, multiple clients, and the full live-agent boundary matrix remain the
+open P1 items tracked as `AT-2-806`/`AT-2-810`/`AT-2-811` in
+`specs/terminal-math-v2/tests/main.md` — narrower claims than the earlier "supported" framing in
+this document's investigation notes above, which predate the fix and should be read as history,
+not current status.
