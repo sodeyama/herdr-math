@@ -13,7 +13,7 @@ when `0.2.0` is released.
 ## Report a vulnerability
 
 Use the repository's private
-[GitHub Security Advisory form](https://github.com/sodeyama/herdr-math/security/advisories/new).
+[GitHub Security Advisory form](https://github.com/sodeyama/terminal-math/security/advisories/new).
 Do not disclose a suspected vulnerability in a public issue before a fix is available.
 
 Include a minimal sanitized reproduction, affected commit or version, platform, terminal,

@@ -21,7 +21,7 @@ It runs in any Kitty-graphics-capable terminal such as Ghostty, kitty, or WezTer
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sodeyama/herdr-math/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sodeyama/terminal-math/main/scripts/install.sh | bash
 # from a checkout: bash scripts/install.sh  (or npm run install:local)
 ```
 

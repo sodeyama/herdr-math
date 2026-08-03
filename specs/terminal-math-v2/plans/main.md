@@ -326,7 +326,7 @@ Key behaviors:
 ```text
 Cargo.toml                     # Rust workspace: terminal frontend + ported pixel pieces
 engine/                        # Rust crates (kitty, terminal-io, scroll, native)
-  crates/herdr-math-core/
+  crates/tmath-core/
   crates/native-scroll-helper/  # Swift, built by build.rs
    (or reuse terminal-browser as a git dependency where the port is thin)
 src/                           # TS renderer + scanner + core (pruned of Herdr)

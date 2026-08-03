@@ -1,5 +1,5 @@
 {
-  "name": "herdr-math",
+  "name": "terminal-math",
   "version": "0.2.0",
   "description": "Render Markdown and LaTeX as scrollable terminal images.",
   "private": true,
@@ -12,12 +12,12 @@
   "packageManager": "npm@10.9.4",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sodeyama/herdr-math.git"
+    "url": "git+https://github.com/sodeyama/terminal-math.git"
   },
   "bugs": {
-    "url": "https://github.com/sodeyama/herdr-math/issues"
+    "url": "https://github.com/sodeyama/terminal-math/issues"
   },
-  "homepage": "https://github.com/sodeyama/herdr-math#readme",
+  "homepage": "https://github.com/sodeyama/terminal-math#readme",
   "keywords": [
     "latex",
     "math",

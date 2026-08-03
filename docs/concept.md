@@ -55,9 +55,9 @@ grid per document block.
 ## Naming
 
 The binary is **`tmath`** (short for terminal math). The product name is **Terminal Math**. The
-repository is kept at `sodeyama/herdr-math`; the product identity no longer references the Herdr
-plugin runtime. The homepage describes the tool as "Render Markdown and LaTeX as scrollable
-terminal images."
+repository is `sodeyama/terminal-math` (renamed from `herdr-math`); the product identity no
+longer references the Herdr plugin runtime. The homepage describes the tool as "Render Markdown
+and LaTeX as scrollable terminal images."
 
 ## Functional Scope
 

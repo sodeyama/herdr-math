@@ -63,7 +63,7 @@ structured log where appropriate.
 - Given the repository metadata, package manifests, and `Cargo.toml`
 - When the public identity is inspected
 - Then the product is described as a standalone terminal math / document renderer named
-  `tmath`, the repository is `sodeyama/herdr-math`, and no public text claims Herdr plugin
+  `tmath`, the repository is `sodeyama/terminal-math`, and no public text claims Herdr plugin
   behavior or uses the `herdr-plugin` topic.
 
 ### AT-2-002 - No Herdr runtime dependency

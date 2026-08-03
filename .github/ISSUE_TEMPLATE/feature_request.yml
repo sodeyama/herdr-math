@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose a focused Herdr Math capability or compatibility change.
+description: Propose a focused Terminal Math (tmath) capability or compatibility change.
 title: "[Feature] "
 body:
   - type: markdown
@@ -24,7 +24,7 @@ body:
     id: acceptance
     attributes:
       label: Acceptance evidence
-      description: List deterministic tests and any real Herdr, terminal, agent, or platform evidence required.
+      description: List deterministic tests and any real terminal, agent, or platform evidence required.
     validations:
       required: true
   - type: checkboxes

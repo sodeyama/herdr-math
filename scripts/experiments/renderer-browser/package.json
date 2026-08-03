@@ -1,5 +1,5 @@
 {
-  "name": "herdr-math-renderer-browser-experiment",
+  "name": "terminal-math-renderer-browser-experiment",
   "private": true,
   "type": "module",
   "engines": {

@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Herdr Math is MIT licensed. The renderer also installs the third-party components below. Each component remains under its own license.
+Terminal Math is MIT licensed. The renderer also installs the third-party components below. Each component remains under its own license.
 
 `npm ci` installs JavaScript packages and native Sharp artifacts from the npm registry. Its postinstall step runs `npm run install:browser`, which installs the Playwright-managed Chromium headless shell and companion FFmpeg artifact under `node_modules/playwright-core/.local-browsers`. Runtime rendering performs no downloads.
 
@@ -32,7 +32,7 @@ The Sharp libvips bundle contains dynamically linked or bundled image libraries 
 
 ## KaTeX Fonts
 
-KaTeX 0.18.1 contains 60 TTF, WOFF, and WOFF2 font files referenced by its packaged CSS. The package provides one MIT `LICENSE` covering the distributed package and no separate font license. Herdr Math loads these files directly from the installed KaTeX package and does not copy or modify them.
+KaTeX 0.18.1 contains 60 TTF, WOFF, and WOFF2 font files referenced by its packaged CSS. The package provides one MIT `LICENSE` covering the distributed package and no separate font license. Terminal Math loads these files directly from the installed KaTeX package and does not copy or modify them.
 
 KaTeX documents the packaged formats and the expected sibling `fonts` directory in its [font documentation](https://github.com/KaTeX/KaTeX/blob/v0.18.1/docs/font.md).
 
@@ -48,4 +48,4 @@ Chromium is not copied into this Git repository or npm source package. If a dist
 
 ## Playwright FFmpeg Artifact
 
-The Playwright installation also downloads FFmpeg revision 1011 even though Herdr Math does not request video recording. The artifact retains the complete LGPL-2.1 license in `COPYING.LGPLv2.1`. The installation audit requires both the executable and this license file to be present.
+The Playwright installation also downloads FFmpeg revision 1011 even though Terminal Math does not request video recording. The artifact retains the complete LGPL-2.1 license in `COPYING.LGPLv2.1`. The installation audit requires both the executable and this license file to be present.

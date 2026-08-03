@@ -1,5 +1,5 @@
 {
-  "name": "herdr-math-renderer-svg-experiment",
+  "name": "terminal-math-renderer-svg-experiment",
   "private": true,
   "type": "module",
   "engines": {

@@ -12,7 +12,7 @@ From a checkout, or anywhere (the script clones the repository on first use):
 bash scripts/install.sh
 # equivalent: npm run install:local
 # one-liner, like terminal-browser:
-# curl -fsSL https://raw.githubusercontent.com/sodeyama/herdr-math/main/scripts/install.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/sodeyama/terminal-math/main/scripts/install.sh | bash
 ```
 
 The installer builds and places everything under your user data directory and

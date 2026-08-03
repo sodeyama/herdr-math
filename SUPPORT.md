@@ -4,7 +4,7 @@ Terminal Math has not published `0.2.0`. Support for the development build is be
 
 ## Where to ask
 
-- Use [GitHub Issues](https://github.com/sodeyama/herdr-math/issues) for reproducible bugs and
+- Use [GitHub Issues](https://github.com/sodeyama/terminal-math/issues) for reproducible bugs and
   focused feature requests.
 - Use the private process in [SECURITY.md](SECURITY.md) for security or privacy vulnerabilities.
 - Use the [Kitty graphics protocol documentation](https://sw.kovidgoyal.net/kitty/graphics-protocol/)

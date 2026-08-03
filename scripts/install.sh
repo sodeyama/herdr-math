@@ -35,7 +35,7 @@ find_repo() {
   local tmp
   tmp="$(mktemp -d)"
   echo "tmath: cloning the repository into $tmp" >&2
-  git clone --depth 1 https://github.com/sodeyama/herdr-math.git "$tmp" >/dev/null
+  git clone --depth 1 https://github.com/sodeyama/terminal-math.git "$tmp" >/dev/null
   echo "$tmp"
 }
 

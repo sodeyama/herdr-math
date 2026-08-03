@@ -16,7 +16,8 @@ scrollback. It needs no plugin runtime (no Herdr, no browser, no daemon).
 The public identity is:
 
 - Product name: `Terminal Math` (binary: `tmath`)
-- Repository: `sodeyama/herdr-math` (kept; product migrated to a standalone identity)
+- Repository: `sodeyama/terminal-math` (renamed from `herdr-math`; product migrated to a
+  standalone identity)
 - One-line description: `Render Markdown and LaTeX as scrollable terminal images.`
 
 The repository is intended for international users. Treat portability, predictable installation,
