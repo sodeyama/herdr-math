@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { POLICY_LIMITS } from "../../src/core/limits.js";
 import type { RenderIpcResponse } from "../../src/renderer/ipc-contract.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -94,13 +95,20 @@ describe("one-shot render subprocess transport", () => {
   });
 
   it("fails closed with a stable error when the scanner limit is exceeded", async () => {
-    // 21 formulas exceeds the scanner's maxFormulaCount (20). The subprocess
-    // must return a stable JSON error instead of crashing without a response.
-    const text = Array.from({ length: 21 }, (_, index) => `math here $x_{${index}}$`).join(" ");
+    // One character past maxDelimiterRunLength. The subprocess must return a
+    // stable JSON error instead of crashing without a response; this exercises
+    // the same scanner_input_limit path as formula_count/input_bytes without
+    // allocating a large request payload.
+    const runLength = POLICY_LIMITS.delimiterRunCharacters + 1;
+    const text = "$".repeat(runLength);
     const response = await renderSubprocess(JSON.stringify({ protocol: "tmath-render/1", kind: "document", text }));
     expect(response.ok).toBe(false);
     if (response.ok) return;
     expect(response.error.code).toBe("scanner_input_limit");
-    expect(response.error.details).toMatchObject({ limit_kind: "formula_count", limit: 20, actual: 21 });
+    expect(response.error.details).toMatchObject({
+      limit_kind: "delimiter_run_length",
+      limit: POLICY_LIMITS.delimiterRunCharacters,
+      actual: runLength
+    });
   });
 });

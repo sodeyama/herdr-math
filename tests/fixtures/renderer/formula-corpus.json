@@ -96,22 +96,22 @@
       "id": "formula-count",
       "kind": "formula_count",
       "formulaTemplate": "x_{n}",
-      "count": 21,
+      "count": 5001,
       "expectedError": "renderer_input_limit"
     },
     {
       "id": "formula-characters",
       "kind": "formula_characters",
       "character": "x",
-      "characters": 2001,
+      "characters": 80001,
       "expectedError": "renderer_input_limit"
     },
     {
       "id": "aggregate-characters",
       "kind": "aggregate_formula_characters",
       "character": "x",
-      "formulaCharacters": 1667,
-      "count": 6,
+      "formulaCharacters": 70000,
+      "count": 30,
       "expectedError": "renderer_input_limit"
     }
   ],

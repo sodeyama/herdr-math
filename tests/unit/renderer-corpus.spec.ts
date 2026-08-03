@@ -83,8 +83,8 @@ describe("release renderer corpus", () => {
         }),
         expect.objectContaining({
           kind: "aggregate_formula_characters",
-          formulaCharacters: 1667,
-          count: 6
+          formulaCharacters: 70000,
+          count: 30
         })
       ])
     );

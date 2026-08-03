@@ -207,10 +207,8 @@ mod tests {
     #[test]
     fn pending_buffer_is_capped() {
         let mut decoder = Decoder::new();
-        let chunk = vec![0u8; 16 * 1024];
-        for _ in 0..100 {
-            decoder.push(&chunk);
-        }
+        let chunk = vec![0u8; MAX_PENDING_BYTES + 16 * 1024];
+        decoder.push(&chunk);
         assert!(decoder.total_dropped > 0);
         // Under a cap the decoder never holds more than the bound.
         assert!(decoder.pending.capacity() <= MAX_PENDING_BYTES * 2);

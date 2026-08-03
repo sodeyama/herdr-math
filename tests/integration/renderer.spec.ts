@@ -145,15 +145,27 @@ describe("bounded local renderer", () => {
   });
 
   it("rejects count, per-formula, and aggregate limits before backend work", async () => {
-    const cases: RendererFormula[][] = [
-      Array.from({ length: POLICY_LIMITS.formulasPerAnswer + 1 }, () => simpleFormula),
-      [{ latex: "x".repeat(POLICY_LIMITS.charactersPerFormula + 1), display: true }],
-      Array.from({ length: 6 }, () => ({ latex: "x".repeat(1667), display: true }))
+    // Exercised against small overridden limits rather than the real (large)
+    // POLICY_LIMITS values, so the test proves the same enforcement logic
+    // without allocating megabytes of formula text per case.
+    const cases: Array<{ formulas: RendererFormula[]; limits: Partial<RendererLimits> }> = [
+      {
+        formulas: Array.from({ length: 3 }, () => simpleFormula),
+        limits: { formulasPerAnswer: 2 }
+      },
+      {
+        formulas: [{ latex: "x".repeat(11), display: true }],
+        limits: { charactersPerFormula: 10 }
+      },
+      {
+        formulas: Array.from({ length: 3 }, () => ({ latex: "x".repeat(10), display: true })),
+        limits: { charactersPerFormula: 10, aggregateFormulaCharacters: 25 }
+      }
     ];
 
-    for (const formulas of cases) {
+    for (const { formulas, limits } of cases) {
       const backend = new StaticBackend(validImage());
-      const result = await renderWithBackend(formulas, backend);
+      const result = await renderWithBackend(formulas, backend, { limits });
       expect(result.ok).toBe(false);
       if (result.ok) continue;
       expect(result.error.code).toBe("renderer_input_limit");

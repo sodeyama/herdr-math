@@ -39,7 +39,12 @@ describe("render IPC contract", () => {
   it("rejects an oversized request before JSON parsing", () => {
     const oversized = Buffer.alloc(IPC_MAX_REQUEST_BYTES + 1, 0x61);
     expect(() => decodeRequest(oversized)).toThrow(RangeError);
-    expect(() => encodeRequest(oversized as never)).toThrow(RangeError);
+    const oversizedMessage = {
+      protocol: IPC_PROTOCOL,
+      kind: "document",
+      text: "a".repeat(IPC_MAX_REQUEST_BYTES + 1)
+    } as const;
+    expect(() => encodeRequest(oversizedMessage)).toThrow(RangeError);
   });
 
   it("rejects malformed request JSON and missing fields", () => {
