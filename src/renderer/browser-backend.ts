@@ -74,7 +74,8 @@ export class BrowserRendererBackend implements RendererBackend {
         javaScriptEnabled: false,
         offline: true,
         serviceWorkers: "block",
-        viewport: { width: renderContext.limits.imageWidthPx, height: 4096 }
+        viewport: { width: renderContext.limits.imageWidthPx, height: 4096 },
+        deviceScaleFactor: renderContext.layout.deviceScaleFactor
       });
       await this.assertActive(renderContext);
       await this.context.route("**/*", async (route) => this.routeLocalFont(route));
@@ -95,7 +96,8 @@ export class BrowserRendererBackend implements RendererBackend {
       const target = this.page.locator("#render");
       const bounds = await target.boundingBox({ timeout: remainingMs(renderContext.deadlineMs) });
       if (bounds === null) throw new HerdrMathError("renderer_failed", {}, true);
-      assertImageDimensions(Math.ceil(bounds.width), Math.ceil(bounds.height), renderContext.limits);
+      const scale = renderContext.layout.deviceScaleFactor;
+      assertImageDimensions(Math.ceil(bounds.width * scale), Math.ceil(bounds.height * scale), renderContext.limits);
       const screenshot = await target.screenshot({
         type: "png",
         animations: "disabled",

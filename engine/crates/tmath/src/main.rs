@@ -155,23 +155,36 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     })
 }
 
+/// Assumed CSS-pixel width of one terminal cell on a standard-density
+/// display; `deviceScaleFactor` is derived by comparing this against the
+/// terminal's actually reported (physical-pixel) cell width.
+pub(crate) const ASSUMED_CELL_WIDTH_PX: f64 = 8.0;
+
 fn render(args: &[String]) -> Result<i32, String> {
     let parsed = parse_render_args(args)?;
     let source = read_document(&parsed.input)?;
-    let mut options: Option<RenderOptions> = None;
-    if parsed.content_width.is_some() || parsed.font_size.is_some() {
-        let mut layout = serde_json::Map::new();
-        if let Some(width) = parsed.content_width {
-            layout.insert("contentWidthPx".into(), json!(width));
-        }
-        if let Some(size) = parsed.font_size {
-            layout.insert("fontSizePx".into(), json!(size));
-        }
-        options = Some(RenderOptions {
-            limits: None,
-            layout: Some(serde_json::Value::Object(layout)),
-        });
+
+    let connected = if io::stdout().is_terminal() {
+        Some(connect_terminal()?)
+    } else {
+        None
+    };
+
+    let mut layout = serde_json::Map::new();
+    if let Some(width) = parsed.content_width {
+        layout.insert("contentWidthPx".into(), json!(width));
     }
+    if let Some(size) = parsed.font_size {
+        layout.insert("fontSizePx".into(), json!(size));
+    }
+    if let Some((_, cell)) = &connected {
+        let scale = device_scale_factor(*cell);
+        layout.insert("deviceScaleFactor".into(), json!(scale));
+    }
+    let options = (!layout.is_empty()).then_some(RenderOptions {
+        limits: None,
+        layout: Some(serde_json::Value::Object(layout)),
+    });
 
     let response = render_document_text(&source, options)?;
     match response {
@@ -179,14 +192,15 @@ fn render(args: &[String]) -> Result<i32, String> {
             let png = BASE64
                 .decode(success.base64.as_bytes())
                 .map_err(|_| "renderer returned invalid base64 PNG".to_string())?;
-            if io::stdout().is_terminal() {
-                place_in_terminal(&png)
-            } else {
-                println!(
-                    "ok width={} height={} bytes={} renderer={}",
-                    success.width, success.height, success.bytes, success.renderer
-                );
-                Ok(0)
+            match connected {
+                Some((terminal, cell)) => place_in_terminal(terminal, cell, &png),
+                None => {
+                    println!(
+                        "ok width={} height={} bytes={} renderer={}",
+                        success.width, success.height, success.bytes, success.renderer
+                    );
+                    Ok(0)
+                }
             }
         }
         RenderResponse::Failure(failure) => {
@@ -199,13 +213,18 @@ fn render(args: &[String]) -> Result<i32, String> {
     }
 }
 
-/// Places a rendered PNG into a real terminal's main buffer as a
-/// scrollback-anchored virtual placement, then restores the terminal.
-fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
-    const MAX_PIXELS: u64 = 64 * 1024 * 1024;
-    let (width, height, rgba) = decode_png(png, MAX_PIXELS)
-        .map_err(|error: PlacementError| format!("decode rendered image: {error}"))?;
+/// Rounds the terminal's reported physical cell width against the assumed
+/// standard-density cell width, clamped to a sane HiDPI range, so PNGs are
+/// rasterized at the density the terminal will actually display them at.
+pub(crate) fn device_scale_factor(cell: (u32, u32)) -> u32 {
+    let ratio = f64::from(cell.0) / ASSUMED_CELL_WIDTH_PX;
+    (ratio.round() as u32).clamp(1, 4)
+}
 
+/// Connects to the real terminal, confirms Kitty graphics support, and
+/// measures the cell size, before any rendering happens so the renderer can
+/// rasterize at the terminal's actual pixel density.
+fn connect_terminal() -> Result<(Terminal<StdioTty>, (u32, u32)), String> {
     let mut terminal = Terminal::new(StdioTty::default(), 1)
         .map_err(|error| format!("initialize terminal: {error}"))?;
     // Inside tmux, capability queries cannot round-trip through passthrough,
@@ -226,7 +245,7 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
         // #region agent log
         terminal_output::debug_log(
             "F,H,I",
-            "main.rs:place_in_terminal",
+            "main.rs:connect_terminal",
             "direct Kitty graphics probe completed",
             serde_json::json!({"graphicsSupported": graphics_supported}),
         );
@@ -239,6 +258,19 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
         .cell_size()
         .map_err(|error| format!("measure cell size: {error}"))?
         .ok_or("terminal reported no usable cell size")?;
+    Ok((terminal, cell))
+}
+
+/// Places a rendered PNG into a real terminal's main buffer as a
+/// scrollback-anchored virtual placement, then restores the terminal.
+///
+/// `terminal` and `cell` come from `connect_terminal`, called before
+/// rendering so the renderer could rasterize at the terminal's actual pixel
+/// density.
+fn place_in_terminal(mut terminal: Terminal<StdioTty>, cell: (u32, u32), png: &[u8]) -> Result<i32, String> {
+    const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+    let (width, height, rgba) = decode_png(png, MAX_PIXELS)
+        .map_err(|error: PlacementError| format!("decode rendered image: {error}"))?;
 
     let mut tracker = PlacementTracker::new(PlacementLimits::default());
     let block = tracker
@@ -488,6 +520,19 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn device_scale_factor_matches_standard_and_hidpi_cells() {
+        assert_eq!(device_scale_factor((8, 16)), 1, "standard-density cell");
+        assert_eq!(device_scale_factor((16, 32)), 2, "2x Retina cell");
+        assert_eq!(device_scale_factor((24, 48)), 3, "3x Retina cell");
+    }
+
+    #[test]
+    fn device_scale_factor_clamps_to_the_supported_range() {
+        assert_eq!(device_scale_factor((1, 2)), 1, "tiny cell clamps to 1x");
+        assert_eq!(device_scale_factor((200, 400)), 4, "huge cell clamps to 4x");
     }
 
     #[test]

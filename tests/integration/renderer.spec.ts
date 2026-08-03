@@ -130,6 +130,19 @@ describe("bounded local renderer", () => {
     expect(result.value.width).toEqual(480);
   }, 30_000);
 
+  it("rasterizes at a higher device pixel density without changing the CSS layout size", async () => {
+    const formula = { latex: "x^2+y^2=z^2", display: true } as const;
+    const standard = await renderFormulas([formula], { layout: { contentWidthPx: 480, deviceScaleFactor: 1 } });
+    const hidpi = await renderFormulas([formula], { layout: { contentWidthPx: 480, deviceScaleFactor: 2 } });
+    expect(standard.ok).toBe(true);
+    expect(hidpi.ok).toBe(true);
+    if (!standard.ok || !hidpi.ok) return;
+    // Same CSS content width, but the HiDPI render is rasterized at ~2x the
+    // physical pixels so it stays sharp on a Retina terminal cell grid.
+    expect(hidpi.value.width).toBeCloseTo(standard.value.width * 2, -1);
+    expect(hidpi.value.height).toBeCloseTo(standard.value.height * 2, -1);
+  }, 30_000);
+
   it("rejects malformed and link-capable input before browser startup without leaking source", async () => {
     const launch = vi.spyOn(chromium, "launch");
     const failures = [...corpus.invalidCases, ...corpus.securityCases];

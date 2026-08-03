@@ -14,7 +14,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use tmath_core::agent::{Decoder, Message};
 use tmath_core::input::InputDecoder;
-use tmath_core::ipc::{RenderResponse, IPC_MAX_REQUEST_BYTES};
+use tmath_core::ipc::{RenderOptions, RenderResponse, IPC_MAX_REQUEST_BYTES};
 use tmath_core::placement::{
     decode_png, emit_placed_block, CellSize, PlacementLimits, PlacementTracker, TerminalOp,
 };
@@ -243,7 +243,14 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         eprintln!("agent-viewer: renderer_input_limit");
         return Ok(());
     }
-    let response = match render_document_text(text, None) {
+    let scale = crate::device_scale_factor((viewer.cell.width, viewer.cell.height));
+    let mut layout = serde_json::Map::new();
+    layout.insert("deviceScaleFactor".into(), serde_json::json!(scale));
+    let options = Some(RenderOptions {
+        limits: None,
+        layout: Some(serde_json::Value::Object(layout)),
+    });
+    let response = match render_document_text(text, options) {
         Ok(response) => response,
         Err(message) => {
             eprintln!("agent-viewer: render_failed ({message})");
