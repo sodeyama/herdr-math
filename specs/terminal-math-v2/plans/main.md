@@ -68,10 +68,11 @@ holds.
 5. Placement model: render each formula/document block as a transparent PNG and transmit it
    through the Kitty graphics protocol to a scrollback-anchored placement. The terms "viewer pane"
    and "graphics placement" are replaced by "Kitty placement".
-6. Limits: keep strict caps for formula count, per-formula length, aggregate length, render duration,
-   image dimensions, raw PNG bytes, base64 payload size, and (new) number of concurrent placements and
-   total placement pixels. Invalid input, timeouts, and payload rejection leave previous valid
-   placements intact.
+6. Limits: keep bounded, non-infinite caps for formula count, per-formula length, aggregate length,
+   scan input bytes, render duration, image dimensions, raw PNG bytes, base64 payload size, and (new)
+   number of concurrent placements and total placement pixels. Caps may be sized generously for
+   real-world document and chapter-summary inputs, but every cap stays finite and enforced. Invalid
+   input, timeouts, and payload rejection leave previous valid placements intact.
 7. Scroll model: mouse wheel and, where the native helper is available, trackpad deltas drive a
    smooth-scroll state machine over the rendered document. Keyboard scrolling (arrow/PgUp/PgDn/j/k/g/G)
    is retained as an accessibility fallback.

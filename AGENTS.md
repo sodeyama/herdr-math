@@ -94,9 +94,11 @@ reference. Do not treat it as current product guidance.
   for an authorization or boundary check.
 - Render with remote resource loading disabled and a trust policy equivalent to KaTeX
   `trust: false`.
-- Keep strict limits for formula count, per-formula length, aggregate length, scan input bytes,
-  render duration, image dimensions, raw PNG bytes, base64 payload size, and placement
-  concurrency/pixel totals.
+- Keep bounded, non-infinite limits for formula count, per-formula length, aggregate length, scan
+  input bytes, render duration, image dimensions, raw PNG bytes, base64 payload size, and
+  placement concurrency/pixel totals. Limits may be sized generously for real-world document and
+  chapter-summary inputs, but every limit must remain finite and enforced so pathological input
+  cannot exhaust memory or render time.
 - Invalid input, timeouts, and payload rejection must leave earlier valid placements intact and
   fail closed.
 - Never introduce `spawn` of user-controlled commands, shell evaluation, `eval`, dynamic imports
