@@ -140,6 +140,17 @@ impl<T: Tty> Terminal<T> {
             .unwrap_or(false))
     }
 
+    /// Queries the cursor's current column via `CSI 6n` (Cursor Position
+    /// Report), answered as `CSI <row>;<col> R`. Returns `None` when the
+    /// terminal does not answer in time, so callers can fall back to a
+    /// conservative default.
+    pub fn cursor_column(&mut self) -> io::Result<Option<u32>> {
+        self.io.write_all(b"\x1b[6n")?;
+        self.io.flush()?;
+        self.read_report(Duration::from_millis(200), parse_cursor_position_report)
+            .map(|report| report.map(|(_row, col)| col))
+    }
+
     /// Probes whether the terminal can display images. A `a=q` query with a
     /// minimal payload is answered with `Gi=<id>;OK` when graphics work;
     /// missing, negative, or truncated replies mean unsupported.
@@ -273,9 +284,7 @@ fn open_control_terminal() -> Option<File> {
 
 impl Tty for StdioTty {
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-        io::stdout()
-            .lock()
-            .write_all(&crate::kitty::wrapped_for_tty(bytes))
+        io::stdout().lock().write_all(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -349,6 +358,20 @@ fn parse_cell_size_report(buf: &[u8]) -> Option<(u32, u32)> {
     let width: u32 = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
     if width > 0 && height > 0 {
         Some((width, height))
+    } else {
+        None
+    }
+}
+
+/// Parses the `CSI 6n` Cursor Position Report: `CSI <row>;<col> R`.
+fn parse_cursor_position_report(buf: &[u8]) -> Option<(u32, u32)> {
+    let start = buf.windows(2).position(|w| w == b"\x1b[")? + 2;
+    let end = start + buf[start..].iter().position(|&b| b == b'R')?;
+    let mut parts = buf[start..end].split(|&b| b == b';');
+    let row: u32 = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
+    let col: u32 = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
+    if row > 0 && col > 0 {
+        Some((row, col))
     } else {
         None
     }

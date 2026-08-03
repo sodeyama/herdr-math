@@ -5,6 +5,7 @@
 //! status/failure events to stderr only, never answer content. It does not
 //! touch the agent's terminal beyond `tmux capture-pane`.
 
+use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::io::{self, Read as _, Write as _};
@@ -73,9 +74,17 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     let worker = renderer_worker_path()?;
     // tmux starts the viewer pane with the server's environment, so the
     // renderer worker path must be passed explicitly on the command line.
-    let viewer_cmd = viewer_command(&exe, &worker, &socket_path);
+    let viewer_cmd = viewer_command(
+        &exe,
+        &worker,
+        &socket_path,
+        env::var("TMATH_TMUX_TRANSPORT").ok().as_deref(),
+    );
     let viewer_pane = spawn_viewer_pane(&parsed, &source, &viewer_cmd)?;
-    let _ = crate::enable_tmux_passthrough();
+    let route = crate::terminal_output::selected_route()?;
+    if route == crate::terminal_output::Route::TmuxPassthrough {
+        let _ = crate::enable_tmux_passthrough();
+    }
 
     eprintln!(
         "tmath agent: watching {} → {}; q/Ctrl-C to stop",
@@ -85,6 +94,8 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
 
     let mut peer: Option<UnixStream> = None;
     let mut baseline = String::new();
+    let mut baseline_initialized = false;
+    let mut seen_answers = VecDeque::new();
     let mut pending: Option<(String, String, Instant)> = None; // (text, snapshot, since)
     let mut stdin_decoder = InputDecoder::new();
 
@@ -121,24 +132,79 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
 
         if snapshot.len() > SNAPSHOT_MAX_BYTES {
             eprintln!("tmath agent: captured pane exceeds bound; skipping update");
+        } else if !baseline_initialized {
+            baseline = snapshot;
+            baseline_initialized = true;
+            if let Some(answer) = find_answer("", &baseline) {
+                remember_answer(&mut seen_answers, answer.text);
+            }
+            // #region agent log
+            debug_log(
+                "H2",
+                "agent_watcher.rs:initialize_baseline",
+                "initialized watcher baseline without emitting",
+                serde_json::json!({"baselineBytes": baseline.len()}),
+            );
+            // #endregion
         } else if snapshot != baseline {
+            // #region agent log
+            debug_log(
+                "H1,H2",
+                "agent_watcher.rs:changed_snapshot",
+                "source snapshot changed",
+                serde_json::json!({
+                    "baselineBytes": baseline.len(),
+                    "snapshotBytes": snapshot.len(),
+                    "pending": pending.is_some()
+                }),
+            );
+            // #endregion
             match find_answer(&baseline, &snapshot) {
-                Some(answer) => match pending.as_mut() {
-                    Some((text, consumed_snapshot, since)) => {
-                        // The answer text is still growing: restart the
-                        // debounce. An unchanged text is a settled answer, so
-                        // only the consumed snapshot advances and the timer
-                        // keeps running to the wait window.
-                        if *text != answer.text {
-                            *text = answer.text.clone();
-                            *since = Instant::now();
+                Some(answer) => {
+                    // #region agent log
+                    debug_log(
+                        "H1,H2",
+                        "agent_watcher.rs:answer_candidate",
+                        "boundary produced answer candidate",
+                        serde_json::json!({
+                            "answerBytes": answer.text.len(),
+                            "baselineBytes": baseline.len(),
+                            "snapshotBytes": snapshot.len(),
+                            "pendingBytes": pending.as_ref().map(|value| value.0.len())
+                        }),
+                    );
+                    // #endregion
+                    if seen_answers.contains(&answer.text) {
+                        // #region agent log
+                        debug_log(
+                            "H12",
+                            "agent_watcher.rs:duplicate_answer",
+                            "ignored previously observed answer repaint",
+                            serde_json::json!({
+                                "answerBytes": answer.text.len(),
+                                "seenCount": seen_answers.len()
+                            }),
+                        );
+                        // #endregion
+                        pending = None;
+                        baseline = snapshot;
+                    } else {
+                        match pending.as_mut() {
+                            Some((text, consumed_snapshot, since)) => {
+                                // A growing answer restarts the debounce.
+                                if *text != answer.text {
+                                    *text = answer.text.clone();
+                                    *since = Instant::now();
+                                }
+                                *consumed_snapshot = snapshot.clone();
+                            }
+                            None => {
+                                pending =
+                                    Some((answer.text.clone(), snapshot.clone(), Instant::now()));
+                            }
                         }
-                        *consumed_snapshot = snapshot.clone();
                     }
-                    None => {
-                        pending = Some((answer.text.clone(), snapshot.clone(), Instant::now()));
-                    }
-                },
+                }
                 None => {
                     // No proven boundary: consume the snapshot, render nothing.
                     pending = None;
@@ -153,7 +219,21 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
             if held >= Duration::from_millis(parsed.wait_ms)
                 || held >= Duration::from_millis(MAX_HOLD_MS)
             {
+                // #region agent log
+                debug_log(
+                    "H1,H2",
+                    "agent_watcher.rs:emit_document",
+                    "emitting settled document",
+                    serde_json::json!({
+                        "documentBytes": text.len(),
+                        "snapshotBytes": snapshot_for_emit.len(),
+                        "heldMs": held.as_millis(),
+                        "baselineBytesBefore": baseline.len()
+                    }),
+                );
+                // #endregion
                 emit_document(&mut peer, &text, &viewer_pane);
+                remember_answer(&mut seen_answers, text.clone());
                 baseline = snapshot_for_emit;
                 eprintln!("tmath agent: document_sent bytes={}", text.len());
             } else {
@@ -163,6 +243,14 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
 
         std::thread::sleep(Duration::from_millis(parsed.poll_ms));
     }
+}
+
+fn remember_answer(seen: &mut VecDeque<String>, answer: String) {
+    const MAX_SEEN_ANSWERS: usize = 32;
+    if seen.len() == MAX_SEEN_ANSWERS {
+        seen.pop_front();
+    }
+    seen.push_back(answer);
 }
 
 fn parse_agent_args(args: &[String]) -> Result<WatcherArgs, String> {
@@ -247,10 +335,15 @@ fn viewer_command(
     exe: &std::path::Path,
     worker: &std::path::Path,
     socket: &std::path::Path,
+    transport: Option<&str>,
 ) -> String {
+    let transport = transport
+        .map(|value| format!(" TMATH_TMUX_TRANSPORT={}", shell_quote(value)))
+        .unwrap_or_default();
     format!(
-        "env TMATH_RENDER_WORKER={} {} {} {}",
+        "env TMATH_RENDER_WORKER={}{} {} {} {}",
         shell_quote(&worker.display().to_string()),
+        transport,
         shell_quote(&exe.display().to_string()),
         "agent-viewer",
         shell_quote(&socket.display().to_string())
@@ -345,6 +438,25 @@ fn finish(peer: &mut Option<UnixStream>, viewer_pane: &PaneId) -> Result<i32, St
     Ok(0)
 }
 
+fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let payload = serde_json::json!({
+        "sessionId": "f945c2",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": timestamp
+    });
+    crate::terminal_output::write_debug_line(&payload);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +528,7 @@ mod tests {
             std::path::Path::new("/opt/tools/tmath"),
             std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
+            None,
         );
         assert_eq!(
             cmd,
@@ -429,10 +542,22 @@ mod tests {
             std::path::Path::new("/opt/my tools/tmath"),
             std::path::Path::new("/opt/my site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath agent-1.sock"),
+            None,
         );
         assert!(
             cmd.starts_with("env TMATH_RENDER_WORKER='/opt/my site/dist/renderer/subprocess.js'")
         );
         assert!(cmd.contains("'/opt/my tools/tmath' agent-viewer"));
+    }
+
+    #[test]
+    fn viewer_command_forwards_an_explicit_tmux_transport() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/tools/tmath"),
+            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
+            std::path::Path::new("/tmp/tmath-agent-1.sock"),
+            Some("passthrough"),
+        );
+        assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
     }
 }

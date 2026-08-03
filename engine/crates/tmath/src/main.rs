@@ -10,7 +10,7 @@
 
 use std::env;
 use std::fs::File;
-use std::io::{self, IsTerminal as _, Read as _, Write as _};
+use std::io::{self, IsTerminal as _, Read as _};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,7 @@ use crate::render::{render_document_text, renderer_worker_path};
 mod agent_viewer;
 mod agent_watcher;
 mod render;
+mod terminal_output;
 
 fn main() {
     let code = match run() {
@@ -73,6 +74,9 @@ fn help_text() -> String {
          OPTIONS (render):\n  --content-width <px>  Render width in pixels (default 480)\n  --font-size <px>      Base font size in pixels (default 14)\n\
          \n\
          OPTIONS (agent):\n  --source-pane <id>  tmux pane to watch (default: current pane)\n  --percent <p>       Viewer split width in percent (default 35)\n  --wait-ms <ms>      Answer settle debounce (default 600)\n  --poll-ms <ms>      Pane poll interval (default 250)\n  --history <lines>   Scrollback lines to capture (default 500)\n\
+         \n\
+         ENVIRONMENT:\n  TMATH_TMUX_TRANSPORT=client-tty|passthrough\n\
+                              Select the tmux graphics route (default client-tty)\n\
          \n\
          With `-`, the document is read from stdin. When stdout is a terminal\n\
          with Kitty graphics support, the image is placed in the main buffer so\n\
@@ -198,18 +202,27 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
     // so the forwarded image reaches the outer terminal; everywhere else the
     // probe stays mandatory and fail-closed.
     if tmath_core::kitty::inside_tmux() {
-        if enable_tmux_passthrough() {
-            eprintln!("tmath: tmux passthrough enabled (allow-passthrough on)");
-        } else {
+        let route = terminal_output::selected_route()?;
+        if route == terminal_output::Route::TmuxPassthrough && !enable_tmux_passthrough() {
             eprintln!(
-                "tmath: tmux passthrough assumed; run 'tmux set-option -w allow-passthrough on'"
+                "tmath: tmux passthrough unavailable; run 'tmux set-option -w allow-passthrough on'"
             );
         }
-    } else if !terminal
-        .probe_graphics_support()
-        .map_err(|error| format!("probe graphics: {error}"))?
-    {
-        return Err("this terminal reports no Kitty graphics support".into());
+    } else {
+        let graphics_supported = terminal
+            .probe_graphics_support()
+            .map_err(|error| format!("probe graphics: {error}"))?;
+        // #region agent log
+        terminal_output::debug_log(
+            "F,H,I",
+            "main.rs:place_in_terminal",
+            "direct Kitty graphics probe completed",
+            serde_json::json!({"graphicsSupported": graphics_supported}),
+        );
+        // #endregion
+        if !graphics_supported {
+            return Err("this terminal reports no Kitty graphics support".into());
+        }
     }
     let cell = terminal
         .cell_size()
@@ -227,16 +240,61 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
             },
         )
         .map_err(|error: PlacementError| format!("place image: {error}"))?;
-    let placement =
-        emit_placed_block_cursor(block.image_id, width, height, &rgba, block.cols, block.rows);
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(&tmath_core::kitty::wrapped_for_tty(&placement))
-        .map_err(|error| format!("write placement: {error}"))?;
-    stdout
-        .flush()
-        .map_err(|error| format!("flush placement: {error}"))?;
-    drop(stdout);
+    // #region agent log
+    terminal_output::debug_log(
+        "F,I",
+        "main.rs:place_in_terminal",
+        "computed image and placeholder geometry",
+        serde_json::json!({
+            "imageWidth": width,
+            "imageHeight": height,
+            "cellWidth": cell.0,
+            "cellHeight": cell.1,
+            "placeholderCols": block.cols,
+            "placeholderRows": block.rows,
+            "imageId": block.image_id
+        }),
+    );
+    // #endregion
+    // #region agent log
+    terminal_output::debug_log_current(
+        "H15,H17,H18,H19",
+        "main.rs:place_in_terminal",
+        "placing cursor-relative render",
+        serde_json::json!({
+            "imageWidth": width,
+            "imageHeight": height,
+            "placementCols": block.cols,
+            "placementRows": block.rows,
+            "stdinIsTerminal": io::stdin().is_terminal(),
+            "tmuxPane": std::env::var("TMUX_PANE").unwrap_or_else(|_| "<unset>".into())
+        }),
+    );
+    // #endregion
+    // Inside tmux, `CSI 6n` is answered with the pane-relative cursor, not the
+    // outer terminal's, so it cannot tell us whether the *outer* line already
+    // starts at column 1; keep the conservative always-advance behavior there.
+    // Directly connected, query the real cursor column so a render invoked
+    // right after the shell's own newline (e.g. a piped `tmath render -`)
+    // does not add a second blank line before the image.
+    let already_at_line_start = if tmath_core::kitty::inside_tmux() {
+        false
+    } else {
+        terminal
+            .cursor_column()
+            .map_err(|error| format!("query cursor position: {error}"))?
+            == Some(1)
+    };
+    let placement = emit_placed_block_cursor(
+        block.image_id,
+        width,
+        height,
+        &rgba,
+        block.cols,
+        block.rows,
+        already_at_line_start,
+    );
+    terminal_output::write_operations(&placement)?;
 
     // When the document came from the terminal (file argument), enter the
     // interactive scroll loop so the user can scroll with the wheel/keys and
@@ -249,10 +307,18 @@ fn place_in_terminal(png: &[u8]) -> Result<i32, String> {
     terminal
         .reset()
         .map_err(|error| format!("reset terminal: {error}"))?;
-    println!(
-        "placed width={width} height={height} image_id={}",
-        block.image_id
+    // #region agent log
+    terminal_output::debug_log_current(
+        "H18",
+        "main.rs:place_in_terminal",
+        "placement command completed",
+        serde_json::json!({
+            "pipedInput": !io::stdin().is_terminal(),
+            "imageId": block.image_id
+        }),
     );
+    // #endregion
+    println!();
     Ok(0)
 }
 
@@ -367,6 +433,13 @@ fn diagnose(args: &[String]) -> Result<i32, String> {
         println!("stdin: not a terminal (input events unavailable)");
     }
 
+    for line in terminal_output::tmux_diagnostics() {
+        println!("{line}");
+    }
+    if tmath_core::kitty::inside_tmux() && terminal_output::selected_route().is_err() {
+        problems += 1;
+    }
+
     let graphics = probe_graphics_from_tty();
     match graphics {
         Some(true) => println!("kitty graphics: supported"),
@@ -388,7 +461,8 @@ fn diagnose(args: &[String]) -> Result<i32, String> {
 
 /// Runs a Kitty graphics probe against the real tty; `None` when no tty exists.
 fn probe_graphics_from_tty() -> Option<bool> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if tmath_core::kitty::inside_tmux() || !io::stdin().is_terminal() || !io::stdout().is_terminal()
+    {
         return None;
     }
     let mut terminal = Terminal::new(StdioTty::default(), 1).ok()?;

@@ -21,12 +21,14 @@ pub struct Answer {
 /// Whether a line is a recognized terminal prompt glyph line. These are treated
 /// as answer boundaries, never as answer content.
 ///
-/// Recognized prompts: `❯` (Claude Code), `›` (Codex), and opencode's
-/// `┃ prompt:` marker. Agent prompts that are plain text with an inline
-/// marker (for example pi's `Current prompt > ...`) are not recognized yet.
+/// Recognized prompts: `❯` (Claude Code), `›` (Codex), opencode's
+/// `┃ prompt:` marker, and pi's `Current prompt > ...` marker.
 pub fn is_prompt_line(line: &str) -> bool {
     let trimmed = line.trim_start();
-    trimmed.starts_with("❯") || trimmed.starts_with("›") || trimmed.starts_with("┃ prompt:")
+    trimmed.starts_with("❯")
+        || trimmed.starts_with("›")
+        || trimmed.starts_with("┃ prompt:")
+        || trimmed.starts_with("Current prompt >")
 }
 
 /// Whether a line is a volatile "working frame" that agents repaint in place
@@ -55,6 +57,16 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
         return None;
     }
 
+    let bl: Vec<&str> = baseline.lines().collect();
+    let cl: Vec<&str> = completion.lines().collect();
+    if cl.iter().any(|line| is_delimited_prompt_line(line)) {
+        let answer = prompt_delimited_answer(&cl)?;
+        if prompt_delimited_answer(&bl).as_ref() == Some(&answer) {
+            return None;
+        }
+        return Some(answer);
+    }
+
     let (tail, _) = if completion.starts_with(baseline) {
         (
             completion
@@ -64,8 +76,6 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
             0,
         )
     } else {
-        let bl: Vec<&str> = baseline.lines().collect();
-        let cl: Vec<&str> = completion.lines().collect();
         let mut index = 0;
         while index < bl.len() && index < cl.len() && bl[index] == cl[index] {
             index += 1;
@@ -75,9 +85,11 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
         }
         // When the baseline shares no leading line with the completion, the
         // pane was rewritten wholesale and no answer boundary can be proven:
-        // fail closed rather than render the full replacement.
+        // prefer explicit prompt delimiters. A recognized non-idle final
+        // prompt means the agent is still working, so fail closed rather than
+        // accepting a weak overlap with repeated TUI chrome.
         if index == 0 && !bl.is_empty() {
-            return None;
+            return contextual_answer(&bl, &cl).or_else(|| sliding_window_answer(&bl, &cl));
         }
         let mut tail_lines: Vec<&str> = cl[index..].to_vec();
         if start_is_repaint(&bl, index, tail_lines.first().copied().unwrap_or("")) {
@@ -93,7 +105,9 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
         if text.trim().is_empty() {
             return None;
         }
-        Some(Answer { text })
+        Some(Answer {
+            text: strip_tool_activity_prefix(&text),
+        })
     } else {
         // The first line in the tail is a repainted working frame even on the
         // exact-prefix path, so retry after dropping it.
@@ -105,6 +119,218 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
             None
         }
     }
+}
+
+/// Extracts the response between the preceding user prompt and the final idle
+/// prompt used by Claude Code, Codex, and opencode after completion.
+fn prompt_delimited_answer(completion: &[&str]) -> Option<Answer> {
+    let end = completion
+        .iter()
+        .rposition(|line| is_delimited_prompt_line(line))?;
+    if !is_idle_prompt_line(completion[end]) {
+        return None;
+    }
+    let start = completion[..end]
+        .iter()
+        .rposition(|line| is_delimited_prompt_line(line))?
+        + 1;
+    let mut body = completion[start..end].to_vec();
+    while body.first().is_some_and(|line| {
+        let trimmed = line.trim();
+        trimmed.is_empty() || is_status_line(trimmed)
+    }) {
+        body.remove(0);
+    }
+    while body.last().is_some_and(|line| {
+        let trimmed = line.trim();
+        trimmed.is_empty() || is_completion_status(trimmed) || is_tui_rule(trimmed)
+    }) {
+        body.pop();
+    }
+    let text = clean_tail(&body.join("\n"))?;
+    (!text.trim().is_empty()).then(|| Answer {
+        text: normalize_captured_answer(&strip_tool_activity_prefix(&text)),
+    })
+}
+
+fn is_delimited_prompt_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("❯") || trimmed.starts_with("›") || trimmed.starts_with("┃ prompt:")
+}
+
+fn is_idle_prompt_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    matches!(trimmed, "❯" | "›" | "┃ prompt:")
+}
+
+fn is_completion_status(line: &str) -> bool {
+    line.starts_with('✻')
+}
+
+fn is_tui_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.chars().count() >= 20
+        && trimmed
+            .chars()
+            .all(|character| matches!(character, '─' | '━'))
+}
+
+/// Converts presentation-only structures emitted by coding-agent TUIs back to
+/// the allowlisted Markdown understood by the renderer.
+fn normalize_captured_answer(text: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if let Some(first) = lines.first_mut() {
+        let trimmed = first.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("⏺ ") {
+            *first = rest.to_string();
+        }
+    }
+
+    let mut output = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if is_box_top(&lines[index]) {
+            let mut cursor = index + 1;
+            let mut rows = Vec::new();
+            while cursor < lines.len() {
+                if is_box_bottom(&lines[cursor]) {
+                    break;
+                }
+                if let Some(cells) = box_row_cells(&lines[cursor]) {
+                    rows.push(cells);
+                }
+                cursor += 1;
+            }
+            if cursor < lines.len() && rows.len() >= 2 {
+                output.push(markdown_row(&rows[0]));
+                output.push(format!(
+                    "| {} |",
+                    rows[0]
+                        .iter()
+                        .map(|_| "---")
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                ));
+                output.extend(rows[1..].iter().map(|row| markdown_row(row)));
+                index = cursor + 1;
+                continue;
+            }
+        }
+        output.push(lines[index].clone());
+        index += 1;
+    }
+    output.join("\n")
+}
+
+fn is_box_top(line: &str) -> bool {
+    line.trim().starts_with('┌')
+}
+
+fn is_box_bottom(line: &str) -> bool {
+    line.trim().starts_with('└')
+}
+
+fn box_row_cells(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('│') || !trimmed.ends_with('│') {
+        return None;
+    }
+    let cells: Vec<String> = trimmed
+        .trim_matches('│')
+        .split('│')
+        .map(|cell| cell.trim().replace('|', "\\|"))
+        .collect();
+    (cells.len() >= 2).then_some(cells)
+}
+
+fn markdown_row(cells: &[String]) -> String {
+    format!("| {} |", cells.join(" | "))
+}
+
+/// Recovers a bounded tail when tmux capture history slides: a suffix of the
+/// baseline must exactly match the completion prefix before new lines.
+fn sliding_window_answer(baseline: &[&str], completion: &[&str]) -> Option<Answer> {
+    for start in 1..baseline.len() {
+        let suffix = &baseline[start..];
+        if suffix.len() < 2
+            || completion.len() <= suffix.len()
+            || completion.get(..suffix.len()) != Some(suffix)
+        {
+            continue;
+        }
+        let text = clean_tail(&completion[suffix.len()..].join("\n"))?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        return Some(Answer {
+            text: strip_tool_activity_prefix(&text),
+        });
+    }
+    None
+}
+
+/// Recovers an answer from TUIs such as pi that repaint/truncate the full
+/// screen but repeat the exact current-prompt line around the completed answer.
+fn contextual_answer(baseline: &[&str], completion: &[&str]) -> Option<Answer> {
+    let anchor = baseline
+        .iter()
+        .rev()
+        .find(|line| line.trim_start().starts_with("Current prompt >"))?;
+    let mut matches = completion
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == *anchor).then_some(index));
+    let start = matches.next()? + 1;
+    let end = matches.next().unwrap_or(completion.len());
+    let text = clean_tail(&completion[start..end].join("\n"))?;
+    (!text.trim().is_empty()).then(|| Answer {
+        text: strip_tool_activity_prefix(&text),
+    })
+}
+
+/// Cursor CLI can append bounded tool-activity lines immediately before its
+/// final bullet. Strip that prefix only when every preceding non-empty line is
+/// recognizably tool/status output, preserving ordinary Markdown answers.
+fn strip_tool_activity_prefix(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(final_index) = lines
+        .iter()
+        .rposition(|line| line.trim_start().starts_with("• "))
+    else {
+        return text.to_string();
+    };
+    if final_index == 0 {
+        return text.to_string();
+    }
+    let prefix_is_tools = lines[..final_index].iter().all(|line| {
+        let trimmed = line.trim();
+        trimmed.is_empty() || is_status_line(trimmed) || is_tool_activity_line(trimmed)
+    });
+    if prefix_is_tools {
+        let mut answer = lines[final_index..].to_vec();
+        answer[0] = answer[0]
+            .trim_start()
+            .strip_prefix("• ")
+            .unwrap_or(answer[0]);
+        answer.join("\n")
+    } else {
+        text.to_string()
+    }
+}
+
+fn is_tool_activity_line(line: &str) -> bool {
+    [
+        "Read ",
+        "Grepped ",
+        "Searched ",
+        "Listed ",
+        "Ran ",
+        "Edited ",
+        "Wrote ",
+        "Viewed ",
+    ]
+    .iter()
+    .any(|prefix| line.starts_with(prefix))
 }
 
 /// Whether the first new line is a working frame being repainted in place
@@ -211,11 +437,9 @@ mod tests {
         let baseline = "Grepped pattern in src\n\n  • Working on the answer.\n";
         let completion =
             format!("{baseline}\nRead package.json\n\n  • The relation is $E=mc^2$.\n");
-        // MVP keeps the tool-activity line; the answer boundary is still the
-        // appended tail after the previous capture.
         assert_eq!(
             answer(baseline, &completion).as_deref(),
-            Some("Read package.json\n\n  • The relation is $E=mc^2$.")
+            Some("The relation is $E=mc^2$.")
         );
     }
 
@@ -253,10 +477,68 @@ mod tests {
     }
 
     #[test]
+    fn pi_repeated_contextual_prompt_recovers_the_answer() {
+        let baseline = "┌ Agent pane ┐\nPrevious prompt > summarize\nPrevious answer\nCurrent prompt > solve unique request 1234567890\nWorking…\n└────────────┘\n";
+        let completion = "Previous answer\nCurrent prompt > solve unique request 1234567890\nSolution: $$x=4$$\nCurrent prompt > solve unique request 1234567890\n└────────────┘\n";
+        assert_eq!(
+            answer(baseline, completion).as_deref(),
+            Some("Solution: $$x=4$$")
+        );
+    }
+
+    #[test]
+    fn claude_whole_screen_repaint_uses_prompt_delimiters() {
+        let baseline = "Old answer\n────────────────────────\n❯\n────────────────────────\n";
+        let completion = "Earlier screen content\n❯ Show equations\n\n⏺ $$x^2 - 4 = 0$$\n\n  Answer: $x = \\pm 2$\n\n✻ Brewed for 6s\n\n────────────────────────\n❯\n────────────────────────\n";
+        assert_eq!(
+            answer(baseline, completion).as_deref(),
+            Some("$$x^2 - 4 = 0$$\n\n  Answer: $x = \\pm 2$")
+        );
+    }
+
+    #[test]
+    fn claude_repaint_without_idle_prompt_is_not_complete() {
+        let baseline = "Old answer\n────────────────────────\n❯\n────────────────────────\n";
+        let completion =
+            "Earlier screen content\n❯ Show equations\n\n⏺ Partial answer\n✻ Churned for 2s\n";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_partial_prefix_repaint_still_uses_latest_prompts() {
+        let baseline =
+            "Shared history\nOld answer\n❯ Old prompt\nOld response\n────────────────────────\n❯\n";
+        let completion = "Shared history\nReflowed old answer\n❯ Show a table\n\n⏺ |式|結果|\n|---|---|\n|$x^2$|$4$|\n\n✻ Cooked for 3s\n────────────────────────\n❯\n";
+        assert_eq!(
+            answer(baseline, completion).as_deref(),
+            Some("|式|結果|\n|---|---|\n|$x^2$|$4$|")
+        );
+    }
+
+    #[test]
+    fn repaint_of_the_same_latest_answer_is_not_reemitted() {
+        let baseline = "Old layout\n❯ Show equations\n\n⏺ $$x=1$$\n────────────────────────\n❯\n";
+        let completion =
+            "Reflowed layout\n❯ Show equations\n\n⏺ $$x=1$$\n────────────────────────\n❯\n";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn captured_box_table_is_restored_to_markdown() {
+        let baseline = "Old answer\n❯\n";
+        let completion = "Old answer\n❯ Show table\n\n⏺ ┌────────┬────────┐\n  │ 式     │ 結果   │\n  ├────────┼────────┤\n  │ $x^2$  │ $4$    │\n  └────────┴────────┘\n\n✻ Cooked for 2s\n────────────────────────\n❯\n";
+        assert_eq!(
+            answer(baseline, completion).as_deref(),
+            Some("| 式 | 結果 |\n| --- | --- |\n| $x^2$ | $4$ |")
+        );
+    }
+
+    #[test]
     fn prompt_and_status_detection() {
         assert!(is_prompt_line("❯ Derive"));
         assert!(is_prompt_line("  › codex"));
         assert!(is_prompt_line("┃ prompt: integrate"));
+        assert!(is_prompt_line("Current prompt > integrate"));
         assert!(!is_prompt_line("┃ answer: $$x$$"));
         assert!(!is_prompt_line("> a blockquote"));
         assert!(is_status_line("• Working frame 09"));
@@ -265,5 +547,24 @@ mod tests {
         assert!(!is_status_line("• Release notes"));
         assert!(!is_status_line("The answer is $x=2$."));
         assert!(!is_status_line("Read package.json"));
+    }
+
+    #[test]
+    fn fixture_boundary_matrix_matches_display_answers() {
+        let corpus: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../tests/fixtures/agents/answer-corpus.json"
+        ))
+        .unwrap();
+        for case in corpus["boundaryCases"].as_array().unwrap() {
+            let id = case["id"].as_str().unwrap();
+            let baseline = case["baseline"].as_str().unwrap();
+            let completion = case["completion"].as_str().unwrap();
+            let expected = case["expectedDisplayAnswer"].as_str().unwrap();
+            assert_eq!(
+                answer(baseline, completion).as_deref(),
+                Some(expected),
+                "fixture {id}"
+            );
+        }
     }
 }

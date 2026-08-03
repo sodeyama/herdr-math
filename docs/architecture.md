@@ -116,9 +116,15 @@ through the state machine, clamping to `[0, max]`. `is_exit_signal` recognizes `
 ### 5. Placement (`placement.rs`)
 
 The tracker assigns image ids, enforces concurrent-placement and total-pixel limits, and stacks
-blocks in source order. `emit_placed_block_cursor` advances one line from the
-current cursor and transmits the virtual placement over the cells there, so an
-interactive or piped render appears directly under the command line; replacement emits a scoped delete first.
+blocks in source order. `emit_placed_block_cursor` transmits the virtual placement over the
+cells at the current cursor, so an interactive or piped render appears directly under the
+command line; it advances one line first only when the cursor is not already at the start of
+a line (checked outside `tmux` via `CSI 6n`; inside `tmux` it always advances, since the
+report answers with the pane-relative cursor rather than the outer terminal's), so a render
+invoked right after the shell's own newline does not push the image down an extra row.
+Replacement emits a scoped delete first. Emissions are structured as `TerminalOp::Local`
+(pane bytes) and `TerminalOp::Graphics` (Kitty APC commands) so tmux transports
+can route them separately.
 
 ### 6. Scanner (`src/scanner/scan-latex.ts`)
 
@@ -159,18 +165,24 @@ pipeline to show a coding agent's finished answers in a separate tmux pane:
   renderer worker path to the viewer on the command line (tmux panes start
   with the server environment).
 - `tmath agent-viewer` (in the viewer pane) renders each document through the
-  one-shot renderer, replaces the previous placement by image id, scrolls by
-  re-placing at a shifted home row, and closes on `q`/Ctrl-C.
-- Under `$TMUX`, every Kitty emit is wrapped in the tmux passthrough envelope
-  (`kitty::wrapped_for_tty`, `ESC Ptmux; ... ESC \`), the graphics probe is
-  skipped (queries cannot round-trip through tmux), and the cell size comes
-  from winsize; outside tmux probing stays mandatory and fail-closed.
+  one-shot renderer, replaces the previous placement by image id (clearing
+  stale placeholder cells when the new image is shorter), scrolls long answers
+  by cropping the RGBA viewport and replacing the placement, and closes on
+  `q`/Ctrl-C.
+- Under `$TMUX`, graphics and pane-local output are separate operations. The
+  default route writes only Kitty APC commands to the validated visible client
+  tty; cursor movement, terminal modes, color CSI, line breaks, and Unicode
+  placeholders remain normal tmux pane output. The optional stable-tmux route
+  independently DCS-wraps each Kitty APC with every embedded `ESC` doubled.
+  Graphics probes are skipped because replies cannot be routed reliably, and
+  cell size comes from winsize; outside tmux probing stays mandatory.
 
-Recorded behavior (P1): inside tmux, queries such as the `a=q` probe cannot
-round-trip through the passthrough envelope, so the viewer is optimistic there
-and relies on `allow-passthrough on` plus a Kitty-capable outer terminal; a
-real placement was placed through a Ghostty 1.3.1 + tmux 3.5a pane, and direct
-Ghostty displays placements correctly.
+Recorded behavior (P1): controlled image pixels display in Ghostty 1.3.1 and
+cmux 0.64.12 through tmux 3.5a using the client-tty graphics route. The corrected
+DCS passthrough route also displays controlled pixels in Ghostty 1.3.1. The
+client tty is accepted only when tmux reports a `/dev/tty*` character device
+owned by the current user and the opened descriptor retains the same identity.
+No screenshot or rendered bytes are retained.
 
 ## Concurrency and Atomicity
 

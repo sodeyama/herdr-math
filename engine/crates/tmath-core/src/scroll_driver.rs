@@ -22,40 +22,40 @@ const DEFAULT_PAGE_ROWS: f32 = 20.0;
 pub fn scroll_delta(event: &Event, page: Option<f32>) -> Option<f32> {
     match event {
         Event::Mouse(mouse) => match mouse.kind {
-            MouseKind::ScrollUp => Some(WHEEL_ROWS),
-            MouseKind::ScrollDown => Some(-WHEEL_ROWS),
+            MouseKind::ScrollUp => Some(-WHEEL_ROWS),
+            MouseKind::ScrollDown => Some(WHEEL_ROWS),
             _ => None,
         },
         Event::Key(KeyEvent {
             key: Key::Up | Key::Char('k'),
             ctrl: false,
             ..
-        }) => Some(LINE_ROWS),
+        }) => Some(-LINE_ROWS),
         Event::Key(KeyEvent {
             key: Key::Down | Key::Char('j'),
             ctrl: false,
             ..
-        }) => Some(-LINE_ROWS),
+        }) => Some(LINE_ROWS),
         Event::Key(KeyEvent {
             key: Key::PageUp | Key::Char('g'),
             ctrl: false,
             ..
-        }) => Some(page.unwrap_or(DEFAULT_PAGE_ROWS)),
+        }) => Some(-page.unwrap_or(DEFAULT_PAGE_ROWS)),
         Event::Key(KeyEvent {
             key: Key::PageDown | Key::Char('G'),
             ctrl: false,
             ..
-        }) => Some(-page.unwrap_or(DEFAULT_PAGE_ROWS)),
+        }) => Some(page.unwrap_or(DEFAULT_PAGE_ROWS)),
         Event::Key(KeyEvent {
             key: Key::Home,
             ctrl: false,
             ..
-        }) => Some(f32::MAX),
+        }) => Some(f32::MIN),
         Event::Key(KeyEvent {
             key: Key::End,
             ctrl: false,
             ..
-        }) => Some(f32::MIN),
+        }) => Some(f32::MAX),
         _ => None,
     }
 }
@@ -124,6 +124,15 @@ impl ScrollDriver {
     pub fn set_max(&mut self, max: f32) {
         self.max = max.max(0.0);
     }
+
+    /// Moves immediately to a bounded position, used when newly appended
+    /// content should remain visible without an animation delay.
+    pub fn jump_to(&mut self, position: f32) {
+        let position = position.clamp(0.0, self.max);
+        self.state.position = position;
+        self.state.target = position;
+        self.state.velocity = 0.0;
+    }
 }
 
 #[cfg(test)]
@@ -142,8 +151,8 @@ mod tests {
     fn wheel_up_scrolls_forward_and_down_backward() {
         let up = decode(b"\x1b[<64;10;20M");
         let down = decode(b"\x1b[<65;10;20M");
-        assert_eq!(scroll_delta(&up, None), Some(3.0));
-        assert_eq!(scroll_delta(&down, None), Some(-3.0));
+        assert_eq!(scroll_delta(&up, None), Some(-3.0));
+        assert_eq!(scroll_delta(&down, None), Some(3.0));
     }
 
     #[test]
@@ -155,12 +164,12 @@ mod tests {
                 alt: false,
             })
         };
-        assert_eq!(scroll_delta(&key(Key::Up), None), Some(1.0));
-        assert_eq!(scroll_delta(&key(Key::Char('j')), None), Some(-1.0));
-        assert_eq!(scroll_delta(&key(Key::PageUp), Some(24.0)), Some(24.0));
-        assert_eq!(scroll_delta(&key(Key::PageDown), None), Some(-20.0));
-        assert_eq!(scroll_delta(&key(Key::Home), None), Some(f32::MAX));
-        assert_eq!(scroll_delta(&key(Key::End), None), Some(f32::MIN));
+        assert_eq!(scroll_delta(&key(Key::Up), None), Some(-1.0));
+        assert_eq!(scroll_delta(&key(Key::Char('j')), None), Some(1.0));
+        assert_eq!(scroll_delta(&key(Key::PageUp), Some(24.0)), Some(-24.0));
+        assert_eq!(scroll_delta(&key(Key::PageDown), None), Some(20.0));
+        assert_eq!(scroll_delta(&key(Key::Home), None), Some(f32::MIN));
+        assert_eq!(scroll_delta(&key(Key::End), None), Some(f32::MAX));
     }
 
     #[test]
@@ -177,7 +186,7 @@ mod tests {
     #[test]
     fn driver_clamps_and_settles() {
         let mut driver = ScrollDriver::new(50.0);
-        driver.handle(&decode(b"\x1b[<64;10;20M"), None);
+        driver.handle(&decode(b"\x1b[<65;10;20M"), None);
         driver.step(1.0 / 60.0);
         assert!(driver.position() > 0.0);
         for _ in 0..600 {
@@ -192,7 +201,7 @@ mod tests {
     #[test]
     fn driver_negative_scroll_is_clamped_to_zero() {
         let mut driver = ScrollDriver::new(50.0);
-        driver.handle(&decode(b"\x1b[<65;10;20M"), None);
+        driver.handle(&decode(b"\x1b[<64;10;20M"), None);
         for _ in 0..600 {
             driver.step(1.0 / 60.0);
             if driver.settled() {
@@ -200,5 +209,13 @@ mod tests {
             }
         }
         assert_eq!(driver.position(), 0.0, "cannot scroll before the top");
+    }
+
+    #[test]
+    fn jump_to_moves_immediately_within_bounds() {
+        let mut driver = ScrollDriver::new(12.0);
+        driver.jump_to(20.0);
+        assert_eq!(driver.position(), 12.0);
+        assert!(driver.settled());
     }
 }

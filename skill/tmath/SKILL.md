@@ -36,7 +36,7 @@ printf 'By Fubini, $\\int_0^1 \\int_0^1 x y\\,dx\\,dy = 1/4$.\n' | tmath render 
 # Compose the image width / font size
 tmath render --content-width 800 --font-size 18 ./notes.md
 
-# Show the finished answers of a coding agent in a viewer pane (run inside tmux)
+# Recommended for coding agents: watch their tmux pane and open a viewer
 tmath agent --source-pane %0
 ```
 
@@ -50,8 +50,11 @@ tmath agent --source-pane %0
   current terminal supports it.
 - Node.js 22+ and the installed renderer (handled by `scripts/install.sh`; the
   binary locates the renderer automatically after install).
-- `tmath agent` additionally requires tmux (3.2+) with
-  `tmux set-option -w allow-passthrough on`.
+- `tmath agent` requires tmux 3.2+ and opens a separate viewer pane. Graphics
+  use the attached tmux client tty by default, while placeholder cells remain
+  in tmux for clipping and redraw. Set
+  `TMATH_TMUX_TRANSPORT=passthrough` to force the standards-based DCS route
+  (which requires tmux 3.3+ and `tmux set-option -w allow-passthrough on`).
 
 ## Behavior and privacy
 
@@ -62,6 +65,9 @@ tmath agent --source-pane %0
 - `tmath agent` prints only event names, pane ids, counts, and byte sizes to
   its logs (never answer content), and stores nothing beyond a temp-dir socket
   that is removed on exit.
+- Coding-agent shell tools often capture stdout instead of exposing a terminal.
+  In that case, do not expect `tmath render -` launched by the agent to draw in
+  the conversation pane; use `tmath agent` from another tmux pane.
 
 ## When to stop
 

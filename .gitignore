@@ -11,6 +11,9 @@ coverage/
 # Local Herdr runtime artifacts must stay outside version control.
 .herdr-math/
 
+# Ad-hoc diagnostic logs written only when TMATH_DEBUG_LOG is set.
+.cursor/
+
 # Rust build artifacts
 /target
 /engine/target

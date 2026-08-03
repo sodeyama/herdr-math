@@ -153,7 +153,7 @@ fn scroll_loop_consumes_wheel_input_and_exits_on_q_or_ctrl_c() {
 fn rendered_png_decodes_and_emits_a_placement_when_built() {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
-    use tmath_core::placement::{decode_png, emit_placed_block, CellSize};
+    use tmath_core::placement::{decode_png, emit_placed_block, write_terminal_ops, CellSize};
 
     let Some(worker) = worker_path() else {
         eprintln!("skipping: render subprocess not built (set TMATH_RENDER_WORKER)");
@@ -178,7 +178,9 @@ fn rendered_png_decodes_and_emits_a_placement_when_built() {
     assert_eq!((width, height), (success.width, success.height));
     let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
     let placement = emit_placed_block(1, width, height, &rgba, cols, rows, 1);
-    let text = String::from_utf8_lossy(&placement);
+    let mut bytes = Vec::new();
+    write_terminal_ops(&mut bytes, &placement, false).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
     assert!(text.starts_with("\x1b[1;1H"));
     assert!(text.contains("a=T,f=32,o=z,s="));
     assert!(text.contains("U=1,c="), "virtual placement keys present");

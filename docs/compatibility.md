@@ -42,14 +42,14 @@ clean-exit evidence.
 
 ## Agent integration (P1, experimental)
 
-`tmath agent` / `tmath agent-viewer` (Phase 8) run inside tmux 3.2+ and rely
-on the tmux passthrough envelope (`allow-passthrough on`). Verified on a
-direct Ghostty terminal (placements display correctly) and on a
-Ghostty 1.3.1 + tmux 3.5a pane (a real placement was placed through
-passthrough). tmux cannot relay query replies, so inside tmux probing is
-optimistic and the cell size comes from winsize; the forwarded PNG's visual
-appearance in the user's terminal is a manual eyeball step. kitty and WezTerm
-tmux relay behavior is P1.
+`tmath agent` / `tmath agent-viewer` (Phase 8) run inside tmux and require a
+Kitty-capable outer terminal plus a valid graphics route. Controlled pixels
+were observed with Ghostty 1.3.1 + tmux 3.5a and cmux 0.64.12 + tmux 3.5a
+through the default validated client-tty route. Corrected DCS passthrough also
+displayed pixels in Ghostty. A controlled Ghostty viewer rendered and scrolled
+a long synthetic answer. These are narrow P1 observations, not full support
+claims: resize, detach/attach, multiple clients, and the complete live-agent
+matrix remain unverified.
 
 ## Evidence
 
@@ -59,3 +59,4 @@ tmux relay behavior is P1.
 - [Phase 3 input loop](evidence/2026-08-02-tmath-v2-phase3.md)
 - [Phase 4 CLI and composition](evidence/2026-08-02-tmath-v2-phase4.md)
 - [Phase 5 hardening](evidence/2026-08-02-tmath-v2-phase5.md)
+- [tmux graphics and agent viewer](evidence/2026-08-03-tmath-tmux-graphics.md)

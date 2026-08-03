@@ -66,9 +66,9 @@ echo "watcher log ($LOG):"
 cat "$LOG" | sed 's/^/  /' || true
 
 # The watcher must detect the new answer and attempt to send it. In a detached
-# (no Kitty-capable) session the viewer exits after failing its graphics probe,
-# so the watcher logs `document_sent` or a disconnected-viewer record; either
-# proves the boundary detection and emission path fired.
+# (no Kitty-capable) session the viewer may exit after route or graphics
+# validation fails, so the watcher logs `document_sent` or a disconnected-viewer
+# record; either proves the boundary detection and emission path fired.
 if ! grep -qE 'document_sent|viewer disconnected|no viewer connected' "$LOG"; then
   echo "FAIL: watcher never detected and emitted the answer"
   pass=0

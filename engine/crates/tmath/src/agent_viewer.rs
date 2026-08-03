@@ -6,7 +6,7 @@
 //! close the viewer; the scroll driver maps wheel/arrow input to a re-placed,
 //! vertically shifted image. Render failures leave the previous image intact.
 
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -16,7 +16,7 @@ use tmath_core::agent::{Decoder, Message};
 use tmath_core::input::InputDecoder;
 use tmath_core::ipc::{RenderResponse, IPC_MAX_REQUEST_BYTES};
 use tmath_core::placement::{
-    decode_png, emit_placed_block, emit_replaced_block, CellSize, PlacementLimits, PlacementTracker,
+    decode_png, emit_placed_block, CellSize, PlacementLimits, PlacementTracker, TerminalOp,
 };
 use tmath_core::scroll_driver::{is_exit_signal, ScrollDriver};
 use tmath_core::terminal::{StdioTty, Terminal};
@@ -35,7 +35,6 @@ struct ImageState {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
-    cols: u32,
     rows: u32,
     base_home: u32,
 }
@@ -43,6 +42,8 @@ struct ImageState {
 struct Viewer {
     tracker: PlacementTracker,
     cell: CellSize,
+    viewport_cols: u32,
+    viewport_rows: u32,
     stream: UnixStream,
     current: Option<ImageState>,
     scroll: ScrollDriver,
@@ -69,8 +70,10 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
     // mandatory and fail-closed.
     let tmux_passthrough = tmath_core::kitty::inside_tmux();
     if tmux_passthrough {
+        let route = crate::terminal_output::selected_route()?;
         eprintln!(
-            "agent-viewer: tmux passthrough assumed; require allow-passthrough on the tmux window"
+            "agent-viewer: graphics route {}; require a visible Kitty-capable tmux client",
+            route.label()
         );
     } else if !terminal
         .probe_graphics_support()
@@ -87,10 +90,15 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         width: cell.0,
         height: cell.1,
     };
+    let viewport = terminal
+        .size()
+        .map_err(|error| format!("measure viewer size: {error}"))?;
 
     let mut viewer = Viewer {
         tracker: PlacementTracker::new(PlacementLimits::default()),
         cell,
+        viewport_cols: viewport.cols.max(1),
+        viewport_rows: viewport.rows.max(1),
         stream,
         current: None,
         scroll: ScrollDriver::new(0.0),
@@ -183,8 +191,9 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
     }
 }
 
-fn scroll_offset(scroll: &ScrollDriver, rows: u32) -> i64 {
-    (scroll.position().round() as i64).clamp(0, rows as i64)
+fn scroll_offset(scroll: &ScrollDriver, rows: u32, viewport_rows: u32) -> i64 {
+    let max = rows.saturating_sub(viewport_rows.max(1)) as i64;
+    (scroll.position().round() as i64).clamp(0, max)
 }
 
 fn stream_readable(stream: &UnixStream) -> bool {
@@ -215,6 +224,21 @@ fn stdin_readable() -> bool {
 /// Renders a document and replaces the previous image, keeping the previous
 /// image intact (fail closed) on any render or limit error.
 fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
+    // #region agent log
+    debug_log(
+        "H1,H2,H3,H4,H5",
+        "agent_viewer.rs:render_and_place",
+        "viewer received document",
+        serde_json::json!({
+            "documentBytes": text.len(),
+            "hasCurrentImage": viewer.current.is_some(),
+            "viewportCols": viewer.viewport_cols,
+            "viewportRows": viewer.viewport_rows,
+            "cellWidth": viewer.cell.width,
+            "cellHeight": viewer.cell.height
+        }),
+    );
+    // #endregion
     if text.len() > IPC_MAX_REQUEST_BYTES {
         eprintln!("agent-viewer: renderer_input_limit");
         return Ok(());
@@ -226,9 +250,24 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
             return Ok(());
         }
     };
-    let RenderResponse::Success(success) = &response else {
-        eprintln!("agent-viewer: renderer_rejected");
-        return Ok(());
+    let success = match &response {
+        RenderResponse::Success(success) => success,
+        RenderResponse::Failure(failure) => {
+            // #region agent log
+            debug_log(
+                "H2",
+                "agent_viewer.rs:renderer_rejected",
+                "renderer rejected document",
+                serde_json::json!({
+                    "documentBytes": text.len(),
+                    "errorCode": failure.error.code,
+                    "retryable": failure.error.retryable
+                }),
+            );
+            // #endregion
+            eprintln!("agent-viewer: renderer_rejected");
+            return Ok(());
+        }
     };
     let png = match BASE64.decode(success.base64.as_bytes()) {
         Ok(png) => png,
@@ -237,12 +276,43 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
             return Ok(());
         }
     };
-    let (width, height, rgba) = match decode_png(&png, MAX_PIXELS) {
+    let (new_width, new_height, new_rgba) = match decode_png(&png, MAX_PIXELS) {
         Ok(decoded) => decoded,
         Err(error) => {
             eprintln!("agent-viewer: invalid_image ({error})");
             return Ok(());
         }
+    };
+    let (width, height, rgba) = match viewer.current.as_ref() {
+        Some(previous) => match append_rgba(
+            previous,
+            new_width,
+            new_height,
+            &new_rgba,
+            viewer.cell.height,
+        ) {
+            Ok(composite) => {
+                // #region agent log
+                debug_log(
+                    "H14",
+                    "agent_viewer.rs:append_history",
+                    "appended answer to viewer history",
+                    serde_json::json!({
+                        "previousHeight": previous.height,
+                        "newAnswerHeight": new_height,
+                        "compositeWidth": composite.0,
+                        "compositeHeight": composite.1
+                    }),
+                );
+                // #endregion
+                composite
+            }
+            Err(error) => {
+                eprintln!("agent-viewer: history_limit ({error})");
+                return Ok(());
+            }
+        },
+        None => (new_width, new_height, new_rgba),
     };
 
     let (block, base_home) = match viewer.current.as_ref() {
@@ -272,8 +342,25 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     };
 
     let home = base_home;
+    // #region agent log
+    debug_log(
+        "H3,H4,H5",
+        "agent_viewer.rs:render_geometry",
+        "render decoded and placement reserved",
+        serde_json::json!({
+            "imageWidth": width,
+            "imageHeight": height,
+            "placementCols": block.cols,
+            "placementRows": block.rows,
+            "viewportCols": viewer.viewport_cols,
+            "viewportRows": viewer.viewport_rows,
+            "replacing": viewer.current.is_some(),
+            "maxScrollRows": block.rows.saturating_sub(viewer.viewport_rows)
+        }),
+    );
+    // #endregion
     let bytes = if viewer.current.is_some() {
-        emit_replaced_block(
+        viewer_replacement(
             block.image_id,
             width,
             height,
@@ -293,24 +380,20 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
             home,
         )
     };
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(&tmath_core::kitty::wrapped_for_tty(&bytes))
+    crate::terminal_output::write_operations(&bytes)
         .map_err(|error| format!("write placement: {error}"))?;
-    stdout
-        .flush()
-        .map_err(|error| format!("flush placement: {error}"))?;
 
     viewer.current = Some(ImageState {
         image_id: block.image_id,
         width,
         height,
         rgba,
-        cols: block.cols,
         rows: block.rows,
         base_home: home,
     });
-    viewer.scroll = ScrollDriver::new(block.rows as f32);
+    let max_scroll = block.rows.saturating_sub(viewer.viewport_rows) as f32;
+    viewer.scroll = ScrollDriver::new(max_scroll);
+    viewer.scroll.jump_to(max_scroll);
     viewer.emitted_offset = 0;
     eprintln!(
         "agent-viewer: placed image={} rows={} bytes={}",
@@ -319,11 +402,68 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn append_rgba(
+    previous: &ImageState,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    gap: u32,
+) -> Result<(u32, u32, Vec<u8>), &'static str> {
+    let composite_width = previous.width.max(width);
+    let composite_height = previous
+        .height
+        .checked_add(gap)
+        .and_then(|value| value.checked_add(height))
+        .ok_or("composite dimensions overflow")?;
+    let pixels = u64::from(composite_width) * u64::from(composite_height);
+    if pixels > MAX_PIXELS {
+        return Err("composite pixel limit exceeded");
+    }
+    let byte_len = usize::try_from(pixels.checked_mul(4).ok_or("composite size overflow")?)
+        .map_err(|_| "composite size overflow")?;
+    let mut composite = vec![0; byte_len];
+    copy_rgba_rows(
+        &mut composite,
+        composite_width,
+        0,
+        previous.width,
+        previous.height,
+        &previous.rgba,
+    );
+    copy_rgba_rows(
+        &mut composite,
+        composite_width,
+        previous.height + gap,
+        width,
+        height,
+        rgba,
+    );
+    Ok((composite_width, composite_height, composite))
+}
+
+fn copy_rgba_rows(
+    destination: &mut [u8],
+    destination_width: u32,
+    destination_y: u32,
+    source_width: u32,
+    source_height: u32,
+    source: &[u8],
+) {
+    let source_stride = source_width as usize * 4;
+    let destination_stride = destination_width as usize * 4;
+    for row in 0..source_height as usize {
+        let source_start = row * source_stride;
+        let destination_start = (destination_y as usize + row) * destination_stride;
+        destination[destination_start..destination_start + source_stride]
+            .copy_from_slice(&source[source_start..source_start + source_stride]);
+    }
+}
+
 /// Re-places the current image shifted by the current eased scroll offset,
 /// when the offset moved from the last emitted home row.
 fn reemit_if_moved(viewer: &mut Viewer) -> Result<bool, String> {
     let rows = viewer.current.as_ref().map_or(0, |image| image.rows);
-    let offset = scroll_offset(&viewer.scroll, rows);
+    let offset = scroll_offset(&viewer.scroll, rows, viewer.viewport_rows);
     if viewer.current.is_none() || offset == viewer.emitted_offset {
         return Ok(false);
     }
@@ -332,23 +472,151 @@ fn reemit_if_moved(viewer: &mut Viewer) -> Result<bool, String> {
     {
         let image = viewer.current.as_ref().expect("checked above");
         home = (image.base_home as i64 - offset).clamp(1, image.base_home as i64) as u32;
-        bytes = emit_replaced_block(
-            image.image_id,
+        let (cropped_height, cropped_rgba) = crop_rgba_top(
             image.width,
             image.height,
             &image.rgba,
-            image.cols,
-            image.rows,
+            offset as u32,
+            viewer.cell.height,
+        );
+        let (cropped_cols, cropped_rows) =
+            tmath_core::placement::grid_for(image.width, cropped_height, viewer.cell);
+        bytes = viewer_replacement(
+            image.image_id,
+            image.width,
+            cropped_height,
+            &cropped_rgba,
+            cropped_cols,
+            cropped_rows,
             home,
         );
     }
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(&tmath_core::kitty::wrapped_for_tty(&bytes))
+    crate::terminal_output::write_operations(&bytes)
         .map_err(|error| format!("write scroll placement: {error}"))?;
-    stdout
-        .flush()
-        .map_err(|error| format!("flush scroll placement: {error}"))?;
     viewer.emitted_offset = offset;
     Ok(true)
+}
+
+/// Clears the dedicated viewer grid before replacing an image so placeholder
+/// cells from a taller previous image cannot survive below the replacement.
+fn viewer_replacement(
+    image_id: u32,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    cols: u32,
+    rows: u32,
+    home: u32,
+) -> Vec<TerminalOp> {
+    // #region agent log
+    debug_log(
+        "H4",
+        "agent_viewer.rs:viewer_replacement",
+        "replacement clears viewer screen",
+        serde_json::json!({
+            "imageId": image_id,
+            "cols": cols,
+            "rows": rows,
+            "home": home,
+            "clearScreen": true
+        }),
+    );
+    // #endregion
+    let mut operations = vec![
+        TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(image_id)),
+        TerminalOp::Local(b"\x1b[H\x1b[2J".to_vec()),
+    ];
+    operations.extend(emit_placed_block(
+        image_id, width, height, rgba, cols, rows, home,
+    ));
+    operations
+}
+
+fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let payload = serde_json::json!({
+        "sessionId": "f945c2",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": timestamp
+    });
+    crate::terminal_output::write_debug_line(&payload);
+}
+
+/// Crops whole terminal-cell rows from the top of a full RGBA answer.
+fn crop_rgba_top(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    offset_rows: u32,
+    cell_height: u32,
+) -> (u32, Vec<u8>) {
+    let offset_px = offset_rows
+        .saturating_mul(cell_height.max(1))
+        .min(height.saturating_sub(1));
+    let row_bytes = width as usize * 4;
+    let start = offset_px as usize * row_bytes;
+    (height - offset_px, rgba[start..].to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_offset_clamps_to_the_viewport() {
+        let mut decoder = tmath_core::input::InputDecoder::new();
+        decoder.push(b"\x1b[<65;10;20M");
+        let wheel = decoder.next_event().expect("wheel");
+        let mut scroll = ScrollDriver::new(30.0);
+        scroll.handle(&wheel, None);
+        for _ in 0..600 {
+            scroll.step(1.0 / 60.0);
+            if scroll.settled() {
+                break;
+            }
+        }
+        assert_eq!(scroll_offset(&scroll, 50, 20), 3);
+        assert_eq!(scroll_offset(&scroll, 50, 50), 0);
+    }
+
+    #[test]
+    fn crop_removes_complete_cell_rows() {
+        let rgba: Vec<u8> = (0..4 * 6 * 4).map(|value| value as u8).collect();
+        let (height, cropped) = crop_rgba_top(4, 6, &rgba, 1, 2);
+        assert_eq!(height, 4);
+        assert_eq!(cropped, rgba[4 * 2 * 4..]);
+    }
+
+    #[test]
+    fn viewer_replacement_clears_stale_placeholder_cells() {
+        let operations = viewer_replacement(1, 1, 1, &[0, 0, 0, 0], 1, 1, 1);
+        assert!(matches!(
+            operations.get(1),
+            Some(TerminalOp::Local(bytes)) if bytes == b"\x1b[H\x1b[2J"
+        ));
+    }
+
+    #[test]
+    fn append_rgba_keeps_previous_pixels_above_new_pixels() {
+        let previous = ImageState {
+            image_id: 1,
+            width: 1,
+            height: 1,
+            rgba: vec![1, 2, 3, 4],
+            rows: 1,
+            base_home: 1,
+        };
+        let (width, height, rgba) = append_rgba(&previous, 1, 1, &[5, 6, 7, 8], 1).unwrap();
+        assert_eq!((width, height), (1, 3));
+        assert_eq!(rgba, vec![1, 2, 3, 4, 0, 0, 0, 0, 5, 6, 7, 8]);
+    }
 }

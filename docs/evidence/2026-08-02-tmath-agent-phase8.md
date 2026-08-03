@@ -8,22 +8,23 @@ Scope: `tmath agent` tmux viewer feature (Phase 8 addition).
 - **Automated pipeline (headless)**: PASS. The watcher detects a finished agent
   answer, proves the boundary, and emits the answer document; the viewer
   connects, receives it, and (in a Kitty-capable setup) places the image.
-- **Placement inside a Ghostty-attached tmux pane**: PASS at the pipeline
-  level — the auto-viewer connected and placed a real image in the pane
-  (`placed image=1 rows=10 bytes=4980`), with the placeholder grid visible in
-  the pane. The transmit is a fire-and-forget Kitty sequence carried through
-  tmux passthrough (`ESC Ptmux; ... ESC \`), which tmux cannot reply to but
-  does forward.
+- **Placement inside a Ghostty-attached tmux pane**: NOT VERIFIED. The
+  auto-viewer connected and logged `placed image=1 rows=10 bytes=4980`, but
+  only the placeholder grid was visible. No image pixels were confirmed.
+  Subsequent review found that the passthrough envelope failed to double inner
+  `ESC` bytes and wrapped pane-local output with the graphics commands.
 - **Direct Ghostty placement**: PASS (`placed width=360 height=100
   image_id=1`).
 
 ## Investigation and root causes
 
-Three distinct issues blocked the tmux path and were fixed:
+The earlier investigation fixed supporting issues, but its passthrough fix was
+incomplete:
 
-1. **Passthrough envelope**: tmux only forwards a DCS opened with its private
-   prefix (`ESC Ptmux; ... ESC \`); a generic `ESC P` or a bare Kitty APC is
-   consumed by tmux. `kitty::dcs_wrap` now uses `\ePtmux;`.
+1. **Passthrough envelope**: tmux requires `ESC Ptmux; ... ESC \` and every
+   `ESC` in the payload must be doubled. The recorded implementation added the
+   private prefix but did not double those bytes, so it did not establish a
+   valid image relay.
 2. **Queries cannot round-trip through tmux**: the `a=q` graphics probe and
    `CSI 16t` cell-size query (tmux answers with character counts, not pixels)
    cannot be answered reliably inside tmux. The viewer therefore skips the
@@ -51,7 +52,8 @@ tmath agent: document_sent bytes=74
 tmath agent: document_sent bytes=146
 ```
 
-Observed auto-viewer pane (placeholder grid plus placement line):
+Observed auto-viewer pane (placeholder grid plus placement line; this is a
+failure for pixel-display acceptance):
 
 ```text
 <placeholder grid glyphs>
@@ -69,5 +71,6 @@ removed on watcher exit.
 - tmux cannot deliver query replies, so the viewer operates optimistically
   inside tmux: `allow-passthrough on` and a Kitty-graphics-capable outer
   terminal are required; otherwise nothing is displayed (no crash).
-- Visual confirmation of the PNG in the user's Ghostty window is a manual
-  eyeball check; the placement and transmit succeeded without error.
+- Ghostty + tmux remains unverified until controlled image pixels, pane
+  clipping, redraw, and detach/attach are observed. A successful write and a
+  placement log are not sufficient evidence.

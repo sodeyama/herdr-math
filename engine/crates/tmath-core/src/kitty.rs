@@ -12,30 +12,25 @@ use miniz_oxide::deflate::compress_to_vec_zlib;
 /// Maximum size of each base64 chunk inside one inline transmit.
 pub const KITTY_CHUNK_SIZE: usize = 4096;
 
-/// Returns true when the process runs inside tmux. Under tmux, Kitty sequences
-/// must be DCS-wrapped for passthrough (see [`wrapped_for_tty`]).
+/// Returns true when the process runs inside tmux.
 pub fn inside_tmux() -> bool {
     std::env::var_os("TMUX").is_some()
 }
 
-/// Wraps terminal output in tmux's passthrough envelope when running under
-/// tmux. tmux only forwards a DCS opened with its private prefix
-/// (`ESC Ptmux; ... ESC \\`) to the outer terminal; a bare Kitty APC
-/// (`ESC _ G`) or a generic `ESC P` is swallowed. Passthrough must also be
-/// enabled on the tmux window (`allow-passthrough on`). Outside tmux the
-/// bytes are returned unchanged.
-pub fn wrapped_for_tty(bytes: &[u8]) -> Vec<u8> {
-    if !inside_tmux() {
-        return bytes.to_vec();
-    }
-    dcs_wrap(bytes)
-}
-
-/// Wraps bytes in tmux's passthrough envelope: `ESC Ptmux; ... ESC \\`.
+/// Wraps one terminal control string in tmux's passthrough envelope.
+///
+/// tmux requires every `ESC` in the payload to be doubled. The outer opener
+/// and terminator remain single escapes.
 pub fn dcs_wrap(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len() + 8);
+    let escapes = bytes.iter().filter(|&&byte| byte == 0x1b).count();
+    let mut out = Vec::with_capacity(bytes.len() + escapes + 8);
     out.extend_from_slice(b"\x1bPtmux;");
-    out.extend_from_slice(bytes);
+    for &byte in bytes {
+        if byte == 0x1b {
+            out.push(0x1b);
+        }
+        out.push(byte);
+    }
     out.extend_from_slice(b"\x1b\\");
     out
 }
@@ -124,6 +119,23 @@ pub fn kitty_transmit_placed(
     rgba: &[u8],
     placement: Placement,
 ) -> Vec<u8> {
+    kitty_transmit_placed_commands(image_id, width, height, rgba, placement)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Builds one independently framed Kitty APC command per upload chunk.
+///
+/// Keeping command boundaries lets tmux transports wrap each APC separately
+/// without swallowing pane-local cursor or placeholder output.
+pub fn kitty_transmit_placed_commands(
+    image_id: u32,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    placement: Placement,
+) -> Vec<Vec<u8>> {
     assert_eq!(
         rgba.len(),
         (width as usize)
@@ -135,7 +147,7 @@ pub fn kitty_transmit_placed(
     let chunks: Vec<&[u8]> = payload.as_bytes().chunks(KITTY_CHUNK_SIZE).collect();
     let last = chunks.len() - 1;
 
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(chunks.len());
     let mut seq = Vec::new();
     for (i, chunk) in chunks.iter().enumerate() {
         let more = u8::from(i != last);
@@ -153,7 +165,7 @@ pub fn kitty_transmit_placed(
         seq.push(b';');
         seq.extend_from_slice(chunk);
         seq.extend_from_slice(b"\x1b\\");
-        out.extend_from_slice(&seq);
+        out.push(seq.clone());
     }
     out
 }
@@ -506,7 +518,29 @@ mod tests {
     #[test]
     fn dcs_wrap_uses_the_tmux_passthrough_envelope() {
         let wrapped = dcs_wrap(b"\x1b_Ga=T,q=2\x1b\\");
-        assert_eq!(wrapped, b"\x1bPtmux;\x1b_Ga=T,q=2\x1b\\\x1b\\");
+        assert_eq!(wrapped, b"\x1bPtmux;\x1b\x1b_Ga=T,q=2\x1b\x1b\\\x1b\\");
+    }
+
+    #[test]
+    fn transmit_commands_preserve_apc_chunk_boundaries() {
+        let mut seed = 0x12345678u32;
+        let pixels: Vec<u8> = (0..64 * 64 * 4)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                (seed >> 24) as u8
+            })
+            .collect();
+        let commands = kitty_transmit_placed_commands(
+            1,
+            64,
+            64,
+            &pixels,
+            Placement::Cells { cols: 8, rows: 4 },
+        );
+        assert!(commands.len() > 1);
+        assert!(commands
+            .iter()
+            .all(|command| command.starts_with(b"\x1b_G") && command.ends_with(b"\x1b\\")));
     }
 
     #[test]

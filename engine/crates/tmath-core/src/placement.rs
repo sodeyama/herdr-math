@@ -10,6 +10,43 @@ use std::io;
 
 use crate::kitty::{self, Placement, MAX_PLACEHOLDER_CELLS};
 
+/// One ordered terminal emission operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalOp {
+    /// Bytes tmux must interpret and retain in its pane grid.
+    Local(Vec<u8>),
+    /// Exactly one Kitty APC command for the outer terminal.
+    Graphics(Vec<u8>),
+}
+
+/// Writes ordered placement operations to a terminal transport.
+///
+/// Under stable tmux only graphics commands use DCS passthrough. Local
+/// terminal controls and placeholder cells always flow through tmux normally.
+pub fn write_terminal_ops(
+    writer: &mut impl io::Write,
+    operations: &[TerminalOp],
+    tmux_passthrough: bool,
+) -> io::Result<()> {
+    for operation in operations {
+        match operation {
+            TerminalOp::Local(bytes) => writer.write_all(bytes)?,
+            TerminalOp::Graphics(apc) if tmux_passthrough => {
+                writer.write_all(&kitty::dcs_wrap(apc))?
+            }
+            TerminalOp::Graphics(apc) => writer.write_all(apc)?,
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn direct_bytes(operations: &[TerminalOp]) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_terminal_ops(&mut out, operations, false).expect("Vec writes cannot fail");
+    out
+}
+
 /// Measured pixel size of one terminal cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellSize {
@@ -272,26 +309,35 @@ pub fn emit_placed_block(
     cols: u32,
     rows: u32,
     home_row: u32,
-) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(format!("\x1b[{home_row};1H").as_bytes());
-    out.extend_from_slice(&kitty::kitty_transmit_placed(
-        image_id,
-        width_px,
-        height_px,
-        rgba,
-        Placement::Cells { cols, rows },
-    ));
-    out.extend_from_slice(&placeholder_grid_at_cursor(image_id, cols, rows));
+) -> Vec<TerminalOp> {
+    let mut out = vec![TerminalOp::Local(
+        format!("\x1b[{home_row};1H").into_bytes(),
+    )];
+    out.extend(
+        kitty::kitty_transmit_placed_commands(
+            image_id,
+            width_px,
+            height_px,
+            rgba,
+            Placement::Cells { cols, rows },
+        )
+        .into_iter()
+        .map(TerminalOp::Graphics),
+    );
+    out.push(TerminalOp::Local(placeholder_grid_at_cursor(
+        image_id, cols, rows,
+    )));
     out
 }
 
 /// Builds the byte sequence that places a block directly below the current
 /// cursor position instead of at an absolute home row, so an interactive or
 /// piped render appears right under the command line rather than at the top of
-/// the terminal. The cursor is advanced to the start of the next line, the
-/// virtual placement is transmitted, and the placeholder grid is written over
-/// the cells the cursor now sits on.
+/// the terminal. When the cursor is not already at the start of a line, it is
+/// advanced to the start of the next line first; otherwise the placement
+/// starts on the current line so the image lands directly under the command
+/// line instead of one row below it. The virtual placement is transmitted and
+/// the placeholder grid is written over the cells the cursor now sits on.
 pub fn emit_placed_block_cursor(
     image_id: u32,
     width_px: u32,
@@ -299,17 +345,26 @@ pub fn emit_placed_block_cursor(
     rgba: &[u8],
     cols: u32,
     rows: u32,
-) -> Vec<u8> {
+    already_at_line_start: bool,
+) -> Vec<TerminalOp> {
     let mut out = Vec::new();
-    out.extend_from_slice(b"\r\n");
-    out.extend_from_slice(&kitty::kitty_transmit_placed(
-        image_id,
-        width_px,
-        height_px,
-        rgba,
-        Placement::Cells { cols, rows },
-    ));
-    out.extend_from_slice(&placeholder_grid_at_cursor(image_id, cols, rows));
+    if !already_at_line_start {
+        out.push(TerminalOp::Local(b"\r\n".to_vec()));
+    }
+    out.extend(
+        kitty::kitty_transmit_placed_commands(
+            image_id,
+            width_px,
+            height_px,
+            rgba,
+            Placement::Cells { cols, rows },
+        )
+        .into_iter()
+        .map(TerminalOp::Graphics),
+    );
+    out.push(TerminalOp::Local(placeholder_grid_at_cursor(
+        image_id, cols, rows,
+    )));
     out
 }
 
@@ -323,9 +378,9 @@ pub fn emit_replaced_block(
     cols: u32,
     rows: u32,
     home_row: u32,
-) -> Vec<u8> {
-    let mut out = kitty::kitty_delete_id(image_id);
-    out.extend_from_slice(&emit_placed_block(
+) -> Vec<TerminalOp> {
+    let mut out = vec![TerminalOp::Graphics(kitty::kitty_delete_id(image_id))];
+    out.extend(emit_placed_block(
         image_id, width_px, height_px, rgba, cols, rows, home_row,
     ));
     out
@@ -333,8 +388,8 @@ pub fn emit_replaced_block(
 
 /// Builds the byte sequence that removes a placed block, deleting its image and
 /// leaving the surrounding cells unchanged.
-pub fn emit_remove_block(image_id: u32) -> Vec<u8> {
-    kitty::kitty_delete_id(image_id)
+pub fn emit_remove_block(image_id: u32) -> Vec<TerminalOp> {
+    vec![TerminalOp::Graphics(kitty::kitty_delete_id(image_id))]
 }
 
 /// Writes a placeholder grid relative to the current cursor position instead of
@@ -477,7 +532,8 @@ mod tests {
     #[test]
     fn emit_places_at_home_row_with_grid() {
         let out = emit_placed_block(7, 10, 20, &[0xff; 10 * 20 * 4], 1, 1, 3);
-        let text = String::from_utf8_lossy(&out);
+        let bytes = direct_bytes(&out);
+        let text = String::from_utf8_lossy(&bytes);
         assert!(text.starts_with("\x1b[3;1H"), "home row move first");
         assert!(text.contains("i=7,U=1,c=1,r=1,q=2"));
         assert!(
@@ -504,12 +560,13 @@ mod tests {
     }
 
     #[test]
-    fn cursor_relative_placement_advances_one_line() {
-        let out = emit_placed_block_cursor(9, 12, 24, &[0xab; 12 * 24 * 4], 1, 1);
-        let text = String::from_utf8_lossy(&out);
+    fn cursor_relative_placement_advances_one_line_when_mid_line() {
+        let out = emit_placed_block_cursor(9, 12, 24, &[0xab; 12 * 24 * 4], 1, 1, false);
+        let bytes = direct_bytes(&out);
+        let text = String::from_utf8_lossy(&bytes);
         assert!(
             text.starts_with("\r\n"),
-            "cursor advances to the next line first"
+            "cursor advances to the next line first when not already at line start"
         );
         assert!(
             text.contains("i=9,U=1,c=1,r=1,q=2"),
@@ -527,14 +584,57 @@ mod tests {
     }
 
     #[test]
+    fn cursor_relative_placement_stays_on_current_line_when_already_at_start() {
+        let out = emit_placed_block_cursor(9, 12, 24, &[0xab; 12 * 24 * 4], 1, 1, true);
+        let bytes = direct_bytes(&out);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.starts_with("\r\n"),
+            "no extra newline when the cursor is already at the start of a line"
+        );
+        assert!(
+            text.starts_with("\x1b_G"),
+            "placement starts immediately with the graphics transmit"
+        );
+        assert!(
+            text.contains("i=9,U=1,c=1,r=1,q=2"),
+            "virtual placement keys"
+        );
+    }
+
+    #[test]
     fn replace_emits_a_scoped_delete_before_replacing() {
         let out = emit_replaced_block(5, 10, 20, &[0xff; 10 * 20 * 4], 1, 1, 2);
-        let text = String::from_utf8_lossy(&out);
+        let bytes = direct_bytes(&out);
+        let text = String::from_utf8_lossy(&bytes);
         assert!(
             text.starts_with("\x1b_Ga=d,d=I,i=5,q=2\x1b\\"),
             "scoped delete first"
         );
         assert!(text.contains("i=5,U=1,c=1,r=1,q=2"), "same image id reused");
+    }
+
+    #[test]
+    fn tmux_wraps_only_graphics_commands() {
+        let operations = emit_placed_block_cursor(9, 12, 24, &[0xab; 12 * 24 * 4], 1, 1, false);
+        let mut bytes = Vec::new();
+        write_terminal_ops(&mut bytes, &operations, true).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.starts_with("\r\n\x1bPtmux;"));
+        assert!(text.contains("\x1b\x1b_G"));
+        assert!(text.contains("\x1b\x1b\\\x1b\\"));
+        assert!(
+            text.contains("\x1b[38;2;0;0;9m"),
+            "placeholder color remains normal tmux output"
+        );
+        assert_eq!(
+            text.matches("\x1bPtmux;").count(),
+            operations
+                .iter()
+                .filter(|operation| matches!(operation, TerminalOp::Graphics(_)))
+                .count()
+        );
     }
 
     #[test]
