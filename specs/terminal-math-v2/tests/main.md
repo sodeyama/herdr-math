@@ -536,15 +536,16 @@ finished answer as a rendered Markdown + math image in a separate viewer pane.
 - Then the frame is rejected with a stable error, the buffer stays bounded, and
   the viewer keeps its previous image (fail closed).
 
-### AT-2-803 - Viewer render and replace
+### AT-2-803 - Viewer render and append
 
 - Priority: P1
 - Evidence: Unit, Render, Runtime
 - Given a new answer document
 - When the viewer receives it
-- Then it renders through the one-shot renderer subprocess, replaces the
-  previous placement by image id, and keeps the previous image intact on any
-  render, limit, or decode failure.
+- Then it renders through the one-shot renderer subprocess, appends the answer
+  below the bounded in-memory viewer history, replaces the composite viewport
+  placement by image id, and keeps the previous history intact on any render,
+  limit, or decode failure.
 
 ### AT-2-804 - Viewer scroll and clean exit
 
@@ -552,17 +553,22 @@ finished answer as a rendered Markdown + math image in a separate viewer pane.
 - Evidence: Unit, Integration
 - Given a rendered answer taller than the viewer pane
 - When the user scrolls with the wheel or arrow keys in the viewer pane
-- Then the placement is re-emitted at a shifted home row, and `q`/`Ctrl-C`
-  close the viewer cleanly.
+- Then the viewer crops the RGBA viewport, clears stale placeholder cells,
+  and replaces the placement at the fixed viewer home row; earlier answers
+  remain above later answers in scroll order, and `q`/`Ctrl-C` close the viewer
+  cleanly.
 
 ### AT-2-805 - tmux passthrough envelope
 
 - Priority: P1
-- Evidence: Unit
+- Evidence: Unit, Integration
 - Given the process runs with `$TMUX` set
-- When any Kitty sequence or placement is written
-- Then it is wrapped in the tmux DCS passthrough envelope
-  (`ESC P ... ESC \\`), and unmodified otherwise.
+- When Kitty graphics and pane-local terminal output are written
+- Then each Kitty APC command is independently wrapped in the tmux DCS
+  passthrough envelope (`ESC Ptmux; ... ESC \\`) with every payload `ESC`
+  doubled.
+- And cursor movement, terminal modes, placeholder Unicode cells, color CSI,
+  line breaks, and other pane-local bytes are not passthrough-wrapped.
 
 ### AT-2-806 - Ghostty tmux image relay
 
@@ -570,11 +576,11 @@ finished answer as a rendered Markdown + math image in a separate viewer pane.
 - Evidence: Runtime
 - Given a Ghostty-attached tmux session with `allow-passthrough` enabled
 - When an answer renders in the viewer pane
-- Then the viewer places a real image in the pane (recorded:
-  `placed image=1 rows=10 bytes=4980`). tmux cannot relay query replies, so
-  inside tmux probing is optimistic and the cell size comes from winsize; the
-  PNG itself is a fire-and-forget transmit forwarded to the outer terminal, so
-  visual confirmation in the user's terminal is a manual eyeball step.
+- Then visible image pixels cover the expected placeholder cells, remain
+  clipped to the pane, move with pane redraw/scroll, and survive a controlled
+  detach/attach cycle without a placeholder-glyph wall.
+- And a successful write or `placed image=...` log is not evidence that pixels
+  were displayed.
 
 ### AT-2-807 - No-content logging
 
@@ -606,6 +612,104 @@ finished answer as a rendered Markdown + math image in a separate viewer pane.
 - When `tmath render` runs
 - Then the entry check matches (the worker is not silently skipped) and the
   full bounded JSON response is read back without truncation.
+
+### AT-2-810 - cmux tmux image relay
+
+- Priority: P1
+- Evidence: Runtime
+- Given a cmux-attached tmux session with a supported graphics transport
+- When a controlled document renders in a pane
+- Then visible image pixels cover the expected placeholder cells and remain
+  clipped to the pane across redraw, resize, and detach/attach.
+- And cmux + tmux is not described as supported until this exact runtime case
+  passes on a recorded release combination.
+
+### AT-2-811 - Coding-agent runtime matrix
+
+- Priority: P1
+- Evidence: Runtime
+- Given Claude Code, Codex, Cursor CLI, pi, or opencode running in a tmux source
+  pane
+- When `tmath agent` watches that pane and a complete answer settles
+- Then a separate viewer pane displays exactly the completed answer, including
+  typeset math, and a long answer scrolls with wheel and keyboard input.
+- And tool/status frames, prompt-only updates, truncated captures, and ambiguous
+  rewrites never replace the last valid viewer image.
+
+### AT-2-812 - Directory allowlist matching
+
+- Priority: P1
+- Evidence: Unit
+- Given a directory registered with `tmath agent-enable <dir>`
+- When `tmath agent-allowed` runs against that directory or any of its
+  subdirectories
+- Then it exits `0`; and when it runs against an unregistered directory,
+  including one whose name merely shares the registered directory's name as a
+  string prefix (e.g. `<dir>2`), it exits `1`.
+- And `tmath agent-allowed` writes nothing to stdout or stderr in either case.
+
+### AT-2-813 - Allowlist enable/disable idempotency
+
+- Priority: P1
+- Evidence: Unit
+- Given a directory already registered with `tmath agent-enable`
+- When `tmath agent-enable` runs again for the same directory
+- Then the allowlist file gains no duplicate entry.
+- And given a directory not registered, `tmath agent-disable` for it exits `0`
+  without error; given a directory registered among others, `tmath
+  agent-disable` removes only that entry and leaves the rest intact.
+
+### AT-2-814 - Shell rc integration idempotency
+
+- Priority: P1
+- Evidence: Static, Install
+- Given `scripts/install.sh` run twice against the same `HOME`
+- When each run completes
+- Then `~/.zshrc` and `~/.bashrc` each contain exactly one marker-delimited
+  `tmath shell integration` block, and a pre-existing block with different
+  content is replaced in place with surrounding lines preserved.
+- And when `TMATH_SKIP_SHELL_INTEGRATION=1` is set, neither rc file is
+  modified.
+
+### AT-2-815 - Wrapper passthrough and allowlist gating
+
+- Priority: P1
+- Evidence: Unit, Integration
+- Given the installed shell wrapper (`$APP/shell/tmath-agent.sh`) sourced in a
+  shell
+- When a wrapped command runs in a directory that is not allowlisted, or when
+  `tmath` is not installed, or when the real command is not found
+- Then the real command runs unmodified (or the not-found error surfaces
+  unchanged) and no `tmath agent` process starts.
+
+### AT-2-816 - Auto-start in and outside tmux
+
+- Priority: P1
+- Evidence: Unit, Integration
+- Given an allowlisted directory and the shell wrapper sourced
+- When a wrapped command runs inside a tmux pane
+- Then a `tmath agent --source-pane <that pane>` process starts in the
+  background and the wrapped command still runs in the foreground of the same
+  pane.
+- And when the same command runs outside tmux with both stdin and stdout
+  attached to a TTY, a new tmux session is created with the agent command in
+  one pane and `tmath agent --source-pane <that pane>` in a second pane, and
+  the session is attached.
+- And when the same command runs outside tmux with stdin or stdout not a TTY
+  (piped or redirected), the command runs unmodified and no tmux session or
+  `tmath agent` process is created.
+
+### AT-2-817 - Duplicate watcher prevention
+
+- Priority: P1
+- Evidence: Unit, Integration
+- Given a pane already running an auto-started `tmath agent` watcher
+- When a wrapped command runs again in the same pane
+- Then no second `tmath agent` process starts for that pane.
+- And given a pane whose previously auto-started watcher process has exited
+  or been killed, leaving its lock file behind
+- Then the next wrapped command in that pane successfully starts a new
+  watcher (the stale lock is reclaimed).
 
 ## Release Acceptance Rule
 

@@ -228,7 +228,7 @@ replaces the deprecated Herdr pane owner.
 [ tmath agent-viewer (in the viewer pane) ]
         │  one-shot tmath-render subprocess (KaTeX + allowlisted Markdown)
         ▼
-[ viewer pane: scrollback-anchored Kitty placement, one per answer,
+[ viewer pane: bounded answers appended into one composite viewport,
   replaced by image id, scrolled by wheel/arrows, q/Ctrl-C closes ]
 ```
 
@@ -237,25 +237,89 @@ Key behaviors:
 - The watcher owns tmux only through a fixed allowlisted `tmux` CLI surface
   (split/capture/display/kill) with validated pane ids; no agent content ever
   reaches a shell.
-- Under `$TMUX`, every Kitty sequence and placement is wrapped in the tmux DCS
-  passthrough envelope (`ESC P ... ESC \`) so tmux forwards it to the outer
-  terminal.
+- Under `$TMUX`, pane-local bytes (cursor moves, modes, placeholder cells) stay
+  on stdout while Kitty APC commands use a selected graphics route: by default
+  a validated write to the attached client tty, or optionally per-APC DCS
+  passthrough with embedded `ESC` bytes doubled.
 - The viewer fails closed on graphics-unavailable (outside tmux), over-limit,
   malformed, and render-error paths, keeping the previous image. Inside tmux,
-  where queries cannot round-trip, graphics support is assumed (optimistic
-  passthrough) with a clear stderr warning.
+  where queries cannot round-trip, graphics support is assumed for known
+  Kitty-capable outer terminals and the chosen route is logged to stderr.
+- Captured Unicode box tables are normalized back to the allowlisted Markdown
+  table subset before rendering because terminal capture exposes presentation
+  cells rather than the coding agent's original Markdown source.
 - Private: the watcher passes the renderer worker path (`TMATH_RENDER_WORKER`)
   to the viewer on the command line, because `tmux split-window` starts panes
   with the server environment.
 - Privacy: logs carry event names, pane ids, counts, and byte sizes only;
   sockets live under the platform temp directory.
 
-Recorded behavior: inside a Ghostty 1.3.1 + tmux 3.5a pane the viewer places
-images through tmux passthrough (`ESC Ptmux; ...`); tmux cannot reply to
-queries, so inside tmux probing is optimistic and the cell size comes from
-winsize (which tmux reports in real pixels). Direct Ghostty is fully probed
-and fail-closed. Visual confirmation of the forwarded PNG in the user's
-terminal is a manual step (AT-2-806).
+Current correction: the earlier Ghostty 1.3.1 + tmux 3.5a observation proved
+only that the watcher/viewer pipeline ran and placeholder cells were printed.
+It did not prove that image pixels reached the outer terminal. The legacy tmux
+transport must double every embedded `ESC`, wrap each Kitty APC independently,
+and leave pane-local cursor, mode, and placeholder bytes unwrapped. Narrow
+controlled pixel display is now recorded for Ghostty + tmux and cmux + tmux
+(see `docs/evidence/2026-08-03-tmath-tmux-graphics.md`); full acceptance in
+AT-2-806, AT-2-810, and AT-2-811 remains pending for resize, detach/attach,
+multiple clients, and live end-to-end coding-agent watcher responses.
+
+### Shell auto-watch (opt-in, per directory)
+
+`tmath agent` still requires the user to find the source pane id and start the
+watcher by hand. To make the launch-and-forget experience work right after
+`curl | bash` install, `scripts/install.sh` installs an opt-in shell
+integration that wraps coding-agent launcher commands (`claude`, `codex`,
+`opencode`, `cursor-agent`, `pi`) and starts `tmath agent` automatically, but
+only inside directories the user has explicitly allowlisted.
+
+```text
+[ scripts/install.sh ]
+        │  writes $APP/shell/tmath-agent.sh
+        │  appends a marker-delimited source line to ~/.zshrc and ~/.bashrc
+        ▼
+[ ~/.zshrc / ~/.bashrc ]  →  source $APP/shell/tmath-agent.sh
+        │  defines alias claude/codex/opencode/cursor-agent/pi
+        │  each alias calls __tmath_wrap_agent <real-cmd> "$@"
+        ▼
+[ __tmath_wrap_agent ]
+        │  tmath agent-allowed?  (directory allowlist, exit code only)
+        │    no  → exec the real command untouched
+        │    yes → in tmux: lock pane id, start `tmath agent --source-pane`
+        │          in background, then exec the real command in place
+        │       → outside tmux, interactive TTY: build an explicit 2-pane
+        │          tmux session (agent pane + `tmath agent --source-pane`
+        │          pane) and attach
+        │       → outside tmux, non-interactive (pipes/redirects): exec the
+        │          real command untouched, tmath never runs
+```
+
+Key behaviors:
+
+- Directory scoping is a Rust-side allowlist (`tmath agent-enable [<dir>]` /
+  `tmath agent-disable [<dir>]` / `tmath agent-allowed [<dir>]`) stored at
+  `${XDG_CONFIG_HOME:-$HOME/.config}/tmath/agent-allowlist`, one canonicalized
+  absolute path per line. `agent-allowed` matches the directory itself or any
+  descendant by `Path` component comparison (not string-prefix matching, so a
+  sibling directory with a matching name prefix is never allowed) and is
+  silent (no stdout/stderr) since the shell wrapper calls it on every launch.
+- The shell wrapper never embeds the allowlist logic itself; it only checks
+  the `tmath agent-allowed` exit code, keeping the wrapper thin and the path
+  logic testable in Rust.
+- Duplicate-watcher prevention is a shell-side concern (a pane-id-scoped lock
+  file with a PID liveness check), not a Rust-side constraint, so `tmath
+  agent` itself stays free for advanced manual multi-watcher use.
+- Outside tmux, a plain `tmux new-session <cmd>` never sources shell rc files,
+  so the wrapper cannot re-fire inside the new session; the wrapper instead
+  builds the two panes explicitly and starts the watcher pane directly.
+- Non-interactive invocations (stdin/stdout not both a TTY) always pass
+  through untouched, so scripted or piped use of these commands never
+  changes behavior.
+- This is the first feature that edits a user's shell rc files. Installation
+  is opt-in and idempotent (a marker-delimited block that installer re-runs
+  replace in place) and skippable with `TMATH_SKIP_SHELL_INTEGRATION=1`.
+  Auto-watch itself stays opt-in per directory even after the shell
+  integration is installed, since `agent-allowlist` starts empty.
 
 ## Repository Layout (target)
 
@@ -328,12 +392,13 @@ Remove `herdr-plugin.toml`, the `src/herdr`, `src/viewer`, `src/graphics`, `src/
   reset the terminal on any exit path.
 - **Payload transport**: large PNGs through a pipe are slow; add `t=s`/`t=f` shared-memory/file
   media in a later phase if needed, keeping the bounded-size invariants.
-- **tmux image relay**: Kitty sequences reach a tmux pane only through the
-  passthrough envelope (`ESC Ptmux; ...`); query replies cannot round-trip, so
-  inside tmux the viewer is optimistic and requires `allow-passthrough on`
-  plus a Kitty-capable outer terminal. Verified placement through a
-  Ghostty 1.3.1 + tmux 3.5a pane; visual eyeball confirmation is a manual
-  step.
+- **tmux image relay**: stable tmux requires one passthrough envelope per Kitty
+  APC with embedded `ESC` bytes doubled; placeholder text and pane-local
+  terminal controls must remain outside that envelope. Query replies cannot be
+  relied on, so runtime compatibility is gated by controlled pixel evidence.
+  Narrow controlled pixel display is recorded for Ghostty + tmux and cmux +
+  tmux; full resize, detach/attach, multi-client, and live-agent matrix
+  acceptance in AT-2-806, AT-2-810, and AT-2-811 remains pending.
 
 ## Definition of Done (for the refactor)
 

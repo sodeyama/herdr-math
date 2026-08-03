@@ -526,8 +526,9 @@ not part of the `0.2.0` release gate.
 
 ### T-904: Add tmux DCS passthrough and Ghostty evidence
 
-- Scope: Wrap all Kitty emit bytes in `ESC P ... ESC \\` when `$TMUX` is set
-  (`kitty::wrapped_for_tty`). Record `scripts/smoke-agent-tmux.sh` results and
+- Scope: Wrap Kitty APC commands in `ESC P ... ESC \\` when `$TMUX` is set
+  (superseded by T-907 structured `TerminalOp` transport). Record
+  `scripts/smoke-agent-tmux.sh` results and
   direct-Ghostty placement evidence; record the tmux image-relay limitation
   (AT-2-806) with the fail-closed diagnostic it produces. Rewrite
   `docs/getting-started.md` and the compatibility matrix for the tmux setup
@@ -563,3 +564,120 @@ not part of the `0.2.0` release gate.
 - Acceptance: `AT-2-808`
 - Evidence: Static, Install, Integration
 - Commit: `feat(install): user-local installer, auto-discovery, and agent skill`
+
+### T-907: Correct and separate the tmux graphics transport
+
+- Scope: Replace whole-buffer passthrough with structured pane-local and Kitty
+  graphics operations. Double every embedded `ESC` in each independently
+  wrapped Kitty APC; keep terminal modes, cursor movement, color CSI,
+  placeholder cells, and line breaks in tmux's normal pane output.
+- Dependencies: T-904
+- Acceptance: `AT-2-805`
+- Evidence: Unit, Integration
+- Commit: `fix(tmux): separate graphics passthrough from pane output`
+
+### T-908: Make viewer replacement and scrolling real
+
+- Scope: Clear stale placeholder cells when a replacement becomes shorter and
+  scroll long answers by cropping an RGBA viewport before replacing the image.
+  Append each accepted answer below a bounded in-memory composite instead of
+  discarding earlier answers, and normalize captured Unicode box tables back to
+  Markdown tables before rendering.
+- Dependencies: T-907
+- Acceptance: `AT-2-803`, `AT-2-804`
+- Evidence: Unit, Integration, Runtime
+- Commit: `fix(agent): scroll the rendered answer viewport`
+
+### T-909: Record terminal and coding-agent runtime matrices
+
+- Scope: Verify visible pixels, pane clipping, redraw, resize, detach/attach,
+  clean exit, and long-answer scrolling under Ghostty + tmux and cmux + tmux.
+  Repeat completed-answer detection for Claude Code, Codex, Cursor CLI, pi,
+  and opencode. Do not count a placement log or visible placeholder grid as a
+  pixel pass.
+- Dependencies: T-907, T-908
+- Acceptance: `AT-2-806`, `AT-2-810`, `AT-2-811`
+- Evidence: Runtime
+- Commit: `test(agent): verify tmux terminal and agent matrices`
+
+### T-910: Add the directory allowlist and its CLI
+
+- Scope: Add `tmath-core`/`tmath` support for a per-directory opt-in list —
+  new `engine/crates/tmath/src/agent_allowlist.rs` with `tmath agent-enable
+  [<dir>]`, `tmath agent-disable [<dir>]`, and `tmath agent-allowed [<dir>]`.
+  The allowlist file lives at
+  `${XDG_CONFIG_HOME:-$HOME/.config}/tmath/agent-allowlist`, one
+  canonicalized absolute path per line. `agent-allowed` matches by `Path`
+  component (directory itself or any descendant), not string prefix, and is
+  silent on both streams so a shell hot path can call it on every launch.
+  Update `help_text()` and the `help_mentions_commands_and_options` test.
+- Dependencies: T-909
+- Acceptance: `AT-2-812`, `AT-2-813`
+- Evidence: Unit
+- Commit: `feat(agent): add directory allowlist for auto-watch`
+
+### T-911: Auto-install the shell integration snippet
+
+- Scope: `scripts/install.sh` writes `$APP/shell/tmath-agent.sh` and appends
+  a marker-delimited block (`# >>> tmath shell integration >>>` /
+  `# <<< tmath shell integration <<<`) to `~/.zshrc` and `~/.bashrc` that
+  sources it. Re-running the installer replaces the block in place instead of
+  duplicating it. `TMATH_SKIP_SHELL_INTEGRATION=1` skips rc editing entirely.
+- Dependencies: T-910
+- Acceptance: `AT-2-814`
+- Evidence: Static, Install
+- Commit: `feat(install): auto-install shell integration snippet`
+
+### T-912: Add the coding-agent launcher wrapper
+
+- Scope: `$APP/shell/tmath-agent.sh` defines `alias claude/codex/opencode/
+  cursor-agent/pi` (alias, not a shell function, because `cursor-agent`
+  contains a hyphen) that call `__tmath_wrap_agent <real-cmd> "$@"`. The
+  wrapper checks `command -v` for both the real command and `tmath`, then
+  `tmath agent-allowed`, and passes through untouched on any miss.
+- Dependencies: T-911
+- Acceptance: `AT-2-815`
+- Evidence: Unit, Integration
+- Commit: `feat(shell): add coding-agent launcher wrapper`
+
+### T-913: Auto-start the watcher in and outside tmux
+
+- Scope: Inside `$TMUX`, `__tmath_wrap_agent` starts `tmath agent
+  --source-pane $TMUX_PANE` in the background before running the real
+  command in place. Outside tmux with an interactive TTY (`[ -t 0 ] && [ -t
+  1 ]`), it builds an explicit two-pane tmux session (agent pane running the
+  real command, second pane running `tmath agent --source-pane <agent-pane>`
+  directly) and attaches — a plain `tmux new-session <cmd>` never sources rc
+  files, so the wrapper cannot rely on re-firing inside the new session.
+  Outside tmux and non-interactive (pipes/redirects), the command runs
+  untouched and `tmath` never starts.
+- Dependencies: T-912
+- Acceptance: `AT-2-816`
+- Evidence: Unit, Integration
+- Commit: `feat(shell): auto-start the watcher in and outside tmux`
+
+### T-914: Prevent duplicate watchers on the same pane
+
+- Scope: `__tmath_wrap_agent`'s in-tmux path takes a pane-id-scoped lock file
+  (`${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmath-agent-pane-<id>.lock`) using
+  `noclobber` for atomic create, storing the watcher's PID and reclaiming the
+  lock via `kill -0` if the previous watcher died. This stays a shell-side
+  concern; `tmath agent` itself keeps no multi-watcher restriction so a
+  manual second watcher (e.g. a different `--percent`) remains possible.
+- Dependencies: T-913
+- Acceptance: `AT-2-817`
+- Evidence: Unit, Integration
+- Commit: `fix(shell): lock the pane before auto-starting a watcher`
+
+### T-915: Add auto-watch smoke tests and docs
+
+- Scope: Add `scripts/smoke-agent-allowlist.sh` (enable/disable/allowed
+  round-trip, subdirectory match, sibling-directory rejection) and
+  `scripts/smoke-install-shell-integration.sh` (idempotent rc block
+  install/replace against a temporary `HOME`, `TMATH_SKIP_SHELL_INTEGRATION`
+  honored). Document the opt-in flow in `docs/getting-started.md` and
+  `docs/coding-agents.md`, and add the `CHANGELOG.md` entry.
+- Dependencies: T-914
+- Acceptance: `AT-2-812`-`AT-2-817` (documented, evidence attached)
+- Evidence: Static, Integration
+- Commit: `test(agent): add allowlist and shell-integration smoke tests`
