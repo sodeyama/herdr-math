@@ -26,6 +26,7 @@ use tmath_core::terminal::{StdioTty, Terminal, Tty};
 
 use crate::render::{render_document_text, renderer_worker_path};
 
+mod agent_allowlist;
 mod agent_viewer;
 mod agent_watcher;
 mod render;
@@ -53,6 +54,9 @@ fn run() -> Result<i32, String> {
         "diagnose" => diagnose(&args[1..]),
         "agent" => agent_watcher::run_agent(&args[1..]),
         "agent-viewer" => agent_viewer::run_agent_viewer(&args[1..]),
+        "agent-enable" => agent_allowlist::run_enable(&args[1..]),
+        "agent-disable" => agent_allowlist::run_disable(&args[1..]),
+        "agent-allowed" => agent_allowlist::run_allowed(&args[1..]),
         "--help" | "-h" | "help" => {
             print!("{}", help_text());
             Ok(0)
@@ -69,11 +73,13 @@ fn help_text() -> String {
     format!(
         "tmath {version} — render Markdown + LaTeX as scrollback-anchored images.\n\
          \n\
-         USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath agent [OPTIONS]\n  tmath agent-viewer <socket-path>\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
+         USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath agent [OPTIONS]\n  tmath agent-viewer <socket-path>\n  tmath agent-enable [<dir>]\n  tmath agent-disable [<dir>]\n  tmath agent-allowed [<dir>]\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
          \n\
          OPTIONS (render):\n  --content-width <px>  Render width in pixels (default 480)\n  --font-size <px>      Base font size in pixels (default 14)\n\
          \n\
          OPTIONS (agent):\n  --source-pane <id>  tmux pane to watch (default: current pane)\n  --percent <p>       Viewer split width in percent (default 35)\n  --wait-ms <ms>      Answer settle debounce (default 600)\n  --poll-ms <ms>      Pane poll interval (default 250)\n  --history <lines>   Scrollback lines to capture (default 500)\n\
+         \n\
+         OPTIONS (agent-enable / agent-disable / agent-allowed):\n  <dir>  Target directory (default: current directory)\n\
          \n\
          ENVIRONMENT:\n  TMATH_TMUX_TRANSPORT=client-tty|passthrough\n\
                               Select the tmux graphics route (default client-tty)\n\
@@ -85,7 +91,12 @@ fn help_text() -> String {
          `tmath agent` runs inside tmux, watches a pane running a coding agent\n\
          (Claude Code, Codex, opencode, and similar), and shows each finished\n\
          answer as Markdown + rendered math in a right-hand viewer pane.\n\
-         `tmath agent-viewer` is the helper that renders into that pane.\n",
+         `tmath agent-viewer` is the helper that renders into that pane.\n\
+         \n\
+         `tmath agent-enable`/`agent-disable` register or remove a directory\n\
+         (and its subdirectories) from the shell auto-watch allowlist;\n\
+         `tmath agent-allowed` checks it by exit code (0/1, silent) for the\n\
+         installed shell integration.\n",
         version = env!("CARGO_PKG_VERSION")
     )
 }
@@ -524,6 +535,9 @@ mod tests {
         assert!(help.contains("diagnose"));
         assert!(help.contains("agent"));
         assert!(help.contains("agent-viewer"));
+        assert!(help.contains("agent-enable"));
+        assert!(help.contains("agent-disable"));
+        assert!(help.contains("agent-allowed"));
         assert!(help.contains("--content-width"));
         assert!(help.contains("--font-size"));
         assert!(help.contains("--source-pane"));
