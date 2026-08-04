@@ -79,8 +79,12 @@
 
 ## Phase 3 — Viewer v2
 
-- [ ] **T3-301** Per-block placements in `agent-viewer`; delete composite RGBA
-      path. (AT-3-501, AT-3-505)
+- [x] **T3-301** Per-block placements in `agent-viewer`; delete composite RGBA
+      path. (AT-3-501/505 covered at unit level plus shared stream-emitter
+      integration tests; commit `2e21aa4`; live run placed a 13-block answer
+      per-block. Includes T3-302 follow mode at basic level; AT-3-503
+      visibility-window scrolling deferred to T3-303. Terminal-fit auto
+      layout added alongside in `9e83de7`.)
 - [ ] **T3-302** Follow mode + disengage/re-engage. (AT-3-502)
 - [ ] **T3-303** Visibility-driven scroll re-emission from cache. (AT-3-503)
 - [ ] **T3-304** Bounded history + re-render on scroll-back. (AT-3-504)
