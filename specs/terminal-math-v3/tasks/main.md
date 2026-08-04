@@ -100,7 +100,15 @@
       in viewer mode. Commit `25803cb`; AT-3-503 wording refined in
       `tests/main.md` to record the whole-window re-placement policy;
       real-terminal evidence lands with T3-305.)
-- [ ] **T3-304** Bounded history + re-render on scroll-back. (AT-3-504)
+- [x] **T3-304** Bounded history + re-render on scroll-back. (AT-3-504 covered
+      hermetically: `Limits::retained_window_blocks` fixed-radius keep-alive
+      evicts retained PNGs on every append and window sync; scroll-back
+      restores via RenderCache hit or source re-render, fail-closed per block;
+      1,000-block session stays within the retained budget. Commit `d6629ee`.
+      Known gaps for Phase 6: the `TerminalSink` full flow is verified by
+      pure-function tests plus review (no fake-tty sink harness yet), and one
+      tmath-render lib test flaked once under heavy parallel load —
+      timing-sensitivity to audit in T3-602.)
 - [ ] **T3-305** Recorded terminal evidence: many-placement behavior in Ghostty
       (+ tmux route). (supports AT-3-501/503; evidence file)
 
