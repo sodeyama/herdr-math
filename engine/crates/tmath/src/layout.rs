@@ -57,10 +57,10 @@ const PANE_MARGIN_COLS: u32 = 2;
 /// calibration on Ghostty 1.3.1 (Retina, a 15px logical cell) walked
 /// through 0.62 (~10pt, too small), 0.85 (~13pt, matched the terminal's
 /// own text but the user still found rendered prose and math hard to
-/// read), and settled on ~17pt for a 15px cell: rendered typeset content
-/// reads best slightly larger than the terminal's monospace text, and
-/// blocks carry their own height so a ratio above 1.0 costs nothing.
-const FONT_TO_CELL_HEIGHT_RATIO: f64 = 17.0 / 15.0;
+/// read), briefly 17pt, and settled on 15pt for a 15px cell (ratio 1.0):
+/// typeset content at exactly the cell height reads comfortably next to
+/// the terminal text without dwarfing it.
+const FONT_TO_CELL_HEIGHT_RATIO: f64 = 1.0;
 
 /// Terminal-fitted layout derived from a connected terminal's measured cell
 /// size and pane column count.
@@ -92,7 +92,7 @@ pub(crate) struct TerminalFitLayout {
 ///   `cell_w_px`/`cell_h_px` are treated as the *logical* cell, scaled up by
 ///   the override to get the physical cell used below (see the module doc's
 ///   `TMATH_DPR` section for why this exists and when it applies).
-/// - `font_size_pt` is `(physical_cell_h_px / dpr) * (17/15)`, clamped to
+/// - `font_size_pt` is `(physical_cell_h_px / dpr) * 1.0`, clamped to
 ///   `[10, 24]` pt, fixed for the session (never varies per block).
 /// - `content_width_pt` is `((pane_cols - 2) * physical_cell_w_px) / dpr`,
 ///   clamped to `[200, 4096]` pt, so the placement's cell grid is about
@@ -248,9 +248,8 @@ mod tests {
     fn standard_density_cell_yields_dpr_one_and_font_above_terminal_text() {
         let layout = terminal_fit_layout(8, 16, 100, None);
         assert_eq!(layout.device_pixel_ratio, 1);
-        // 16 * (17/15) ~= 18.13, comfortably inside [10, 24], so no clamp
-        // applies.
-        assert!((layout.font_size_pt - 16.0 * (17.0 / 15.0)).abs() < 1e-9);
+        // 16 * 1.0 = 16, comfortably inside [10, 24], so no clamp applies.
+        assert!((layout.font_size_pt - 16.0).abs() < 1e-9);
     }
 
     #[test]
@@ -345,9 +344,9 @@ mod tests {
             (14, 30),
             "effective cell is the measured logical cell scaled by the override"
         );
-        // font_size_pt = (15*2 / 2) * (17/15) = 17, the size the user
-        // calibrated live on this exact geometry; inside [10, 24], no clamp.
-        assert!((overridden.font_size_pt - 17.0).abs() < 1e-9);
+        // font_size_pt = (15*2 / 2) * 1.0 = 15, the size the user calibrated
+        // live on this exact geometry; inside [10, 24], no clamp.
+        assert!((overridden.font_size_pt - 15.0).abs() < 1e-9);
         // content_width_pt = ((120-2) * 7*2) / 2 = 118 * 7 = 826.
         assert!((overridden.content_width_pt - 826.0).abs() < 1e-9);
     }
