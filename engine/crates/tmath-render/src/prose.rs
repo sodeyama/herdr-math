@@ -11,25 +11,31 @@ use crate::{
     Block, ErrorCode, Limits, MathImage, RenderError, RenderOptions, SafeErrorRecord,
 };
 
-/// CJK prose coverage (D-CJK): Klee One, vendored under `assets/fonts/`
+/// CJK prose coverage (D-CJK): M PLUS 2, vendored under `assets/fonts/`
 /// alongside its OFL license text (`assets/fonts/OFL.txt`). `typst-assets`'s
 /// embedded font set (pulled in via `search_fonts_with`/`typst-kit`, see
 /// `embedded_font_options` below) covers Latin prose and math but has no CJK
-/// glyphs, so Japanese text renders as tofu without this. Klee One (a
-/// handwriting-style Japanese typeface), per the user's chosen font, per the
-/// official Google Fonts release (`google/fonts` repo, `ofl/kleeone/`).
-/// Embedded directly with `include_bytes!` — no system font scan, no network
-/// fetch — per AGENTS.md's native-engine font constraints.
+/// glyphs, so Japanese text renders as tofu without this. M PLUS 2 (a
+/// clean gothic Japanese typeface with heavier strokes than Klee One, the
+/// prior choice — Klee One's handwriting-style strokes read as too thin),
+/// per the user's chosen font.
 ///
-/// The family has only two static weights, Regular (400) and SemiBold
-/// (600) — there is no Bold (700) cut. `push_math_image`/heading emission
-/// requests `weight: "bold"` for headings regardless of which CJK family is
-/// vendored; Typst resolves an unavailable requested weight to the closest
-/// available one in the family, so headings fall back to SemiBold here (see
-/// `the_two_static_weights_are_named_and_the_semibold_is_bold_enough_to_serve_headings`
+/// `google/fonts`'s `ofl/mplus2/` carries only a variable font
+/// (`MPLUS2[wght].ttf`); its own `upstream_info.md` names the true upstream
+/// as `coz-m/MPLUS_FONTS` (commit `84c56ab8d094484cf18c555c12e9ef7708fa4fa5`
+/// per that provenance record), which publishes the static per-weight TTFs
+/// vendored here (`fonts/MPLUS2/ttf/MPLUS2-{Regular,Bold}.ttf`) under the
+/// same OFL license (`OFL.txt` is byte-identical in both repos, 4387
+/// bytes). Embedded directly with `include_bytes!` — no system font scan,
+/// no network fetch — per AGENTS.md's native-engine font constraints.
+///
+/// Unlike Klee One, this family has a true Bold (700) static cut, so
+/// `weight: "bold"` heading/strong emission resolves to the real bold face
+/// rather than a nearest-weight substitute (see
+/// `the_two_static_weights_are_named_and_bold_resolves_to_the_true_bold_face`
 /// below, which pins this down empirically rather than assuming it).
-static KLEE_ONE_REGULAR: &[u8] = include_bytes!("../assets/fonts/KleeOne-Regular.ttf");
-static KLEE_ONE_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/KleeOne-SemiBold.ttf");
+static M_PLUS_2_REGULAR: &[u8] = include_bytes!("../assets/fonts/MPlus2-Regular.ttf");
+static M_PLUS_2_BOLD: &[u8] = include_bytes!("../assets/fonts/MPlus2-Bold.ttf");
 
 /// A rendered transparent prose image.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,7 +132,7 @@ fn render_typst_source(
     let engine = TypstEngine::builder()
         .main_file(source.to_owned())
         .with_static_file_resolver(static_file_refs)
-        .fonts([KLEE_ONE_REGULAR, KLEE_ONE_SEMIBOLD])
+        .fonts([M_PLUS_2_REGULAR, M_PLUS_2_BOLD])
         .search_fonts_with(embedded_font_options())
         .build();
     let document: PagedDocument = engine
@@ -601,10 +607,10 @@ mod tests {
     /// depend on rasterization, DPI, or antialiasing at all.
     #[test]
     fn the_vendored_font_resolves_hiragana_kanji_and_japanese_punctuation() {
-        let infos: Vec<_> = typst::text::FontInfo::iter(KLEE_ONE_REGULAR).collect();
+        let infos: Vec<_> = typst::text::FontInfo::iter(M_PLUS_2_REGULAR).collect();
         assert_eq!(infos.len(), 1, "one face in the Regular TTF");
         let info = &infos[0];
-        assert_eq!(info.family, "Klee One");
+        assert_eq!(info.family, "M PLUS 2");
 
         // Hiragana (あ U+3042), a common kanji (日 U+65E5), and Japanese
         // full-width punctuation (。U+3002) — the three script categories
@@ -612,7 +618,7 @@ mod tests {
         for codepoint in ['あ', '日', '。'] {
             assert!(
                 info.coverage.contains(codepoint as u32),
-                "Klee One should cover {codepoint:?}"
+                "M PLUS 2 should cover {codepoint:?}"
             );
         }
 
@@ -623,45 +629,49 @@ mod tests {
         assert!(!info.coverage.contains(0xE000));
     }
 
-    /// The vendored Klee One family has only two static cuts, Regular (400)
-    /// and SemiBold (600) — no Bold (700). Rather than assume Typst falls
-    /// back to SemiBold for a `weight: "bold"` request (used by heading
-    /// emission in `typst_doc.rs`), this drives the actual selection
-    /// algorithm Typst uses internally: build a `FontBook` from both
-    /// vendored `FontInfo`s (mirroring what `typst-as-lib`'s `.fonts([...])`
-    /// registers) and call `FontBook::select` with the family name and a
-    /// bold `FontVariant`, exactly as `#text(weight: "bold")` resolves one.
+    /// Unlike Klee One (the prior CJK family, which had no Bold cut and
+    /// fell back to a nearest-weight SemiBold), M PLUS 2 vendors a true
+    /// Bold (700) static face. Rather than assume that changes the
+    /// resolved weight, this drives the actual selection algorithm Typst
+    /// uses internally: build a `FontBook` from both vendored `FontInfo`s
+    /// (mirroring what `typst-as-lib`'s `.fonts([...])` registers) and call
+    /// `FontBook::select` with the family name and a bold `FontVariant`,
+    /// exactly as `#text(weight: "bold")` resolves one.
     #[test]
-    fn the_two_static_weights_are_named_and_the_semibold_is_bold_enough_to_serve_headings() {
+    fn the_two_static_weights_are_named_and_bold_resolves_to_the_true_bold_face() {
         use typst::text::{FontBook, FontInfo, FontStyle, FontVariant, FontWeight};
 
-        let regular_infos: Vec<_> = FontInfo::iter(KLEE_ONE_REGULAR).collect();
-        let semibold_infos: Vec<_> = FontInfo::iter(KLEE_ONE_SEMIBOLD).collect();
+        let regular_infos: Vec<_> = FontInfo::iter(M_PLUS_2_REGULAR).collect();
+        let bold_infos: Vec<_> = FontInfo::iter(M_PLUS_2_BOLD).collect();
         assert_eq!(regular_infos.len(), 1, "one face in the Regular TTF");
-        assert_eq!(semibold_infos.len(), 1, "one face in the SemiBold TTF");
+        assert_eq!(bold_infos.len(), 1, "one face in the Bold TTF");
 
         let regular = regular_infos[0].clone();
-        let semibold = semibold_infos[0].clone();
-        assert_eq!(regular.family, "Klee One");
-        assert_eq!(semibold.family, "Klee One");
+        let bold = bold_infos[0].clone();
+        assert_eq!(regular.family, "M PLUS 2");
+        assert_eq!(bold.family, "M PLUS 2");
         assert_eq!(regular.variant.weight, FontWeight::REGULAR);
-        assert_eq!(semibold.variant.weight, FontWeight::SEMIBOLD);
+        assert_eq!(
+            bold.variant.weight,
+            FontWeight::BOLD,
+            "M PLUS 2's Bold cut must report the true 700 weight, not a \
+             nearest-weight substitute like Klee One's SemiBold (600) did"
+        );
 
-        let book = FontBook::from_infos([regular, semibold.clone()]);
+        let book = FontBook::from_infos([regular, bold.clone()]);
         let bold_variant = FontVariant::new(
             FontStyle::Normal,
             FontWeight::BOLD,
             typst::text::FontStretch::default(),
         );
         let selected = book
-            .select("klee one", bold_variant)
+            .select("m plus 2", bold_variant)
             .expect("the family must resolve at all for a bold request");
         assert_eq!(
             book.info(selected).unwrap().variant.weight,
-            FontWeight::SEMIBOLD,
-            "with no 700 cut available, Typst's nearest-weight selection \
-             (weight distance: |600-700|=100 vs |400-700|=300) must land on \
-             SemiBold, which is what headings actually render with"
+            FontWeight::BOLD,
+            "with an exact 700 cut available (weight distance 0), Typst's \
+             nearest-weight selection must land on the real Bold face"
         );
     }
 
@@ -782,6 +792,145 @@ mod tests {
             heading_and_paragraph.height_px > heading_only.height_px + bare_line.height_px,
             "a heading immediately followed by its paragraph must reserve \
              visible spacing between them, not just stack their bare heights"
+        );
+    }
+
+    /// D-LINE bold-line-rhythm regression: a live-run bug report claimed
+    /// paragraphs/headings containing bold (`#strong`) spans or bold
+    /// list-intro lines show uneven line spacing versus plain text, despite
+    /// the fixed em-based `top-edge`/`bottom-edge` from `1ad2a6c`. Typst's
+    /// own `#strong` show rule only sets `TextElem::delta` (the weight),
+    /// never `top-edge`/`bottom-edge` (see `typst_library::model::strong`),
+    /// and those edges are configured as `TopEdge::Length`/
+    /// `BottomEdge::Length` — a fixed em multiple, not a font-metric- or
+    /// bounding-box-derived variant — so per Typst's own semantics no glyph
+    /// or weight difference can change the computed line-box height.
+    ///
+    /// This test proves that hermetically at the render layer: partial-line
+    /// bold spans (`**word** rest`), matching the exact pattern the report
+    /// describes, must produce byte-identical per-line vertical advance to
+    /// the same text with no bold. If a regression reintroduces a
+    /// bold-sensitive line metric, this fails.
+    #[test]
+    fn bold_spans_do_not_change_the_per_line_advance() {
+        fn n_line_height_px_partial_bold(lines: u32, bold: bool) -> u32 {
+            let text = (0..lines)
+                .map(|i| {
+                    if bold {
+                        format!("**Line {i}** of prose text for measurement.")
+                    } else {
+                        format!("Line {i} of prose text for measurement.")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\\\n");
+            render_prose_block(
+                &block(BlockKind::Paragraph, text),
+                &RenderOptions::default(),
+            )
+            .unwrap()
+            .height_px
+        }
+
+        let plain_advance = f64::from(
+            n_line_height_px_partial_bold(20, false) - n_line_height_px_partial_bold(4, false),
+        ) / 16.0;
+        let bold_advance = f64::from(
+            n_line_height_px_partial_bold(20, true) - n_line_height_px_partial_bold(4, true),
+        ) / 16.0;
+
+        assert!(
+            (plain_advance - bold_advance).abs() < 1e-6,
+            "bold spans changed the per-line advance: plain={plain_advance:.4}px \
+             bold={bold_advance:.4}px — the fixed em-edges should make these identical"
+        );
+    }
+
+    /// Same regression as above for a Markdown list whose items each start
+    /// with a bold lead-in (`- **Term:** rest`, the "bold list-intro line"
+    /// pattern from the report), and separately for a heading immediately
+    /// followed by a bold-containing paragraph at the live-build 17pt font
+    /// size with CJK glyphs mixed in (M PLUS 2's own bold weight, not
+    /// NewCM10's Latin-only fallback).
+    #[test]
+    fn bold_list_intros_and_cjk_bold_headings_do_not_change_line_height() {
+        fn n_line_height_px_list(lines: u32, bold_intro: bool) -> u32 {
+            let text = (0..lines)
+                .map(|i| {
+                    if bold_intro {
+                        format!("- **Item {i}:** description text for measurement.")
+                    } else {
+                        format!("- Item {i}: description text for measurement.")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            render_prose_block(&block(BlockKind::List, text), &RenderOptions::default())
+                .unwrap()
+                .height_px
+        }
+
+        let plain_advance =
+            f64::from(n_line_height_px_list(20, false) - n_line_height_px_list(4, false)) / 16.0;
+        let bold_advance =
+            f64::from(n_line_height_px_list(20, true) - n_line_height_px_list(4, true)) / 16.0;
+        assert!(
+            (plain_advance - bold_advance).abs() < 1e-6,
+            "bold list intros changed the per-line advance: plain={plain_advance:.4}px \
+             bold={bold_advance:.4}px"
+        );
+
+        let options = RenderOptions::new(480.0, 17.0, 1).unwrap();
+        fn n_line_height_px_partial_bold_at(
+            options: &RenderOptions,
+            lines: u32,
+            bold: bool,
+        ) -> u32 {
+            let text = (0..lines)
+                .map(|i| {
+                    if bold {
+                        format!("**Line {i}** of prose text for measurement 日本語.")
+                    } else {
+                        format!("Line {i} of prose text for measurement 日本語.")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\\\n");
+            render_prose_block(&block(BlockKind::Paragraph, text), options)
+                .unwrap()
+                .height_px
+        }
+        let plain_advance_cjk = f64::from(
+            n_line_height_px_partial_bold_at(&options, 20, false)
+                - n_line_height_px_partial_bold_at(&options, 4, false),
+        ) / 16.0;
+        let bold_advance_cjk = f64::from(
+            n_line_height_px_partial_bold_at(&options, 20, true)
+                - n_line_height_px_partial_bold_at(&options, 4, true),
+        ) / 16.0;
+        assert!(
+            (plain_advance_cjk - bold_advance_cjk).abs() < 1e-6,
+            "CJK bold spans at the live 17pt size changed the per-line advance: \
+             plain={plain_advance_cjk:.4}px bold={bold_advance_cjk:.4}px"
+        );
+
+        let heading_plain = render_prose_block(
+            &block(BlockKind::Heading, "# Heading\n\nFollowing paragraph text."),
+            &options,
+        )
+        .unwrap();
+        let heading_bold = render_prose_block(
+            &block(
+                BlockKind::Heading,
+                "# Heading\n\n**Following** paragraph text.",
+            ),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(
+            heading_plain.height_px, heading_bold.height_px,
+            "a heading followed by a bold-mixed paragraph must render the same \
+             height as the same heading followed by a plain paragraph"
         );
     }
 }

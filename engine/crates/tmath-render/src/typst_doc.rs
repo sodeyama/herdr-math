@@ -107,7 +107,7 @@ pub(crate) fn compose_block_with_deadline(
     Ok(TypstSource {
         source: format!(
             "#set page(width: {width}pt, height: auto, margin: 0pt, fill: none)\n\
-             #set text(font: (\"NewCM10\", \"Klee One\"), size: {font_size}pt, \
+             #set text(font: (\"NewCM10\", \"M PLUS 2\"), size: {font_size}pt, \
              fill: rgb(\"{color}\"), top-edge: {top_edge}em, bottom-edge: {bottom_edge}em)\n\
              #set par(leading: {leading}em)\n\
              {body}\n",
