@@ -69,8 +69,8 @@ pub(crate) fn compose_block_with_deadline(
     Ok(TypstSource {
         source: format!(
             "#set page(width: {width}pt, height: auto, margin: 0pt, fill: none)\n\
-             #set text(font: \"NewCM10\", size: {font_size}pt, fill: rgb(\"{color}\"), \
-             top-edge: \"bounds\", bottom-edge: \"bounds\")\n\
+             #set text(font: (\"NewCM10\", \"Noto Sans JP\"), size: {font_size}pt, \
+             fill: rgb(\"{color}\"), top-edge: \"bounds\", bottom-edge: \"bounds\")\n\
              #set par(leading: 0.35em)\n\
              {body}\n",
             width = options.content_width_pt,

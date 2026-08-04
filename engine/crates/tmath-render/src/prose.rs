@@ -11,6 +11,16 @@ use crate::{
     Block, ErrorCode, Limits, MathImage, RenderError, RenderOptions, SafeErrorRecord,
 };
 
+/// CJK prose coverage (D-CJK): Noto Sans JP, vendored under `assets/fonts/`
+/// alongside its OFL license text (`assets/fonts/OFL.txt`). `typst-assets`'s
+/// embedded font set (pulled in via `search_fonts_with`/`typst-kit`, see
+/// `embedded_font_options` below) covers Latin prose and math but has no CJK
+/// glyphs, so Japanese text renders as tofu without this. Embedded directly
+/// with `include_bytes!` — no system font scan, no network fetch — per
+/// AGENTS.md's native-engine font constraints.
+static NOTO_SANS_JP_REGULAR: &[u8] = include_bytes!("../assets/fonts/NotoSansJP-Regular.otf");
+static NOTO_SANS_JP_BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSansJP-Bold.otf");
+
 /// A rendered transparent prose image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderedImage {
@@ -106,6 +116,7 @@ fn render_typst_source(
     let engine = TypstEngine::builder()
         .main_file(source.to_owned())
         .with_static_file_resolver(static_file_refs)
+        .fonts([NOTO_SANS_JP_REGULAR, NOTO_SANS_JP_BOLD])
         .search_fonts_with(embedded_font_options())
         .build();
     let document: PagedDocument = engine
@@ -559,5 +570,87 @@ mod tests {
             error.safe_record().details.as_ref().unwrap().limit_kind,
             Some(SafeLimitKind::ImagePixels)
         );
+    }
+
+    // --- CJK prose coverage (D-CJK) ---
+
+    /// Direct font-book proof, independent of the render pipeline: parse the
+    /// vendored OTF bytes exactly as `typst-as-lib` does internally
+    /// (`Font::info`/`FontInfo::iter` walk the same `name`/`cmap` tables) and
+    /// assert the family name and glyph coverage the fallback chain in
+    /// `typst_doc.rs` depends on. This is the most hermetic signal for "the
+    /// font book resolves a Japanese codepoint to the new font" — it does not
+    /// depend on rasterization, DPI, or antialiasing at all.
+    #[test]
+    fn the_vendored_font_resolves_hiragana_kanji_and_japanese_punctuation() {
+        let infos: Vec<_> = typst::text::FontInfo::iter(NOTO_SANS_JP_REGULAR).collect();
+        assert_eq!(infos.len(), 1, "one face in the Regular OTF");
+        let info = &infos[0];
+        assert_eq!(info.family, "Noto Sans JP");
+
+        // Hiragana (あ U+3042), a common kanji (日 U+65E5), and Japanese
+        // full-width punctuation (。U+3002) — the three script categories
+        // AT's Unicode-coverage requirement calls out.
+        for codepoint in ['あ', '日', '。'] {
+            assert!(
+                info.coverage.contains(codepoint as u32),
+                "Noto Sans JP should cover {codepoint:?}"
+            );
+        }
+
+        // A Private Use Area codepoint, for contrast: no real font assigns
+        // glyphs here, so this proves `coverage.contains` reports real
+        // per-glyph coverage rather than trivially returning true for
+        // everything (which would make the assertions above meaningless).
+        assert!(!info.coverage.contains(0xE000));
+    }
+
+    /// End-to-end proof: a Japanese prose block renders to a non-empty image
+    /// with visible glyph pixels through the real `render_prose_block`
+    /// pipeline (the same path `compose_block_with_deadline` and
+    /// `render_typst_source` take for any other block).
+    #[test]
+    fn japanese_prose_renders_visible_glyphs_through_the_full_pipeline() {
+        let image = render_prose_block(
+            &block(
+                BlockKind::Paragraph,
+                "日本語のプローズをテストします。ひらがな、漢字、句読点。",
+            ),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        assert!(!image.png.is_empty());
+        assert!(
+            nontransparent_pixels(&image.png) > 0,
+            "Japanese prose rendered no visible pixels — likely tofu or an empty page"
+        );
+    }
+
+    /// Rendering the same visual "weight" of Japanese text at two different
+    /// lengths must produce different images, the same hermetic signal
+    /// `inline_formula_embeds_visible_pixels_and_changes_the_paragraph` uses
+    /// above for math: if Japanese glyphs were silently dropped (e.g. the
+    /// font failed to load and every CJK codepoint rendered as nothing), a
+    /// short and a long Japanese string would collapse to visually identical
+    /// (near-empty) output instead of differing.
+    #[test]
+    fn longer_japanese_prose_produces_a_visibly_different_image_than_shorter_prose() {
+        let short = render_prose_block(
+            &block(BlockKind::Paragraph, "日本語。"),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        let long = render_prose_block(
+            &block(
+                BlockKind::Paragraph,
+                "日本語のテキストを長くして、グリフの被覆を確認します。",
+            ),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        assert!(nontransparent_pixels(&short.png) > 0);
+        assert!(nontransparent_pixels(&long.png) > 0);
+        assert!(long.width_px > short.width_px);
+        assert_ne!(short.png, long.png);
     }
 }
