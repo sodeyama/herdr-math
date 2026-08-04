@@ -10,13 +10,16 @@ use std::iter::Peekable;
 use pulldown_cmark::{Alignment, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag};
 
 use crate::{
-    Block, ErrorCode, Limits, RenderError, RenderOptions, SafeErrorRecord, DARK_THEME_TEXT_COLOR,
+    render_formula, scan_latex, Block, BlockKind, ErrorCode, Limits, MathImage, RenderError,
+    RenderOptions, SafeErrorRecord, ScannerLimits, DARK_THEME_TEXT_COLOR,
 };
 
 /// A complete, self-contained Typst source document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypstSource {
     pub source: String,
+    pub(crate) static_files: Vec<(String, Vec<u8>)>,
+    pub(crate) formula_errors: Vec<SafeErrorRecord>,
 }
 
 impl TypstSource {
@@ -33,11 +36,17 @@ impl TypstSource {
 pub fn compose_block(block: &Block, options: &RenderOptions) -> Result<TypstSource, RenderError> {
     Limits::default().check_source_bytes_per_block(block.source.len() as u64)?;
     validate_options(options)?;
+    if supports_math_embedding(block.kind) {
+        // This block-wide pass enforces scanner counters before individual text
+        // runs are converted into safe Typst nodes.
+        scan_latex(&block.source, &ScannerLimits::default())?;
+    }
 
     let mut events = Parser::new_ext(&block.source, Options::ENABLE_TABLES).peekable();
     let nodes = parse_nodes(&mut events);
     let mut body = String::new();
-    render_nodes(&nodes, &mut body);
+    let mut context = MathContext::new(block.index, options);
+    render_nodes(&nodes, &mut body, &mut context)?;
     if body.is_empty() {
         body.push_str("#text(\"\")");
     }
@@ -53,7 +62,20 @@ pub fn compose_block(block: &Block, options: &RenderOptions) -> Result<TypstSour
             font_size = options.font_size_pt,
             color = DARK_THEME_TEXT_COLOR,
         ),
+        static_files: context.static_files,
+        formula_errors: context.formula_errors,
     })
+}
+
+fn supports_math_embedding(kind: BlockKind) -> bool {
+    matches!(
+        kind,
+        BlockKind::Paragraph
+            | BlockKind::Heading
+            | BlockKind::List
+            | BlockKind::Quote
+            | BlockKind::Table
+    )
 }
 
 fn validate_options(options: &RenderOptions) -> Result<(), RenderError> {
@@ -217,19 +239,73 @@ fn heading_level(level: HeadingLevel) -> u8 {
     }
 }
 
-fn render_nodes(nodes: &[Node], output: &mut String) {
-    for node in nodes {
-        render_node(node, output);
+struct MathContext<'a> {
+    block_index: usize,
+    next_formula_index: usize,
+    options: &'a RenderOptions,
+    static_files: Vec<(String, Vec<u8>)>,
+    formula_errors: Vec<SafeErrorRecord>,
+}
+
+impl<'a> MathContext<'a> {
+    fn new(block_index: usize, options: &'a RenderOptions) -> Self {
+        Self {
+            block_index,
+            next_formula_index: 0,
+            options,
+            static_files: Vec::new(),
+            formula_errors: Vec::new(),
+        }
+    }
+
+    fn push_text_with_math(&mut self, text: &str, output: &mut String) -> Result<(), RenderError> {
+        let formulas = scan_latex(text, &ScannerLimits::default())?;
+        let mut cursor = 0;
+        for formula in formulas {
+            push_text_call(output, &text[cursor..formula.start]);
+            let formula_index = self.next_formula_index;
+            self.next_formula_index += 1;
+            match render_formula(&formula.latex, formula.display, self.options) {
+                Ok(image) => {
+                    let name = format!("math-{}-{formula_index}.png", self.block_index);
+                    push_math_image(output, &name, &image, formula.display);
+                    self.static_files.push((name, image.png));
+                }
+                Err(error) if error.safe_record().code == ErrorCode::InvalidLatex => {
+                    self.formula_errors.push(error.into_safe_record());
+                    push_raw_call(output, "[invalid latex]", false, None);
+                }
+                Err(error) => return Err(error),
+            }
+            cursor = formula.end;
+        }
+        push_text_call(output, &text[cursor..]);
+        Ok(())
     }
 }
 
-fn render_node(node: &Node, output: &mut String) {
+fn render_nodes(
+    nodes: &[Node],
+    output: &mut String,
+    context: &mut MathContext<'_>,
+) -> Result<(), RenderError> {
+    for node in nodes {
+        render_node(node, output, context)?;
+    }
+    Ok(())
+}
+
+fn render_node(
+    node: &Node,
+    output: &mut String,
+    context: &mut MathContext<'_>,
+) -> Result<(), RenderError> {
     match node {
-        Node::Text(text) => push_text_call(output, text),
+        Node::Text(text) => context.push_text_with_math(text, output)?,
         Node::SoftBreak => push_text_call(output, " "),
         Node::HardBreak => output.push_str("#linebreak()"),
         Node::Paragraph(children) => {
-            render_nodes(children, output);
+            render_nodes(children, output, context)?;
             output.push_str("#parbreak()");
         }
         Node::Heading(level, children) => {
@@ -242,17 +318,17 @@ fn render_node(node: &Node, output: &mut String) {
             output.push_str("#block(width: 100%)[#text(size: ");
             output.push_str(&size.to_string());
             output.push_str("em, weight: \"bold\")[");
-            render_nodes(children, output);
+            render_nodes(children, output, context)?;
             output.push_str("]]");
         }
         Node::Strong(children) => {
             output.push_str("#strong[");
-            render_nodes(children, output);
+            render_nodes(children, output, context)?;
             output.push(']');
         }
         Node::Emphasis(children) => {
             output.push_str("#emph[");
-            render_nodes(children, output);
+            render_nodes(children, output, context)?;
             output.push(']');
         }
         Node::InlineCode(text) => push_raw_call(output, text, false, None),
@@ -266,33 +342,39 @@ fn render_node(node: &Node, output: &mut String) {
             }
             for item in items {
                 output.push('[');
-                render_nodes(item, output);
+                render_nodes(item, output, context)?;
                 output.push_str("],");
             }
             output.push(')');
         }
-        Node::ListItem(children) => render_nodes(children, output),
+        Node::ListItem(children) => render_nodes(children, output, context)?,
         Node::Quote(children) => {
             output.push_str("#quote(block: true)[");
-            render_nodes(children, output);
+            render_nodes(children, output, context)?;
             output.push(']');
         }
         Node::Table {
             alignments,
             sections,
-        } => render_table(alignments, sections, output),
+        } => render_table(alignments, sections, output, context)?,
         Node::TableHead(children) | Node::TableRow(children) | Node::TableCell(children) => {
-            render_nodes(children, output);
+            render_nodes(children, output, context)?;
         }
         Node::CodeBlock { language, text } => {
             push_raw_call(output, text, true, language.as_deref());
         }
-        Node::Group(children) => render_nodes(children, output),
+        Node::Group(children) => render_nodes(children, output, context)?,
         Node::Rule => output.push_str("#block(width: 100%, height: 1pt, fill: rgb(\"#e6edf3\"))"),
     }
+    Ok(())
 }
 
-fn render_table(alignments: &[Alignment], sections: &[Node], output: &mut String) {
+fn render_table(
+    alignments: &[Alignment],
+    sections: &[Node],
+    output: &mut String,
+    context: &mut MathContext<'_>,
+) -> Result<(), RenderError> {
     let mut header_cells = Vec::new();
     let mut body_rows = Vec::new();
     for section in sections {
@@ -326,13 +408,14 @@ fn render_table(alignments: &[Alignment], sections: &[Node], output: &mut String
     output.push(',');
     if !header_cells.is_empty() {
         output.push_str("table.header(");
-        render_cells(&header_cells, output);
+        render_cells(&header_cells, output, context)?;
         output.push_str("),");
     }
     for row in body_rows {
-        render_cells(&row, output);
+        render_cells(&row, output, context)?;
     }
     output.push(')');
+    Ok(())
 }
 
 fn table_cells(nodes: &[Node]) -> Vec<Vec<Node>> {
@@ -345,11 +428,43 @@ fn table_cells(nodes: &[Node]) -> Vec<Vec<Node>> {
         .collect()
 }
 
-fn render_cells(cells: &[Vec<Node>], output: &mut String) {
+fn render_cells(
+    cells: &[Vec<Node>],
+    output: &mut String,
+    context: &mut MathContext<'_>,
+) -> Result<(), RenderError> {
     for cell in cells {
         output.push('[');
-        render_nodes(cell, output);
+        render_nodes(cell, output, context)?;
         output.push_str("],");
+    }
+    Ok(())
+}
+
+fn push_math_image(output: &mut String, name: &str, image: &MathImage, display: bool) {
+    let total_height = image.height_pt + image.depth_pt;
+    if display {
+        output.push_str("#block(width: 100%, align(center)[#image(\"");
+        escape_typst_string_into(name, output);
+        output.push_str("\", width: ");
+        output.push_str(&image.width_pt.to_string());
+        output.push_str("pt, height: ");
+        output.push_str(&total_height.to_string());
+        output.push_str("pt, fit: \"stretch\")])");
+    } else {
+        output.push_str("#box(width: ");
+        output.push_str(&image.width_pt.to_string());
+        output.push_str("pt, height: ");
+        output.push_str(&total_height.to_string());
+        output.push_str("pt, baseline: ");
+        output.push_str(&image.depth_pt.to_string());
+        output.push_str("pt, image(\"");
+        escape_typst_string_into(name, output);
+        output.push_str("\", width: ");
+        output.push_str(&image.width_pt.to_string());
+        output.push_str("pt, height: ");
+        output.push_str(&total_height.to_string());
+        output.push_str("pt, fit: \"stretch\"))");
     }
 }
 

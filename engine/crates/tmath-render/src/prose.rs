@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -6,7 +7,9 @@ use typst::layout::{Abs, PagedDocument};
 use typst_as_lib::typst_kit_options::TypstKitFontOptions;
 use typst_as_lib::TypstEngine;
 
-use crate::{compose_block, Block, ErrorCode, Limits, RenderError, RenderOptions, SafeErrorRecord};
+use crate::{
+    compose_block, Block, ErrorCode, Limits, MathImage, RenderError, RenderOptions, SafeErrorRecord,
+};
 
 /// A rendered transparent prose image.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,6 +17,7 @@ pub struct RenderedImage {
     pub png: Vec<u8>,
     pub width_px: u32,
     pub height_px: u32,
+    pub formula_errors: Vec<SafeErrorRecord>,
 }
 
 /// Renders one Markdown prose block through the native Typst engine.
@@ -22,6 +26,44 @@ pub fn render_prose_block(
     options: &RenderOptions,
 ) -> Result<RenderedImage, RenderError> {
     let source = compose_block(block, options)?;
+    render_typst_source(
+        source.as_str(),
+        &source.static_files,
+        source.formula_errors.clone(),
+        options,
+        true,
+    )
+}
+
+pub(crate) fn render_display_math_block(
+    block_index: usize,
+    image: MathImage,
+    options: &RenderOptions,
+) -> Result<RenderedImage, RenderError> {
+    let name = format!("math-{block_index}-0.png");
+    let total_height = image.height_pt + image.depth_pt;
+    let source = format!(
+        "#set page(width: {width}pt, height: auto, margin: 0pt, fill: none)\n\
+         #align(center)[#image(\"{name}\", width: {image_width}pt, \
+         height: {image_height}pt, fit: \"stretch\")]\n",
+        width = options.content_width_pt,
+        image_width = image.width_pt,
+        image_height = total_height,
+    );
+    render_typst_source(&source, &[(name, image.png)], Vec::new(), options, false)
+}
+
+fn render_typst_source(
+    source: &str,
+    static_files: &[(String, Vec<u8>)],
+    formula_errors: Vec<SafeErrorRecord>,
+    options: &RenderOptions,
+    trim_right: bool,
+) -> Result<RenderedImage, RenderError> {
+    let static_file_refs = static_files
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect::<Vec<_>>();
     let dpr = options.device_pixel_ratio.clamp(1, 4);
     let scaled_limits = Limits::default().scaled(dpr);
 
@@ -30,7 +72,8 @@ pub fn render_prose_block(
         .map_err(|_| renderer_error("Typst engine holder was poisoned"))?;
     let started = Instant::now();
     let engine = TypstEngine::builder()
-        .main_file(source.into_string())
+        .main_file(source.to_owned())
+        .with_static_file_resolver(static_file_refs)
         .search_fonts_with(embedded_font_options())
         .build();
     let document: PagedDocument = engine
@@ -38,16 +81,22 @@ pub fn render_prose_block(
         .output
         .map_err(|_| renderer_error("Typst compilation failed"))?;
     let pixmap = typst_render::render_merged(&document, f32::from(dpr), Abs::zero(), None);
-    let width_px = pixmap.width();
+    let raster_width_px = pixmap.width();
     let height_px = pixmap.height();
 
-    scaled_limits.check_image_width_px(width_px)?;
+    scaled_limits.check_image_width_px(raster_width_px)?;
     scaled_limits.check_image_height_px(height_px)?;
-    scaled_limits.check_image_pixels(u64::from(width_px) * u64::from(height_px))?;
+    scaled_limits.check_image_pixels(u64::from(raster_width_px) * u64::from(height_px))?;
 
-    let png = pixmap
+    let full_width_png = pixmap
         .encode_png()
         .map_err(|_| renderer_error("PNG encoding failed"))?;
+    scaled_limits.check_raw_png_bytes(full_width_png.len() as u64)?;
+    let (png, width_px) = if trim_right {
+        trim_transparent_right(&full_width_png)?
+    } else {
+        (full_width_png, raster_width_px)
+    };
     scaled_limits.check_raw_png_bytes(png.len() as u64)?;
     scaled_limits.check_render_duration_ms(started.elapsed().as_millis() as u64)?;
 
@@ -55,7 +104,86 @@ pub fn render_prose_block(
         png,
         width_px,
         height_px,
+        formula_errors,
     })
+}
+
+fn trim_transparent_right(png_bytes: &[u8]) -> Result<(Vec<u8>, u32), RenderError> {
+    let mut decoder = png::Decoder::new(Cursor::new(png_bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|_| renderer_error("PNG decoding failed"))?;
+    let mut decoded = vec![
+        0;
+        reader.output_buffer_size().ok_or_else(|| renderer_error(
+            "PNG output buffer size was unavailable"
+        ))?
+    ];
+    let info = reader
+        .next_frame(&mut decoded)
+        .map_err(|_| renderer_error("PNG decoding failed"))?;
+    let decoded = &decoded[..info.buffer_size()];
+    let rgba = decoded_rgba(decoded, info.color_type)?;
+    let row_bytes = usize::try_from(info.width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| renderer_error("PNG row size overflowed"))?;
+    let content_width = (0..usize::try_from(info.width).unwrap_or(usize::MAX))
+        .rev()
+        .find(|x| {
+            rgba.chunks_exact(row_bytes)
+                .any(|row| row[x.saturating_mul(4) + 3] > 0)
+        })
+        .map_or(1, |x| x + 1);
+    if content_width == usize::try_from(info.width).unwrap_or(usize::MAX) {
+        return Ok((png_bytes.to_vec(), info.width));
+    }
+
+    let cropped = rgba
+        .chunks_exact(row_bytes)
+        .flat_map(|row| row[..content_width * 4].iter().copied())
+        .collect::<Vec<_>>();
+    let mut output = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(
+            &mut output,
+            u32::try_from(content_width)
+                .map_err(|_| renderer_error("PNG width conversion failed"))?,
+            info.height,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|_| renderer_error("PNG encoding failed"))?;
+        writer
+            .write_image_data(&cropped)
+            .map_err(|_| renderer_error("PNG encoding failed"))?;
+    }
+    Ok((
+        output,
+        u32::try_from(content_width).map_err(|_| renderer_error("PNG width conversion failed"))?,
+    ))
+}
+
+fn decoded_rgba(bytes: &[u8], color_type: png::ColorType) -> Result<Vec<u8>, RenderError> {
+    match color_type {
+        png::ColorType::Rgba => Ok(bytes.to_vec()),
+        png::ColorType::Rgb => Ok(bytes
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect()),
+        png::ColorType::GrayscaleAlpha => Ok(bytes
+            .chunks_exact(2)
+            .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
+            .collect()),
+        png::ColorType::Grayscale => Ok(bytes
+            .iter()
+            .flat_map(|value| [*value, *value, *value, 255])
+            .collect()),
+        png::ColorType::Indexed => Err(renderer_error("Indexed PNG was not expanded")),
+    }
 }
 
 fn engine_holder() -> &'static Mutex<()> {
@@ -126,6 +254,51 @@ mod tests {
         .unwrap();
         assert!(!image.png.is_empty());
         assert!(nontransparent_pixels(&image.png) > 0);
+    }
+
+    #[test]
+    fn inline_formula_embeds_visible_pixels_and_changes_the_paragraph() {
+        let with_formula = render_prose_block(
+            &block(BlockKind::Paragraph, "The value is $\\frac{a+b}{c+d}$."),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        let without_formula = render_prose_block(
+            &block(BlockKind::Paragraph, "The value is."),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+
+        assert!(nontransparent_pixels(&with_formula.png) > 0);
+        assert!(with_formula.width_px > without_formula.width_px);
+        assert_ne!(with_formula.png, without_formula.png);
+        assert!(with_formula.formula_errors.is_empty());
+    }
+
+    #[test]
+    fn one_invalid_formula_becomes_a_badge_without_harming_siblings() {
+        let mixed = render_prose_block(
+            &block(
+                BlockKind::Paragraph,
+                r"valid $a+b$ then broken $\frac{$ then valid $c^2$",
+            ),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        let removed = render_prose_block(
+            &block(
+                BlockKind::Paragraph,
+                r"valid $a+b$ then broken  then valid $c^2$",
+            ),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(mixed.formula_errors.len(), 1);
+        assert_eq!(mixed.formula_errors[0].code, ErrorCode::InvalidLatex);
+        assert!(nontransparent_pixels(&mixed.png) > 0);
+        assert!(nontransparent_pixels(&removed.png) > 0);
+        assert_ne!(mixed.png, removed.png);
     }
 
     #[test]

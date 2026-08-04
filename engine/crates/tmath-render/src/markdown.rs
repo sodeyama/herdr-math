@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use pulldown_cmark::{Event, Options, Parser, Tag};
 
-use crate::{Block, BlockKind};
+use crate::{scan_latex, Block, BlockKind, ScannerLimits};
 
 /// Splits Markdown into semantic prose blocks.
 pub fn parse_blocks(input: &str) -> Vec<Block> {
@@ -46,12 +46,28 @@ pub fn parse_blocks(input: &str) -> Vec<Block> {
         }
     }
 
-    // Display-math recognition intentionally remains outside this splitter until
-    // the scanner integration in T3-104; `$$...$$` is ordinary paragraph text.
+    // The Markdown parser owns prose boundaries; the scanner then upgrades only
+    // a complete, closed top-level display formula.
+    for block in &mut blocks {
+        if block.kind == BlockKind::Paragraph && is_complete_display_math(&block.source) {
+            block.kind = BlockKind::DisplayMath;
+        }
+    }
     for (index, block) in blocks.iter_mut().enumerate() {
         block.index = index;
     }
     blocks
+}
+
+fn is_complete_display_math(source: &str) -> bool {
+    let candidate = source.trim();
+    let Ok(formulas) = scan_latex(candidate, &ScannerLimits::default()) else {
+        return false;
+    };
+    matches!(
+        formulas.as_slice(),
+        [formula] if formula.display && formula.start == 0 && formula.end == candidate.len()
+    )
 }
 
 fn block_kind(tag: &Tag<'_>) -> BlockKind {
@@ -127,11 +143,19 @@ mod tests {
     }
 
     #[test]
-    fn keeps_display_math_text_in_a_paragraph_for_scanner_integration() {
+    fn recognizes_closed_display_math_and_keeps_unclosed_text_literal() {
         let blocks = parse_blocks("$$x+y$$\n");
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].kind, BlockKind::Paragraph);
+        assert_eq!(blocks[0].kind, BlockKind::DisplayMath);
         assert_eq!(blocks[0].source, "$$x+y$$\n");
+
+        let bracketed = parse_blocks("\\[\nx+y\n\\]\n");
+        assert_eq!(bracketed.len(), 1);
+        assert_eq!(bracketed[0].kind, BlockKind::DisplayMath);
+
+        let unclosed = parse_blocks("$$x+y\n");
+        assert_eq!(unclosed.len(), 1);
+        assert_eq!(unclosed[0].kind, BlockKind::Paragraph);
     }
 
     #[test]
