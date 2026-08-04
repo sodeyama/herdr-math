@@ -69,8 +69,9 @@
 - [x] **T3-203** Placement planner: prefix reuse, append, tail replace, interior
       edit re-anchoring. (AT-3-301..303 op-level coverage; commit `26030fe`;
       byte-level fake-tty assertions land with the T3-204 wiring)
-- [ ] **T3-204** `tmath render -` stream mode with boundary-driven emission and
-      tail coalescing. (AT-3-402, AT-3-403)
+- [x] **T3-204** `tmath render -` stream mode with boundary-driven emission and
+      tail coalescing. (AT-3-402/403 PASS via hermetic event-line tests;
+      commit `e791f79`; interior in-place re-anchoring deferred to Phase 3)
 - [ ] **T3-205** `tmath watch <file>` (FS events, changed-block re-render).
       (AT-3-405)
 
