@@ -11,15 +11,25 @@ use crate::{
     Block, ErrorCode, Limits, MathImage, RenderError, RenderOptions, SafeErrorRecord,
 };
 
-/// CJK prose coverage (D-CJK): Noto Sans JP, vendored under `assets/fonts/`
+/// CJK prose coverage (D-CJK): Klee One, vendored under `assets/fonts/`
 /// alongside its OFL license text (`assets/fonts/OFL.txt`). `typst-assets`'s
 /// embedded font set (pulled in via `search_fonts_with`/`typst-kit`, see
 /// `embedded_font_options` below) covers Latin prose and math but has no CJK
-/// glyphs, so Japanese text renders as tofu without this. Embedded directly
-/// with `include_bytes!` — no system font scan, no network fetch — per
-/// AGENTS.md's native-engine font constraints.
-static NOTO_SANS_JP_REGULAR: &[u8] = include_bytes!("../assets/fonts/NotoSansJP-Regular.otf");
-static NOTO_SANS_JP_BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSansJP-Bold.otf");
+/// glyphs, so Japanese text renders as tofu without this. Klee One (a
+/// handwriting-style Japanese typeface), per the user's chosen font, per the
+/// official Google Fonts release (`google/fonts` repo, `ofl/kleeone/`).
+/// Embedded directly with `include_bytes!` — no system font scan, no network
+/// fetch — per AGENTS.md's native-engine font constraints.
+///
+/// The family has only two static weights, Regular (400) and SemiBold
+/// (600) — there is no Bold (700) cut. `push_math_image`/heading emission
+/// requests `weight: "bold"` for headings regardless of which CJK family is
+/// vendored; Typst resolves an unavailable requested weight to the closest
+/// available one in the family, so headings fall back to SemiBold here (see
+/// `the_two_static_weights_are_named_and_the_semibold_is_bold_enough_to_serve_headings`
+/// below, which pins this down empirically rather than assuming it).
+static KLEE_ONE_REGULAR: &[u8] = include_bytes!("../assets/fonts/KleeOne-Regular.ttf");
+static KLEE_ONE_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/KleeOne-SemiBold.ttf");
 
 /// A rendered transparent prose image.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,7 +126,7 @@ fn render_typst_source(
     let engine = TypstEngine::builder()
         .main_file(source.to_owned())
         .with_static_file_resolver(static_file_refs)
-        .fonts([NOTO_SANS_JP_REGULAR, NOTO_SANS_JP_BOLD])
+        .fonts([KLEE_ONE_REGULAR, KLEE_ONE_SEMIBOLD])
         .search_fonts_with(embedded_font_options())
         .build();
     let document: PagedDocument = engine
@@ -591,10 +601,10 @@ mod tests {
     /// depend on rasterization, DPI, or antialiasing at all.
     #[test]
     fn the_vendored_font_resolves_hiragana_kanji_and_japanese_punctuation() {
-        let infos: Vec<_> = typst::text::FontInfo::iter(NOTO_SANS_JP_REGULAR).collect();
-        assert_eq!(infos.len(), 1, "one face in the Regular OTF");
+        let infos: Vec<_> = typst::text::FontInfo::iter(KLEE_ONE_REGULAR).collect();
+        assert_eq!(infos.len(), 1, "one face in the Regular TTF");
         let info = &infos[0];
-        assert_eq!(info.family, "Noto Sans JP");
+        assert_eq!(info.family, "Klee One");
 
         // Hiragana (あ U+3042), a common kanji (日 U+65E5), and Japanese
         // full-width punctuation (。U+3002) — the three script categories
@@ -602,7 +612,7 @@ mod tests {
         for codepoint in ['あ', '日', '。'] {
             assert!(
                 info.coverage.contains(codepoint as u32),
-                "Noto Sans JP should cover {codepoint:?}"
+                "Klee One should cover {codepoint:?}"
             );
         }
 
@@ -611,6 +621,48 @@ mod tests {
         // per-glyph coverage rather than trivially returning true for
         // everything (which would make the assertions above meaningless).
         assert!(!info.coverage.contains(0xE000));
+    }
+
+    /// The vendored Klee One family has only two static cuts, Regular (400)
+    /// and SemiBold (600) — no Bold (700). Rather than assume Typst falls
+    /// back to SemiBold for a `weight: "bold"` request (used by heading
+    /// emission in `typst_doc.rs`), this drives the actual selection
+    /// algorithm Typst uses internally: build a `FontBook` from both
+    /// vendored `FontInfo`s (mirroring what `typst-as-lib`'s `.fonts([...])`
+    /// registers) and call `FontBook::select` with the family name and a
+    /// bold `FontVariant`, exactly as `#text(weight: "bold")` resolves one.
+    #[test]
+    fn the_two_static_weights_are_named_and_the_semibold_is_bold_enough_to_serve_headings() {
+        use typst::text::{FontBook, FontInfo, FontStyle, FontVariant, FontWeight};
+
+        let regular_infos: Vec<_> = FontInfo::iter(KLEE_ONE_REGULAR).collect();
+        let semibold_infos: Vec<_> = FontInfo::iter(KLEE_ONE_SEMIBOLD).collect();
+        assert_eq!(regular_infos.len(), 1, "one face in the Regular TTF");
+        assert_eq!(semibold_infos.len(), 1, "one face in the SemiBold TTF");
+
+        let regular = regular_infos[0].clone();
+        let semibold = semibold_infos[0].clone();
+        assert_eq!(regular.family, "Klee One");
+        assert_eq!(semibold.family, "Klee One");
+        assert_eq!(regular.variant.weight, FontWeight::REGULAR);
+        assert_eq!(semibold.variant.weight, FontWeight::SEMIBOLD);
+
+        let book = FontBook::from_infos([regular, semibold.clone()]);
+        let bold_variant = FontVariant::new(
+            FontStyle::Normal,
+            FontWeight::BOLD,
+            typst::text::FontStretch::default(),
+        );
+        let selected = book
+            .select("klee one", bold_variant)
+            .expect("the family must resolve at all for a bold request");
+        assert_eq!(
+            book.info(selected).unwrap().variant.weight,
+            FontWeight::SEMIBOLD,
+            "with no 700 cut available, Typst's nearest-weight selection \
+             (weight distance: |600-700|=100 vs |400-700|=300) must land on \
+             SemiBold, which is what headings actually render with"
+        );
     }
 
     /// End-to-end proof: a Japanese prose block renders to a non-empty image
