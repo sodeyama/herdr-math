@@ -1804,32 +1804,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "ratex-render"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55c423b56c30c5da2efccf080b960cd1df7918443dc5ce81db056ce6c9fffc67"
-dependencies = [
- "ab_glyph",
- "png 0.17.16",
- "ratex-font",
- "ratex-font-loader",
- "ratex-katex-fonts",
- "ratex-layout",
- "ratex-parser",
- "ratex-types",
- "ratex-unicode-font",
- "serde_json",
- "tiny-skia",
- "ttf-parser 0.25.1",
-]
-
-[[package]]
 name = "ratex-svg"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a0948b4d4926858332fe04471e861f54103e655a64f74cc1b3eac0c59bf67bb"
 dependencies = [
+ "ab_glyph",
+ "base64",
+ "ratex-font",
+ "ratex-font-loader",
+ "ratex-katex-fonts",
  "ratex-types",
+ "ratex-unicode-font",
 ]
 
 [[package]]
@@ -2508,7 +2494,6 @@ dependencies = [
  "pulldown-cmark",
  "ratex-layout",
  "ratex-parser",
- "ratex-render",
  "ratex-svg",
  "ratex-types",
  "serde",

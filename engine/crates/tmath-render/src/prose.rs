@@ -61,7 +61,11 @@ pub(crate) fn render_display_math_block(
     limits: &Limits,
     deadline: &RenderDeadline,
 ) -> Result<RenderedImage, RenderError> {
-    let name = format!("math-{block_index}-0.png");
+    // Embedded as SVG, not PNG, so Typst rasterizes the glyph outlines
+    // directly into the composed page instead of resampling an
+    // already-rasterized bitmap (see the `MathImage` doc comment in
+    // `math.rs` and `typst_doc.rs::push_math_image`).
+    let name = format!("math-{block_index}-0.svg");
     let total_height = image.height_pt + image.depth_pt;
     let source = format!(
         "#set page(width: {width}pt, height: auto, margin: 0pt, fill: none)\n\
@@ -74,7 +78,7 @@ pub(crate) fn render_display_math_block(
     deadline.checkpoint()?;
     render_typst_source(
         &source,
-        &[(name, image.png)],
+        &[(name, image.svg)],
         Vec::new(),
         options,
         false,

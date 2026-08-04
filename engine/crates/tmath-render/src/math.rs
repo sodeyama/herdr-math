@@ -1,8 +1,6 @@
-use std::io::Cursor;
-
 use ratex_layout::{layout, to_display_list, LayoutOptions};
 use ratex_parser::parser::parse;
-use ratex_render::{render_to_png, RenderOptions as RatexRenderOptions};
+use ratex_svg::{render_to_svg, SvgOptions};
 use ratex_types::color::Color;
 use ratex_types::math_style::MathStyle;
 
@@ -11,12 +9,24 @@ use crate::{
     ErrorCode, Limits, RenderError, RenderOptions, SafeErrorRecord, DARK_THEME_TEXT_COLOR,
 };
 
-/// A transparent RaTeX raster and its logical baseline metrics.
+/// A transparent RaTeX vector formula and its logical baseline metrics.
+///
+/// The formula is embedded into the composed Typst page as SVG rather than a
+/// pre-rasterized PNG. A pre-rasterized bitmap gets resampled a second time
+/// when Typst rasterizes the full page, and math boxes commonly sit at
+/// fractional-pt baseline offsets, so that second resample bilinearly
+/// smears the glyph strokes — prose stays sharp only because Typst
+/// rasterizes its text vectors directly at final resolution. SVG glyph
+/// outlines go through that same one-shot rasterization path as prose text
+/// (see `typst_doc.rs::push_math_image`), so both come out equally sharp.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MathImage {
-    pub png: Vec<u8>,
-    pub width_px: u32,
-    pub height_px: u32,
+    /// A standalone SVG document with glyphs embedded as `<path>` outlines
+    /// (feature `embed-fonts`/`standalone` on `ratex-svg`), never `<text>`
+    /// elements with `font-family` references — Typst cannot resolve
+    /// external font names from SVG, so a `<text>`-based SVG would compile
+    /// with invisible or substituted glyphs.
+    pub svg: Vec<u8>,
     pub width_pt: f64,
     pub height_pt: f64,
     pub depth_pt: f64,
@@ -60,41 +70,25 @@ pub(crate) fn render_formula_with_deadline(
     let width_pt = display_list.width * font_size_pt;
     let height_pt = display_list.height * font_size_pt;
     let depth_pt = display_list.depth * font_size_pt;
-    let render_options = RatexRenderOptions {
-        font_size: font_size_pt as f32,
+    let svg_options = SvgOptions {
+        font_size: font_size_pt,
         padding: 0.0,
-        background_color: Color {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        },
-        device_pixel_ratio: f32::from(options.device_pixel_ratio.clamp(1, 4)),
-        ..RatexRenderOptions::default()
+        embed_glyphs: true,
+        ..SvgOptions::default()
     };
-    let png = render_to_png(&display_list, &render_options).map_err(invalid_latex_error)?;
+    let svg = render_to_svg(&display_list, &svg_options).into_bytes();
     deadline.checkpoint()?;
-    let (width_px, height_px) = png_dimensions(&png).map_err(|message| {
-        RenderError::new(
-            SafeErrorRecord {
-                code: ErrorCode::RendererFailed,
-                retryable: false,
-                details: None,
-            },
-            message,
-        )
-    })?;
+    // The formula has no pixel dimensions to check (it is vector, not
+    // raster); its size is bounded on SVG byte length alone. The composed
+    // page's rasterized PNG still goes through the unchanged
+    // `check_image_width_px`/`check_image_height_px`/`check_image_pixels`
+    // checks in `prose.rs` once Typst renders the full page.
     let scaled_limits = limits.scaled(options.device_pixel_ratio);
-    scaled_limits.check_image_width_px(width_px)?;
-    scaled_limits.check_image_height_px(height_px)?;
-    scaled_limits.check_image_pixels(u64::from(width_px) * u64::from(height_px))?;
-    scaled_limits.check_raw_png_bytes(png.len() as u64)?;
+    scaled_limits.check_math_svg_bytes(svg.len() as u64)?;
     deadline.checkpoint()?;
 
     Ok(MathImage {
-        png,
-        width_px,
-        height_px,
+        svg,
         width_pt,
         height_pt,
         depth_pt,
@@ -117,13 +111,6 @@ fn theme_text_color() -> Color {
     }
 }
 
-fn png_dimensions(png: &[u8]) -> Result<(u32, u32), &'static str> {
-    let reader = png::Decoder::new(Cursor::new(png))
-        .read_info()
-        .map_err(|_| "RaTeX returned an invalid PNG")?;
-    Ok((reader.info().width, reader.info().height))
-}
-
 fn invalid_latex_error(error: impl std::fmt::Display) -> RenderError {
     RenderError::new(
         SafeErrorRecord {
@@ -137,52 +124,66 @@ fn invalid_latex_error(error: impl std::fmt::Display) -> RenderError {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
     use super::*;
     use crate::{ErrorCode, SafeLimitKind};
 
-    fn rgba_and_opaque_pixels(png_bytes: &[u8]) -> (bool, usize) {
-        let mut decoder = png::Decoder::new(Cursor::new(png_bytes));
-        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
-        let mut reader = decoder.read_info().unwrap();
-        let mut output = vec![0; reader.output_buffer_size().unwrap()];
-        let info = reader.next_frame(&mut output).unwrap();
-        let bytes = &output[..info.buffer_size()];
-        match info.color_type {
-            png::ColorType::Rgba => (
-                bytes.chunks_exact(4).any(|pixel| pixel[3] == 0),
-                bytes.chunks_exact(4).filter(|pixel| pixel[3] > 0).count(),
-            ),
-            png::ColorType::GrayscaleAlpha => (
-                bytes.chunks_exact(2).any(|pixel| pixel[1] == 0),
-                bytes.chunks_exact(2).filter(|pixel| pixel[1] > 0).count(),
-            ),
-            _ => (false, 0),
-        }
+    /// Confirms the SVG carries real vector outlines, not KaTeX `<text>`
+    /// elements referencing external `font-family` names that Typst cannot
+    /// resolve (see the `MathImage::svg` doc comment). A `<path>` element is
+    /// the outline-embedding signal from `ratex-svg`'s `standalone` glyph
+    /// path; a stray `<text>`/`font-family` would mean glyphs silently fell
+    /// back to the unresolvable KaTeX webfont reference instead.
+    fn assert_is_well_formed_outline_svg(svg_bytes: &[u8]) {
+        let svg = std::str::from_utf8(svg_bytes).expect("SVG must be valid UTF-8");
+        assert!(svg.starts_with("<svg "), "not an SVG document: {svg}");
+        assert!(svg.trim_end().ends_with("</svg>"), "unterminated SVG");
+        assert!(
+            !svg.contains("<text"),
+            "glyphs fell back to <text> elements instead of embedded outlines: {svg}"
+        );
+        assert!(
+            !svg.contains("font-family"),
+            "SVG references an external font-family Typst cannot resolve: {svg}"
+        );
+        assert!(
+            svg.contains("<path"),
+            "expected at least one glyph outline <path>: {svg}"
+        );
     }
 
     #[test]
-    fn display_formulas_are_transparent_and_scale_with_dpr() {
+    fn display_formulas_embed_as_well_formed_outline_svg_at_every_dpr() {
         for latex in [
             r"\sqrt{x}",
             r"\frac{a+b}{c+d}",
             r"\begin{aligned}a&=b+c\\d&=e-f\end{aligned}",
         ] {
-            let dpr1 =
-                render_formula(latex, true, &RenderOptions::new(480.0, 12.0, 1).unwrap()).unwrap();
-            let dpr2 =
-                render_formula(latex, true, &RenderOptions::new(480.0, 12.0, 2).unwrap()).unwrap();
-            let (transparent1, opaque1) = rgba_and_opaque_pixels(&dpr1.png);
-            let (transparent2, opaque2) = rgba_and_opaque_pixels(&dpr2.png);
-
-            assert!(transparent1 && transparent2);
-            assert!(opaque1 > 0 && opaque2 > 0);
-            assert!((dpr2.width_px as f64 / dpr1.width_px as f64 - 2.0).abs() < 0.25);
-            assert!((dpr2.height_px as f64 / dpr1.height_px as f64 - 2.0).abs() < 0.25);
-            let opaque_ratio = opaque2 as f64 / opaque1 as f64;
-            assert!((2.4..=5.5).contains(&opaque_ratio), "{opaque_ratio}");
+            for dpr in [1, 2] {
+                let image =
+                    render_formula(latex, true, &RenderOptions::new(480.0, 12.0, dpr).unwrap())
+                        .unwrap();
+                assert_is_well_formed_outline_svg(&image.svg);
+                assert!(image.width_pt > 0.0, "{latex} at dpr {dpr}");
+                assert!(image.height_pt > 0.0, "{latex} at dpr {dpr}");
+            }
         }
+    }
+
+    #[test]
+    fn svg_bytes_are_identical_across_device_pixel_ratios() {
+        // Unlike the old PNG raster, SVG is device-pixel-ratio independent:
+        // it is Typst's page rasterization (unchanged, still DPR-scaled)
+        // that produces the final pixels. The vector source and the logical
+        // metrics must be identical regardless of DPR.
+        let latex = r"\frac{a+b}{c+d}";
+        let dpr1 =
+            render_formula(latex, true, &RenderOptions::new(480.0, 12.0, 1).unwrap()).unwrap();
+        let dpr2 =
+            render_formula(latex, true, &RenderOptions::new(480.0, 12.0, 2).unwrap()).unwrap();
+        assert_eq!(dpr1.svg, dpr2.svg);
+        assert_eq!(dpr1.width_pt, dpr2.width_pt);
+        assert_eq!(dpr1.height_pt, dpr2.height_pt);
+        assert_eq!(dpr1.depth_pt, dpr2.depth_pt);
     }
 
     #[test]
@@ -197,23 +198,27 @@ mod tests {
     }
 
     #[test]
-    fn oversized_formula_reports_the_scaled_pixel_limit() {
-        let options = RenderOptions::new(480.0, 900.0, 1).unwrap();
-        let mut latex = "x".to_owned();
-        for _ in 0..32 {
-            latex = format!(r"\frac{{x}}{{{latex}}}");
-        }
+    fn oversized_formula_reports_the_scaled_svg_byte_limit() {
+        // SVG glyph-outline markup is far more compact per formula than a
+        // rasterized PNG, so a formula that used to blow the old pixel cap
+        // does not reliably blow a realistic SVG byte cap. Set a tight
+        // `math_svg_bytes` limit directly instead, so the test verifies the
+        // check itself rather than depending on formula complexity to
+        // organically exceed the (generous, real-world-sized) default.
+        let options = RenderOptions::new(480.0, 12.0, 1).unwrap();
+        let latex = r"\frac{a+b}{c+d}";
         let limits = Limits {
             render_duration_ms: 60_000,
+            math_svg_bytes: 16,
             ..Limits::default()
         };
         let deadline = RenderDeadline::new(limits.render_duration_ms);
         let error =
-            render_formula_with_deadline(&latex, true, &options, &limits, &deadline).unwrap_err();
+            render_formula_with_deadline(latex, true, &options, &limits, &deadline).unwrap_err();
         assert_eq!(error.safe_record().code, ErrorCode::ImageTooLarge);
         assert_eq!(
             error.safe_record().details.as_ref().unwrap().limit_kind,
-            Some(SafeLimitKind::ImagePixels)
+            Some(SafeLimitKind::MathSvgBytes)
         );
     }
 }

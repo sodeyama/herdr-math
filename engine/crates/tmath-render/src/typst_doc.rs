@@ -297,9 +297,9 @@ impl<'a> MathContext<'a> {
                 self.deadline,
             ) {
                 Ok(image) => {
-                    let name = format!("math-{}-{formula_index}.png", self.block_index);
+                    let name = format!("math-{}-{formula_index}.svg", self.block_index);
                     push_math_image(output, &name, &image, formula.display);
-                    self.static_files.push((name, image.png));
+                    self.static_files.push((name, image.svg));
                 }
                 Err(error) if error.safe_record().code == ErrorCode::InvalidLatex => {
                     self.formula_errors.push(error.into_safe_record());
@@ -471,6 +471,15 @@ fn render_cells(
     Ok(())
 }
 
+/// Embeds one RaTeX formula into the Typst source as an `#image(...)` box at
+/// its exact logical baseline metrics. `name` carries a `.svg` extension
+/// (the [`MathImage::svg`] static file registered alongside this call);
+/// Typst rasterizes the SVG's glyph outlines directly into the composed
+/// page at final resolution — the same one-shot path prose text takes — so
+/// math no longer gets a second, blur-inducing resample the way the old
+/// pre-rasterized PNG embedding did (see the `MathImage` doc comment in
+/// `math.rs`). The box/baseline math below is otherwise unchanged from the
+/// PNG embedding this replaces.
 fn push_math_image(output: &mut String, name: &str, image: &MathImage, display: bool) {
     let total_height = image.height_pt + image.depth_pt;
     if display {
