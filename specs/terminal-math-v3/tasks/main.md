@@ -15,9 +15,11 @@
       with baseline metrics; record offsets and wrapping behavior.
       (AT-3-001 PASS; commit `9c263dd`; evidence
       `docs/evidence/2026-08-04-v3-inline-math-baseline-spike.md`)
-- [ ] **T3-002** Spike: embedded-font engine construction (RaTeX OFL set +
+- [x] **T3-002** Spike: embedded-font engine construction (RaTeX OFL set +
       `typst-assets` subset), no system font scan; measure cold start.
-      (AT-3-002)
+      (AT-3-002 PASS at spike level, ~9-12 ms p50 vs 300 ms budget; commit
+      `a7ed163`; evidence `docs/evidence/2026-08-04-v3-cold-start-spike.md`;
+      fs-trace variant deferred to Phase 1)
 - [ ] **T3-003** Build the golden corpus: V2 renderer corpus + coverage probe +
       historically problematic formulas; render with V2 and native spike; record
       accepted/rejected divergences. (AT-3-003)
