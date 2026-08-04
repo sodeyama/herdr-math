@@ -35,8 +35,9 @@
 - [x] **T3-101** Create `engine/crates/tmath-render`: block model, options,
       `SafeErrorRecord` mapping; pin `ratex-*`/`typst*` versions.
       (commit `31fc843`; 16 unit tests, clippy clean)
-- [ ] **T3-102** Port the scanner (`scan-latex.ts`) to Rust with the V2 fixture
-      corpus. (AT-3-102)
+- [x] **T3-102** Port the scanner (`scan-latex.ts`) to Rust with the V2 fixture
+      corpus. (AT-3-102 PASS; commit `7901b92`; 28 scanner tests incl. a
+      fixture-sync guard over `answer-corpus.json`)
 - [ ] **T3-103** Markdown mapping: pulldown-cmark → Typst structured content
       (no string-concatenated markup); syntect code blocks; inert links/images.
       (AT-3-101, AT-3-701 groundwork)
