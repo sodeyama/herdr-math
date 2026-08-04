@@ -432,13 +432,20 @@ pub(crate) fn parse_graphics_probe(buf: &[u8]) -> Option<bool> {
     Some(rest.starts_with(b"OK"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Fake [`Tty`] test double, exposed cross-crate under the `test-util`
+/// feature (and always available to this crate's own `#[cfg(test)]` code)
+/// so hermetic Kitty-contract tests elsewhere in the workspace (e.g.
+/// `tmath`'s `TerminalSink` tests) can drive a real [`Terminal`] without a
+/// real terminal, per AGENTS.md's fake-tty-harness testing requirement.
+/// Never compiled into a release build: `test-util` is not a default
+/// feature and downstream crates enable it only as a dev-dependency.
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use super::{io, Duration, Tty, WindowSize};
 
     /// In-memory [`Tty`] that queues replies and records writes.
-    struct FakeTty {
-        writes: Vec<u8>,
+    pub struct FakeTty {
+        pub writes: Vec<u8>,
         reads: Vec<u8>,
         replies: Vec<(Vec<u8>, Vec<u8>)>,
         raw: usize,
@@ -447,7 +454,10 @@ mod tests {
     }
 
     impl FakeTty {
-        fn new(replies: &[(&[u8], &[u8])], winsize: WindowSize) -> Self {
+        /// `replies` pairs a query byte sequence (matched anywhere in a
+        /// single `write_all` call) with the bytes queued for the next
+        /// `read` once that query is seen.
+        pub fn new(replies: &[(&[u8], &[u8])], winsize: WindowSize) -> Self {
             Self {
                 writes: Vec::new(),
                 reads: Vec::new(),
@@ -459,6 +469,16 @@ mod tests {
                 restored: 0,
                 winsize,
             }
+        }
+
+        /// Number of times `set_raw` was called.
+        pub fn raw_calls(&self) -> usize {
+            self.raw
+        }
+
+        /// Number of times `restore` was called.
+        pub fn restore_calls(&self) -> usize {
+            self.restored
         }
     }
 
@@ -499,6 +519,12 @@ mod tests {
             Ok(self.winsize)
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use testing::FakeTty;
 
     #[test]
     fn init_writes_reporting_modes_without_the_alternate_screen() {
@@ -636,7 +662,7 @@ mod tests {
         assert!(out.contains("\x1b[?1016l"));
         assert!(out.contains("\x1b[?1006l"));
         assert!(out.contains("\x1b[?1003l"));
-        assert_eq!(term.io.restored, 1);
+        assert_eq!(term.io.restore_calls(), 1);
     }
 
     #[test]

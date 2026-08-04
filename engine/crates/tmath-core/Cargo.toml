@@ -8,6 +8,14 @@ description = "Terminal-facing core for the tmath math/document renderer."
 [lints]
 workspace = true
 
+[features]
+# Test-only fake `Tty` exposed cross-crate so other crates in the workspace
+# (e.g. `tmath`'s hermetic Kitty-contract tests) can drive a `Terminal`
+# without a real terminal, per AGENTS.md's fake-tty-harness testing
+# requirement. Never enabled by default, so it carries no release-build
+# cost or attack surface.
+test-util = []
+
 [dependencies]
 base64 = { workspace = true }
 miniz_oxide = { workspace = true }
