@@ -610,17 +610,19 @@ mod tests {
 
     #[test]
     fn project_transcript_dir_replaces_slashes_with_hyphens() {
-        let home = Path::new("/Users/example");
-        let cwd = Path::new("/Users/example/git/terminal-math");
+        // The example home deliberately avoids macOS/Linux home-directory
+        // prefixes so the no-absolute-home-path privacy gate stays clean.
+        let home = Path::new("/opt/example");
+        let cwd = Path::new("/opt/example/git/terminal-math");
         assert_eq!(
             project_transcript_dir(home, cwd).unwrap(),
-            Path::new("/Users/example/.claude/projects/-Users-example-git-terminal-math")
+            Path::new("/opt/example/.claude/projects/-opt-example-git-terminal-math")
         );
     }
 
     #[test]
     fn project_transcript_dir_rejects_a_relative_cwd() {
-        let home = Path::new("/Users/example");
+        let home = Path::new("/opt/example");
         let cwd = Path::new("relative/path");
         assert!(project_transcript_dir(home, cwd).is_none());
     }
