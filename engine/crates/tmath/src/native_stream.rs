@@ -70,17 +70,7 @@ pub(crate) fn run(
     let mut splitter = StreamSplitter::new(limits);
     let mut planner = PlacementPlanner::new();
     let mut formula_errors = Vec::new();
-    let mut sink = match connected {
-        Some((terminal, cell)) => StreamSink::Terminal(TerminalSink::new(
-            terminal,
-            CellSize {
-                width: cell.0,
-                height: cell.1,
-            },
-            scaled.image_pixels,
-        )),
-        None => StreamSink::Summary,
-    };
+    let mut sink = StreamSink::new(connected, scaled.image_pixels);
     let receiver = spawn_reader();
     let mut eof = false;
 
@@ -165,7 +155,7 @@ fn spawn_reader() -> Receiver<InputEvent> {
     receiver
 }
 
-fn apply_revision(
+pub(crate) fn apply_revision(
     revision: &Revision,
     options: &RenderOptions,
     cache: &mut RenderCache,
@@ -225,12 +215,29 @@ fn apply_revision(
     Ok(())
 }
 
-enum StreamSink {
+pub(crate) enum StreamSink {
     Summary,
     Terminal(TerminalSink),
 }
 
 impl StreamSink {
+    pub(crate) fn new(
+        connected: Option<(Terminal<StdioTty>, (u32, u32))>,
+        max_image_pixels: u64,
+    ) -> Self {
+        match connected {
+            Some((terminal, cell)) => Self::Terminal(TerminalSink::new(
+                terminal,
+                CellSize {
+                    width: cell.0,
+                    height: cell.1,
+                },
+                max_image_pixels,
+            )),
+            None => Self::Summary,
+        }
+    }
+
     fn emit(
         &mut self,
         plan: &Plan,
@@ -243,14 +250,29 @@ impl StreamSink {
         }
     }
 
-    fn done(&mut self, blocks: usize, formula_errors: usize) -> Result<(), RenderError> {
+    pub(crate) fn finish(&mut self) -> Result<(), RenderError> {
+        match self {
+            Self::Summary => Ok(()),
+            Self::Terminal(sink) => sink.finish(),
+        }
+    }
+
+    pub(crate) fn done(&mut self, blocks: usize, formula_errors: usize) -> Result<(), RenderError> {
         match self {
             Self::Summary => {
                 println!("event=done blocks={blocks} formula_errors={formula_errors}");
                 io::stdout().flush().map_err(|_| stream_error())
             }
-            Self::Terminal(sink) => sink.finish(),
+            Self::Terminal(_) => self.finish(),
         }
+    }
+
+    pub(crate) fn summary_event(&mut self, event: &str) -> Result<(), RenderError> {
+        if matches!(self, Self::Summary) {
+            println!("{event}");
+            io::stdout().flush().map_err(|_| stream_error())?;
+        }
+        Ok(())
     }
 }
 
@@ -310,7 +332,7 @@ struct PlacedState {
     pixels: u64,
 }
 
-struct TerminalSink {
+pub(crate) struct TerminalSink {
     terminal: Terminal<StdioTty>,
     cell: CellSize,
     max_image_pixels: u64,

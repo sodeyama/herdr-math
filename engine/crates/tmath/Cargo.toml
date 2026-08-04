@@ -19,3 +19,4 @@ base64 = { workspace = true }
 png = { workspace = true }
 rustix = { workspace = true }
 serde_json = { workspace = true }
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
