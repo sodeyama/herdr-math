@@ -219,7 +219,11 @@ pub(crate) fn apply_revision(
 
 pub(crate) enum StreamSink {
     Summary,
-    Terminal(TerminalSink),
+    // Boxed so `Summary`'s zero-sized variant does not force every
+    // `StreamSink` (including the common `Summary`/stream-mode case) to
+    // carry `TerminalSink`'s full size, which grows with each new piece of
+    // agent-viewer-only state (`emitted_ids`, `retained_window_blocks`, ...).
+    Terminal(Box<TerminalSink>),
 }
 
 impl StreamSink {
@@ -228,14 +232,14 @@ impl StreamSink {
         max_image_pixels: u64,
     ) -> Self {
         match connected {
-            Some((terminal, cell)) => Self::Terminal(TerminalSink::new(
+            Some((terminal, cell)) => Self::Terminal(Box::new(TerminalSink::new(
                 terminal,
                 CellSize {
                     width: cell.0,
                     height: cell.1,
                 },
                 max_image_pixels,
-            )),
+            ))),
             None => Self::Summary,
         }
     }
@@ -250,6 +254,16 @@ impl StreamSink {
     pub(crate) fn with_retained_pngs(mut self) -> Self {
         if let Self::Terminal(sink) = &mut self {
             sink.retain_pngs = true;
+        }
+        self
+    }
+
+    /// Bounds how many blocks outside the visibility window keep their
+    /// retained PNG (AT-3-504); see [`TerminalSink::retained_window_blocks`].
+    /// A no-op in `Summary` mode.
+    pub(crate) fn with_retained_window_blocks(mut self, budget: u64) -> Self {
+        if let Self::Terminal(sink) = &mut self {
+            sink.retained_window_blocks = budget;
         }
         self
     }
@@ -310,6 +324,34 @@ impl StreamSink {
         match self {
             Self::Summary => Ok(()),
             Self::Terminal(sink) => sink.sync_window(visible),
+        }
+    }
+
+    /// The ids in `visible` whose retained PNG was evicted (AT-3-504) and
+    /// need restoring before the next `sync_window` call. Always empty in
+    /// `Summary` mode. See [`TerminalSink::missing_pngs`].
+    pub(crate) fn missing_pngs(&self, visible: std::ops::Range<usize>) -> Vec<u64> {
+        match self {
+            Self::Summary => Vec::new(),
+            Self::Terminal(sink) => sink.missing_pngs(visible),
+        }
+    }
+
+    /// Restores a placed block's retained PNG (agent-viewer's scroll-back
+    /// path). A no-op in `Summary` mode. See [`TerminalSink::refresh_png`].
+    pub(crate) fn refresh_png(&mut self, id: u64, png: Vec<u8>) -> Result<(), RenderError> {
+        match self {
+            Self::Summary => Ok(()),
+            Self::Terminal(sink) => sink.refresh_png(id, png),
+        }
+    }
+
+    /// Evicts retained PNGs outside `visible` ± the configured budget
+    /// (AT-3-504), independent of `sync_window`. A no-op in `Summary` mode.
+    /// See [`TerminalSink::evict_outside_window`].
+    pub(crate) fn evict_outside_window(&mut self, visible: std::ops::Range<usize>) {
+        if let Self::Terminal(sink) = self {
+            sink.evict_outside_window(visible);
         }
     }
 }
@@ -410,6 +452,13 @@ pub(crate) struct TerminalSink {
     /// (possibly changed) window contents. Always `false` for stream/watch
     /// sessions, which never disengage follow.
     suppress_writes: bool,
+    /// AT-3-504's bound on retained PNGs: on every `sync_window`, blocks more
+    /// than this many positions outside the new `visible` range (on either
+    /// side) have their `PlacedState::png` evicted to an empty vec. `u64::MAX`
+    /// (the default) means unbounded, which is what stream/watch sessions
+    /// want since they never retain PNGs in the first place. Set only
+    /// through [`StreamSink::with_retained_window_blocks`].
+    retained_window_blocks: u64,
 }
 
 impl TerminalSink {
@@ -429,6 +478,7 @@ impl TerminalSink {
             retain_pngs: false,
             emitted_ids: Vec::new(),
             suppress_writes: false,
+            retained_window_blocks: u64::MAX,
         }
     }
 
@@ -607,7 +657,68 @@ impl TerminalSink {
         )?;
         terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
         self.first_append_at_line_start = true;
-        self.emitted_ids = self.placed[visible].iter().map(|entry| entry.id).collect();
+        self.emitted_ids = self.placed[visible.clone()]
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
+        evict_pngs_outside_budget(&mut self.placed, visible, self.retained_window_blocks);
+        Ok(())
+    }
+
+    /// Runs AT-3-504's eviction directly, without a full `sync_window`
+    /// (which also diffs `emitted_ids` and writes terminal bytes — neither
+    /// of which the follow-engaged append path needs, since it never calls
+    /// `sync_window` at all: `apply_revision` streams straight to the pane
+    /// bottom while following, so there is no separate "sync the screen"
+    /// step there). Called unconditionally from `render_and_place`
+    /// regardless of follow state — see that function's doc comment for why
+    /// eviction must not be conditioned on `sync_window` having run. Calling
+    /// this and then `sync_window` back to back (the disengaged path) is
+    /// idempotent: eviction only ever empties a PNG that is already outside
+    /// the window, so re-running it with the same window is a no-op.
+    pub(crate) fn evict_outside_window(&mut self, visible: std::ops::Range<usize>) {
+        let visible = visible.start.min(self.placed.len())..visible.end.min(self.placed.len());
+        evict_pngs_outside_budget(&mut self.placed, visible, self.retained_window_blocks);
+    }
+
+    /// The ids of blocks inside `visible` (clamped to `placed`'s bounds)
+    /// whose retained PNG was evicted (AT-3-504) and must be restored — by a
+    /// `RenderCache` hit or a real re-render of the block's source — before
+    /// the next `sync_window` call, which would otherwise fail decoding an
+    /// empty PNG for that block. Returns ids in `visible`'s order so the
+    /// caller can restore them in on-screen order if it chooses to.
+    /// Deliberately id-only: restoring the PNG itself requires the block's
+    /// source and a render engine, neither of which `TerminalSink` has (see
+    /// the `retained_window_blocks` field doc) — that is the viewer's job.
+    pub(crate) fn missing_pngs(&self, visible: std::ops::Range<usize>) -> Vec<u64> {
+        let visible = visible.start.min(self.placed.len())..visible.end.min(self.placed.len());
+        self.placed[visible]
+            .iter()
+            .filter(|entry| entry.png.is_empty())
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    /// Restores a placed block's retained PNG after `missing_pngs` reported
+    /// it evicted, re-decoding it to recompute the same dimension/pixel
+    /// bookkeeping `append`/`replace` maintain. Fails closed: an id that is
+    /// not currently placed, or a PNG whose decoded dimensions do not match
+    /// what was already recorded for that block (e.g. a stale re-render),
+    /// leaves the existing (empty) entry untouched rather than risk placing
+    /// a mismatched image.
+    pub(crate) fn refresh_png(&mut self, id: u64, png: Vec<u8>) -> Result<(), RenderError> {
+        let index = self
+            .placed
+            .iter()
+            .position(|placed| placed.id == id)
+            .ok_or_else(stream_error)?;
+        let (width, height, _) =
+            decode_png(&png, self.max_image_pixels).map_err(|_| stream_error())?;
+        let (_, rows) = tmath_core::placement::grid_for(width, height, self.cell);
+        if rows != self.placed[index].rows {
+            return Err(stream_error());
+        }
+        self.placed[index].png = png;
         Ok(())
     }
 
@@ -807,6 +918,39 @@ fn retained_png(png: &[u8], retain: bool) -> Vec<u8> {
         png.to_vec()
     } else {
         Vec::new()
+    }
+}
+
+/// AT-3-504's eviction policy: a block at index `i` keeps its retained PNG
+/// iff its distance from `visible` (0 if `i` is inside `visible`, otherwise
+/// the index gap to the nearer edge) is within `budget`; blocks farther out
+/// on either side have their PNG truncated to empty. `u64::MAX` (stream/watch
+/// sessions' default) never evicts anything, since every index gap is finite.
+/// This is the simplest correct policy that keeps memory bounded during a
+/// long session: it does not need per-block last-visible timestamps or an
+/// LRU — the viewport's own position already tells us which blocks a
+/// scroll-back is likely to revisit next (blocks *nearest* the window),
+/// which is exactly what a fixed-radius keep-alive around the window
+/// preserves.
+fn evict_pngs_outside_budget(
+    placed: &mut [PlacedState],
+    visible: std::ops::Range<usize>,
+    budget: u64,
+) {
+    if budget == u64::MAX {
+        return;
+    }
+    for (index, entry) in placed.iter_mut().enumerate() {
+        let distance = if index < visible.start {
+            (visible.start - index) as u64
+        } else if index >= visible.end {
+            (index - visible.end + 1) as u64
+        } else {
+            0
+        };
+        if distance > budget {
+            entry.png = Vec::new();
+        }
     }
 }
 
@@ -1258,5 +1402,96 @@ mod tests {
         let png = rgba8_png(2, 3);
         assert!(retained_png(&png, false).is_empty());
         assert_eq!(retained_png(&png, true), png);
+    }
+
+    fn has_png(entries: &[PlacedState], index: usize) -> bool {
+        !entries[index].png.is_empty()
+    }
+
+    /// AT-3-504: blocks within `budget` positions of the window (on either
+    /// side) keep their PNG; anything farther out is evicted.
+    #[test]
+    fn evict_pngs_outside_budget_keeps_a_fixed_radius_around_the_window() {
+        let mut placed: Vec<PlacedState> =
+            (0..10u64).map(|i| placed(i, 1, rgba8_png(1, 1))).collect();
+        // Window is indices 5..7, budget 1: indices 4..=7 (visible plus one
+        // on each side) keep their PNG; 0..=3 and 8..=9 are evicted.
+        evict_pngs_outside_budget(&mut placed, 5..7, 1);
+
+        for index in 0..=3 {
+            assert!(!has_png(&placed, index), "index {index} is outside budget");
+        }
+        for index in 4..=7 {
+            assert!(has_png(&placed, index), "index {index} is within budget");
+        }
+        for index in 8..=9 {
+            assert!(!has_png(&placed, index), "index {index} is outside budget");
+        }
+    }
+
+    /// A budget of `u64::MAX` (the default for stream/watch sessions, and
+    /// for the agent-viewer before it opts in) never evicts anything.
+    #[test]
+    fn evict_pngs_outside_budget_is_a_no_op_at_u64_max() {
+        let mut placed: Vec<PlacedState> =
+            (0..5u64).map(|i| placed(i, 1, rgba8_png(1, 1))).collect();
+        evict_pngs_outside_budget(&mut placed, 2..3, u64::MAX);
+        for index in 0..5 {
+            assert!(has_png(&placed, index));
+        }
+    }
+
+    /// A budget of 0 keeps only blocks strictly inside the window.
+    #[test]
+    fn evict_pngs_outside_budget_zero_keeps_only_the_window_itself() {
+        let mut placed: Vec<PlacedState> =
+            (0..5u64).map(|i| placed(i, 1, rgba8_png(1, 1))).collect();
+        evict_pngs_outside_budget(&mut placed, 2..3, 0);
+        assert!(!has_png(&placed, 0));
+        assert!(!has_png(&placed, 1));
+        assert!(has_png(&placed, 2), "index 2 is inside the window itself");
+        assert!(!has_png(&placed, 3));
+        assert!(!has_png(&placed, 4));
+    }
+
+    /// AT-3-504's memory-bound claim, exercised at 1,000 blocks: syncing the
+    /// window forward one block at a time (as a streamed session appends,
+    /// with eviction re-applied on every sync) and evicting with a fixed
+    /// budget after each step never lets the retained-PNG count exceed the
+    /// budget-derived bound, no matter how long the session runs — `placed`
+    /// itself keeps growing (the state row is never dropped, only the PNG
+    /// bytes), but memory tied up in retained images stays flat.
+    #[test]
+    fn thousand_block_session_keeps_retained_png_count_within_budget() {
+        let budget = 5u64;
+        let mut entries: Vec<PlacedState> = Vec::new();
+        for i in 0..1000u64 {
+            entries.push(placed(i, 1, rgba8_png(1, 1)));
+            // Mirrors the call pattern `render_and_place` now uses
+            // unconditionally (`Viewer::render_and_place` → `Viewport::
+            // visible_blocks` → `StreamSink::evict_outside_window` →
+            // `TerminalSink::evict_outside_window` → this function), not
+            // just an arbitrary window: while follow is engaged (the
+            // mainline streamed session this test represents), the
+            // viewport's window is always the tail — the single newest
+            // block — and eviction runs once per appended block, exactly
+            // like this loop does. `TerminalSink::evict_outside_window`
+            // itself is a one-line delegation to this function (see its doc
+            // comment), so exercising `evict_pngs_outside_budget` with this
+            // window/cadence is equivalent to exercising the real call site
+            // without needing a live terminal to construct a `TerminalSink`.
+            let last = entries.len() - 1;
+            evict_pngs_outside_budget(&mut entries, last..last + 1, budget);
+        }
+
+        assert_eq!(entries.len(), 1000, "the full block history is kept");
+        let retained = entries.iter().filter(|entry| !entry.png.is_empty()).count();
+        // The window is always the single newest block; the eviction radius
+        // is `budget` blocks behind it (nothing is ahead of the newest
+        // block), so at most `budget + 1` blocks can retain a PNG.
+        assert!(
+            retained <= (budget + 1) as usize,
+            "retained PNG count {retained} exceeds the budget-derived bound"
+        );
     }
 }

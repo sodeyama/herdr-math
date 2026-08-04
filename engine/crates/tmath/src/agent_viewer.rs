@@ -30,8 +30,23 @@
 //! afterward instead. `q`/`Ctrl-C` close the viewer. Render failures leave
 //! earlier placements intact (fail closed).
 //!
-//! Bounded history eviction with re-render on scroll-back (AT-3-504) is out
-//! of scope here; it builds on this viewport and the retained-PNG cache.
+//! Retained PNGs are bounded (AT-3-504): every `render_and_place` call
+//! evicts blocks more than `Limits::retained_window_blocks` positions
+//! outside the current visibility window, unconditionally — not only on the
+//! disengaged-follow/`sync_window` path. This matters because while
+//! following, `sync_window` is never called at all (`apply_revision` streams
+//! straight to the pane bottom, and the window is always the tail), so a
+//! mainline streamed session with follow engaged the whole time is exactly
+//! where eviction needs to run on every append, or a long session would
+//! retain every block's PNG forever. The block's state (id, rows, source
+//! text) is kept regardless of eviction — only the rendered bytes are
+//! dropped — so memory stays flat across a long session even as
+//! `planner`/`block_sources` keep growing. Scrolling back onto an evicted
+//! block restores it (`restore_missing_pngs`/`restore_png_for_id`) via a
+//! `RenderCache` content-hash hit or, failing that, a real re-render from
+//! the retained source — never by re-fetching from the watcher. A restore
+//! failure leaves that one block showing nothing rather than disturbing the
+//! rest of the window (fail closed).
 
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
@@ -43,7 +58,7 @@ use tmath_core::placement::CellSize;
 use tmath_core::scroll_driver::{is_exit_signal, scroll_delta};
 use tmath_core::terminal::{StdioTty, Terminal};
 use tmath_render::{
-    CacheBudget, Limits, PlacementPlanner, RenderCache, RenderOptions, StreamSplitter,
+    Block, CacheBudget, Limits, PlacementPlanner, RenderCache, RenderOptions, StreamSplitter,
 };
 
 use crate::native_stream::{self, StreamSink};
@@ -71,6 +86,17 @@ struct Viewer {
     /// `sink`) keeps the viewport buildable and testable in `StreamSink::Summary`
     /// mode, which has no terminal and no placed-block state of its own.
     cell: CellSize,
+    /// The current document's blocks, source text included, in the same
+    /// order and length as `planner.blocks()`. `PlannedBlock` (what the
+    /// planner keeps) has no source — only a content hash — so this is the
+    /// only place a block's text survives past one `render_and_place` call.
+    /// It is what lets `restore_missing_pngs` re-render a block evicted by
+    /// `TerminalSink`'s AT-3-504 eviction on scroll-back, either via a
+    /// `RenderCache` content-hash hit or a real re-render of the source.
+    /// Each block's size is already bounded by `limits.source_bytes_per_block`
+    /// (enforced by the splitter before `render_and_place` ever sees it), so
+    /// this stays bounded the same way the render cache's inputs already are.
+    block_sources: Vec<Block>,
 }
 
 pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
@@ -139,7 +165,8 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         Some((terminal, (cell.width, cell.height))),
         scaled.image_pixels,
     )
-    .with_retained_pngs();
+    .with_retained_pngs()
+    .with_retained_window_blocks(limits.retained_window_blocks);
 
     let mut viewer = Viewer {
         stream,
@@ -154,6 +181,7 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         sink,
         blocks_placed: 0,
         cell,
+        block_sources: Vec::new(),
     };
     let _ = viewer.stream.set_nonblocking(true);
     eprintln!("agent-viewer: connected; q/Ctrl-C closes");
@@ -321,17 +349,89 @@ fn block_heights(viewer: &Viewer) -> Vec<u32> {
 }
 
 /// Syncs the terminal to the viewport's current visible-block range
-/// (AT-3-503): deletes placements that left the window and re-emits the
-/// window's current blocks from cache, without touching anything outside
-/// it. An empty visible range (no blocks, or the window scrolled past all
-/// content) is passed through so a previously non-empty window gets its
-/// placements deleted too, rather than left stale on screen.
+/// (AT-3-503): restores any evicted PNGs the new window now covers
+/// (AT-3-504's scroll-back path), then deletes placements that left the
+/// window and re-emits the window's current blocks from cache, without
+/// touching anything outside it. An empty visible range (no blocks, or the
+/// window scrolled past all content) is passed through so a previously
+/// non-empty window gets its placements deleted too, rather than left stale
+/// on screen.
 fn sync_visible_window(viewer: &mut Viewer) -> Result<(), String> {
     let visible = viewer.viewport.visible_blocks();
+    let range = visible.first..visible.last_exclusive;
+    restore_missing_pngs(viewer, range.clone());
     viewer
         .sink
-        .sync_window(visible.first..visible.last_exclusive)
+        .sync_window(range)
         .map_err(|error| format!("sync_failed ({:?})", error.safe_record().code))
+}
+
+/// AT-3-504's scroll-back restore: for every block in `range` whose retained
+/// PNG `TerminalSink` evicted (out of budget, then scrolled back into view),
+/// re-renders it via [`restore_png_for_id`] and pushes the result back into
+/// the sink. Fails closed per block: a render or refresh failure for one
+/// block leaves it showing nothing (its retained PNG stays empty, so
+/// `sync_window` simply skips re-emitting it — it does not fail the whole
+/// sync or disturb any other placement) and is logged; the viewer keeps
+/// running.
+fn restore_missing_pngs(viewer: &mut Viewer, range: std::ops::Range<usize>) {
+    let missing_ids = viewer.sink.missing_pngs(range);
+    for id in missing_ids {
+        let Some(png) = restore_png_for_id(viewer, id) else {
+            continue;
+        };
+        if let Err(error) = viewer.sink.refresh_png(id, png) {
+            eprintln!(
+                "agent-viewer: restore_failed ({:?}) id={id}",
+                error.safe_record().code
+            );
+        }
+    }
+}
+
+/// Re-renders block `id`'s PNG from `viewer.block_sources` — first via
+/// `RenderCache` (a content-hash hit means the block's pixels are still
+/// cached from when it was first placed or from an identical block
+/// elsewhere in the document, so no render work happens), falling back to a
+/// real render of the block's source. Returns `None` (and logs) on any
+/// failure: an id no longer in the planner, a missing source, a render
+/// error, or an encode error. Kept independent of `viewer.sink` so the
+/// restore logic itself — the part that actually decides what bytes come
+/// back for a given id — is testable without a live terminal.
+fn restore_png_for_id(viewer: &mut Viewer, id: u64) -> Option<Vec<u8>> {
+    let index = viewer
+        .planner
+        .blocks()
+        .iter()
+        .position(|block| block.id == id)?;
+    let Some(source) = viewer.block_sources.get(index) else {
+        eprintln!("agent-viewer: restore_failed (missing_source) id={id}");
+        return None;
+    };
+    let rendered = match viewer.cache.render(source, &viewer.options) {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            eprintln!(
+                "agent-viewer: restore_failed ({:?}) id={id}",
+                error.safe_record().code
+            );
+            return None;
+        }
+    };
+    let scaled_image_pixels = viewer
+        .limits
+        .scaled(viewer.options.device_pixel_ratio)
+        .image_pixels;
+    match crate::native_render::canonical_block_png(&rendered, scaled_image_pixels) {
+        Ok(png) => Some(png),
+        Err(error) => {
+            eprintln!(
+                "agent-viewer: restore_failed ({:?}) id={id}",
+                error.safe_record().code
+            );
+            None
+        }
+    }
 }
 
 /// Splits the received document into blocks, plans per-block placement
@@ -393,6 +493,10 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         return Ok(());
     }
     viewer.sink.set_suppress_writes(false);
+    // Keep the source text in step with `planner.blocks()` (same order and
+    // length) so a later scroll-back restore can re-render any block whose
+    // retained PNG was evicted. See the `block_sources` field doc.
+    viewer.block_sources = revision.blocks;
 
     // Feed the new block heights into the viewport: while follow is engaged
     // the window re-pins to the bottom, matching what `apply_revision` just
@@ -402,6 +506,19 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     // window — `sync_visible_window` reconciles it against the (possibly
     // now-different) window contents using only cached PNGs.
     viewer.viewport.set_block_heights(block_heights(viewer));
+    // AT-3-504: evict retained PNGs outside the window ± budget on every
+    // append, regardless of follow state. While following, `sync_window` is
+    // never called (`apply_revision` streams straight to the pane bottom,
+    // and the viewport window is always the tail), so this is the only
+    // place a mainline follow session ever trims history — without it, a
+    // long streamed session would retain every block's PNG forever. The
+    // disengaged path below also evicts inside `sync_window`; running both
+    // is idempotent (eviction only ever empties an already-out-of-window
+    // PNG), so no branching is needed here.
+    let visible = viewer.viewport.visible_blocks();
+    viewer
+        .sink
+        .evict_outside_window(visible.first..visible.last_exclusive);
     if !viewer.viewport.following() {
         if let Err(error) = sync_visible_window(viewer) {
             eprintln!("agent-viewer: {error}");
@@ -482,6 +599,44 @@ mod tests {
         );
     }
 
+    /// AT-3-504's wiring, exercised through the real `render_and_place` call
+    /// pattern rather than `evict_pngs_outside_budget` directly: with follow
+    /// engaged the whole time (the mainline streamed session — `sync_window`
+    /// is never reached on this path), appending many blocks one at a time
+    /// must not fail or panic, `planner`/`block_sources` must keep the full
+    /// history (eviction only drops PNG bytes, never block state), and
+    /// follow must stay pinned to the tail throughout. `Summary` mode (no
+    /// terminal) makes the actual PNG eviction unobservable here — that is
+    /// covered by `native_stream`'s pure-function test — but this confirms
+    /// `render_and_place`'s unconditional `evict_outside_window` call does
+    /// not disturb anything else over a long append sequence.
+    #[test]
+    fn many_appends_with_follow_engaged_evict_without_disturbing_state() {
+        let mut viewer = test_viewer(2);
+        let mut text = String::new();
+        for line in 0..200 {
+            text.push_str(&format!("Block {line}.\n\n"));
+            render_and_place(&mut viewer, &text).unwrap();
+        }
+
+        assert!(viewer.viewport.following(), "follow was never disengaged");
+        assert_eq!(
+            viewer.planner.blocks().len(),
+            200,
+            "the full block history is kept even though eviction ran on every append"
+        );
+        assert_eq!(
+            viewer.block_sources.len(),
+            200,
+            "block sources stay in step with the planner's block list"
+        );
+        assert_eq!(
+            viewer.viewport.offset(),
+            viewer.viewport.max_offset(),
+            "follow keeps the window pinned to the tail across the whole sequence"
+        );
+    }
+
     /// AT-3-502: this test replaces the pre-T3-302 behavior where
     /// `render_and_place` unconditionally re-engaged follow after every
     /// document. Once a manual scroll has disengaged follow, an appended
@@ -558,6 +713,71 @@ mod tests {
         );
     }
 
+    /// AT-3-504: `restore_png_for_id` re-renders a placed block's PNG from
+    /// `block_sources` via the `RenderCache` (a cache hit here, since the
+    /// block was already rendered once by the `render_and_place` call
+    /// above) and returns bytes that decode to a valid, non-empty PNG.
+    #[test]
+    fn restore_png_for_id_re_renders_a_known_block_from_cache() {
+        let mut viewer = test_viewer(24);
+        render_and_place(&mut viewer, "One.\n\nTwo.\n\n").unwrap();
+        let id = viewer.planner.blocks()[0].id;
+        let hits_before = viewer.cache.stats().hits;
+
+        let png = restore_png_for_id(&mut viewer, id).expect("restore succeeds for a known id");
+        assert!(!png.is_empty(), "restored bytes are a real PNG");
+        assert!(
+            viewer.cache.stats().hits > hits_before,
+            "the block was already rendered once, so this restore is a cache hit"
+        );
+    }
+
+    /// An id that is not (or no longer) in the planner's block list fails
+    /// closed: `restore_png_for_id` returns `None` rather than panicking or
+    /// fabricating bytes.
+    #[test]
+    fn restore_png_for_id_returns_none_for_an_unknown_id() {
+        let mut viewer = test_viewer(24);
+        render_and_place(&mut viewer, "One.\n\n").unwrap();
+        assert!(restore_png_for_id(&mut viewer, 999_999).is_none());
+    }
+
+    /// AT-3-504's render-fallback path: with a cache too small to hold both
+    /// blocks, the second block's render evicts the first from
+    /// `RenderCache`, so restoring the first block's id is a genuine
+    /// re-render (a cache miss), not a hit — and it still produces valid
+    /// bytes identical to the original render, from `block_sources` alone.
+    #[test]
+    fn restore_png_for_id_falls_back_to_a_real_rerender_on_a_cache_miss() {
+        let mut viewer = test_viewer_with_cache_capacity(24, 1);
+        render_and_place(&mut viewer, "One.\n\nTwo different enough to evict.\n\n").unwrap();
+        let stats_after_render = viewer.cache.stats();
+        assert_eq!(
+            stats_after_render.entries, 1,
+            "the 1-entry cache evicted the first block's render already"
+        );
+
+        let first_id = viewer.planner.blocks()[0].id;
+        let misses_before = viewer.cache.stats().misses;
+        let png = restore_png_for_id(&mut viewer, first_id)
+            .expect("restore succeeds via a real re-render");
+        assert!(!png.is_empty());
+        assert!(
+            viewer.cache.stats().misses > misses_before,
+            "the first block's render was evicted, so restoring it is a cache miss \
+             (a real re-render from block_sources), not a hit"
+        );
+    }
+
+    fn test_viewer_with_cache_capacity(pane_rows: u32, max_entries: usize) -> Viewer {
+        let mut viewer = test_viewer(pane_rows);
+        viewer.cache = RenderCache::new(CacheBudget {
+            max_entries,
+            max_pixels: u64::MAX,
+        });
+        viewer
+    }
+
     fn test_viewer(pane_rows: u32) -> Viewer {
         let limits = Limits::default();
         let options = RenderOptions::default();
@@ -580,6 +800,7 @@ mod tests {
                 width: 1,
                 height: 1,
             },
+            block_sources: Vec::new(),
         }
     }
 

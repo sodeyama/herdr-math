@@ -12,6 +12,15 @@ pub struct Limits {
     pub image_height_px: u32,
     pub image_pixels: u64,
     pub raw_png_bytes: u64,
+    /// The agent-viewer's bound on how many blocks' PNG bytes stay retained
+    /// (D7's "cached blocks"): blocks whose distance from the current
+    /// visibility window exceeds this budget on either side have their
+    /// retained PNG evicted and are re-rendered on scroll-back (AT-3-504).
+    /// A plain byte count, not pixel-scaled — retention is about how many
+    /// answer blocks a session keeps in memory at once, not image
+    /// resolution. Unused by stream/watch sessions, which never retain PNGs
+    /// at all (see `TerminalSink::retain_pngs`).
+    pub retained_window_blocks: u64,
 }
 
 impl Default for Limits {
@@ -24,6 +33,7 @@ impl Default for Limits {
             image_height_px: 16_384,
             image_pixels: 33_554_432,
             raw_png_bytes: 512 * 1024,
+            retained_window_blocks: 200,
         }
     }
 }
@@ -280,6 +290,7 @@ mod tests {
         assert_eq!(limits.image_height_px, 16_384);
         assert_eq!(limits.image_pixels, 33_554_432);
         assert_eq!(limits.raw_png_bytes, 512 * 1024);
+        assert_eq!(limits.retained_window_blocks, 200);
     }
 
     #[test]
