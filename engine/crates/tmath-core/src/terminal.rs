@@ -247,13 +247,24 @@ pub struct StdioTty {
 
 impl StdioTty {
     /// Creates terminal I/O for a process whose stdin is carrying document
-    /// bytes. Probe replies and input are read from `/dev/tty`, while terminal
-    /// output continues to use stdout.
+    /// bytes. Probe replies and input are read from a cloned stdout descriptor
+    /// when stdout is a terminal — on macOS a freshly opened `/dev/tty`
+    /// signals reply readiness as `POLLPRI`, which the `POLLIN` poll would
+    /// miss, while the original pty descriptor reports `POLLIN` — and only
+    /// falls back to `/dev/tty` when stdout is not a terminal.
     ///
-    /// The control descriptor is intentionally read-only: the [`Tty`] writer
-    /// always targets stdout, and the descriptor exists only for replies,
-    /// input, termios, and window-size queries.
+    /// The control descriptor is used exclusively for replies, input, termios,
+    /// and window-size queries; the [`Tty`] writer always targets stdout.
     pub fn from_control_terminal() -> io::Result<Self> {
+        if io::stdout().is_terminal() {
+            let stdout = io::stdout();
+            if let Ok(owned) = stdout.as_fd().try_clone_to_owned() {
+                return Ok(Self {
+                    saved: None,
+                    ctrl: Some(File::from(owned)),
+                });
+            }
+        }
         let ctrl = std::fs::OpenOptions::new().read(true).open("/dev/tty")?;
         Ok(Self {
             saved: None,
