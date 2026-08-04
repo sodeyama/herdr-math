@@ -497,8 +497,17 @@ pub const MAX_PLACEHOLDER_CELLS: u32 = ROW_COLUMN_DIACRITICS.len() as u32;
 pub fn placeholder_grid(image_id: u32, cols: u32, rows: u32) -> Vec<u8> {
     let cols = cols.min(MAX_PLACEHOLDER_CELLS);
     let rows = rows.min(MAX_PLACEHOLDER_CELLS);
-    let (r, g, b) = (image_id >> 16 & 0xff, image_id >> 8 & 0xff, image_id & 0xff);
-    let mut out = format!("\x1b[38;2;{r};{g};{b}m");
+    // Ids up to 255 use the 256-indexed foreground form: terminal relays that
+    // re-render cells (observed with a session daemon between tmux and the
+    // outer terminal) can drop 24-bit foreground colors, which destroys the
+    // id association and leaves placeholder cells blank. The indexed form
+    // survives those relays and is equally valid per the Kitty spec.
+    let mut out = if image_id <= 0xff {
+        format!("\x1b[38;5;{image_id}m")
+    } else {
+        let (r, g, b) = (image_id >> 16 & 0xff, image_id >> 8 & 0xff, image_id & 0xff);
+        format!("\x1b[38;2;{r};{g};{b}m")
+    };
     for row in 0..rows {
         out.push_str(&format!("\x1b[{};1H", row + 1));
         for col in 0..cols {
@@ -642,6 +651,13 @@ mod tests {
     #[test]
     fn delete_is_deferred_to_a_later_delete_everything() {
         assert_eq!(kitty_delete(5), b"\x1b_Ga=d,d=A,q=2\x1b\\");
+    }
+
+    #[test]
+    fn placeholder_grid_uses_indexed_foreground_for_small_ids() {
+        let out = String::from_utf8(placeholder_grid(7, 1, 1)).unwrap();
+        assert!(out.starts_with("\x1b[38;5;7m"));
+        assert!(out.ends_with("\x1b[39m"));
     }
 
     #[test]

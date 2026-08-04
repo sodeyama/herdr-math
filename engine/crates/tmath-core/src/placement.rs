@@ -397,8 +397,17 @@ pub fn emit_remove_block(image_id: u32) -> Vec<TerminalOp> {
 fn placeholder_grid_at_cursor(image_id: u32, cols: u32, rows: u32) -> Vec<u8> {
     let cols = cols.min(MAX_PLACEHOLDER_CELLS) as usize;
     let rows = rows.min(MAX_PLACEHOLDER_CELLS) as usize;
-    let (r, g, b) = (image_id >> 16 & 0xff, image_id >> 8 & 0xff, image_id & 0xff);
-    let mut out = format!("\x1b[38;2;{r};{g};{b}m").into_bytes();
+    // Ids up to 255 use the 256-indexed foreground form: terminal relays that
+    // re-render cells (observed with a session daemon between tmux and the
+    // outer terminal) can drop 24-bit foreground colors, which destroys the
+    // id association and leaves placeholder cells blank. The indexed form is
+    // equally valid per the Kitty spec and survives those relays.
+    let mut out = if image_id <= 0xff {
+        format!("\x1b[38;5;{image_id}m").into_bytes()
+    } else {
+        let (r, g, b) = (image_id >> 16 & 0xff, image_id >> 8 & 0xff, image_id & 0xff);
+        format!("\x1b[38;2;{r};{g};{b}m").into_bytes()
+    };
     for row in 0..rows {
         let row_di = kitty::ROW_COLUMN_DIACRITICS[row];
         for col in 0..cols {
@@ -537,7 +546,7 @@ mod tests {
         assert!(text.starts_with("\x1b[3;1H"), "home row move first");
         assert!(text.contains("i=7,U=1,c=1,r=1,q=2"));
         assert!(
-            text.contains("\x1b[38;2;0;0;7m"),
+            text.contains("\x1b[38;5;7m"),
             "image id encoded as color"
         );
         assert!(text.ends_with("\x1b[39m"), "color reset at the end");
@@ -573,7 +582,7 @@ mod tests {
             "virtual placement keys"
         );
         assert!(
-            text.contains("\x1b[38;2;0;0;9m"),
+            text.contains("\x1b[38;5;9m"),
             "image id encoded as color"
         );
         assert!(text.ends_with("\x1b[39m"), "color reset at the end");
@@ -625,7 +634,7 @@ mod tests {
         assert!(text.contains("\x1b\x1b_G"));
         assert!(text.contains("\x1b\x1b\\\x1b\\"));
         assert!(
-            text.contains("\x1b[38;2;0;0;9m"),
+            text.contains("\x1b[38;5;9m"),
             "placeholder color remains normal tmux output"
         );
         assert_eq!(
