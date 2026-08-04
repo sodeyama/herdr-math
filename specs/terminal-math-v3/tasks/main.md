@@ -42,8 +42,10 @@
       (no string-concatenated markup); syntect code blocks; inert links/images.
       (AT-3-101 groundwork + AT-3-701 injection corpus; commit `13f31f5`;
       60 crate tests green)
-- [ ] **T3-104** Math rendering: RaTeX display + inline embedding; per-formula
-      fail-closed error badges. (AT-3-103, AT-3-104)
+- [x] **T3-104** Math rendering: RaTeX display + inline embedding; per-formula
+      fail-closed error badges. (AT-3-103/104 covered at crate level; commit
+      `4e0f94f`; 66 crate tests green; supervisor visual smoke on a mixed
+      document confirmed badge, DisplayMath promotion, inline baselines)
 - [ ] **T3-105** Per-block limits and deadlines (D7); determinism.
       (AT-3-202, AT-3-203, AT-3-205)
 - [ ] **T3-106** Wire `tmath render --engine native` (default remains node);
