@@ -60,8 +60,9 @@
 
 ## Phase 2 — Incremental pipeline
 
-- [ ] **T3-201** Streaming block splitter (chunk-safe, UTF-8-safe, unterminated
-      constructs as literal). (AT-3-401, AT-3-404)
+- [x] **T3-201** Streaming block splitter (chunk-safe, UTF-8-safe, unterminated
+      constructs as literal). (AT-3-401/404 covered at crate level; commit
+      `a83734d`; 88 crate tests green)
 - [ ] **T3-202** Render cache: content hashing, bounded LRU, eviction.
       (AT-3-304, AT-3-305)
 - [ ] **T3-203** Placement planner: prefix reuse, append, tail replace, interior
