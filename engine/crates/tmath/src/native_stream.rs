@@ -488,6 +488,23 @@ impl TerminalSink {
         prepared: &[PreparedBlock],
         previous: &[tmath_render::PlannedBlock],
     ) -> Result<(), RenderError> {
+        // A divergence anywhere but the tail — any Replace or Remove — needs
+        // the batch rewrite below in viewer mode: per-op cursor arithmetic
+        // (`replace`'s `top_is_reachable`, `remove`'s bare Kitty delete with
+        // no row clear) is only sound when a revision only ever touches the
+        // last on-screen block, which is what plain stream/watch sessions
+        // guarantee (see `stream_shaped_revisions_never_produce_an_interior_replace_or_remove`)
+        // but the agent-viewer's whole-document `Reset`/shrink revisions do
+        // not. Retained PNGs (`retain_pngs`) are required to redraw the Keep
+        // prefix without re-rendering, so the batch path only applies when
+        // they are available; plain stream/watch sessions (no retained
+        // PNGs) keep the per-op path unconditionally — see the doc comment
+        // on `divergence_rewrite_operations` for why that path is safe for
+        // them regardless of this branch.
+        if self.retain_pngs && plan_has_interior_divergence(plan) {
+            return self.emit_batch(plan, prepared, previous);
+        }
+
         for (index, operation) in plan.ops.iter().enumerate() {
             match operation {
                 PlanOp::Keep { .. } => {}
@@ -511,6 +528,44 @@ impl TerminalSink {
                 }
                 PlanOp::Remove { id } => self.remove(*id)?,
             }
+        }
+        Ok(())
+    }
+
+    /// Batch rewrite for a revision whose plan diverges from the previous
+    /// layout somewhere other than a pure tail append (AT-3-506): rather
+    /// than replaying `Replace`/`Remove` ops one at a time against
+    /// potentially-stale per-op cursor state, this treats the whole
+    /// divergence as one unit — cursor up by the exact row span the stale
+    /// tail occupied, erase it, delete every stale Kitty image, and
+    /// re-place every block from the divergence point in document order.
+    /// This is the same "erase and redraw the affected span" shape as
+    /// `sync_window_operations`, just anchored at the plan's first
+    /// non-`Keep` index instead of a viewport window.
+    fn emit_batch(
+        &mut self,
+        plan: &Plan,
+        prepared: &[PreparedBlock],
+        previous: &[tmath_render::PlannedBlock],
+    ) -> Result<(), RenderError> {
+        let Some(reanchor_from) = plan.reanchor_from else {
+            return Ok(());
+        };
+        let (operations, new_tail) = divergence_rewrite_operations(
+            &self.placed,
+            previous,
+            plan,
+            prepared,
+            reanchor_from,
+            self.cell,
+            self.max_image_pixels,
+            self.retain_pngs,
+        )?;
+        self.write_unless_suppressed(&operations)?;
+        self.placed.truncate(reanchor_from.min(self.placed.len()));
+        self.placed.extend(new_tail);
+        if !plan.ops.is_empty() {
+            self.first_append_at_line_start = true;
         }
         Ok(())
     }
@@ -954,6 +1009,141 @@ fn evict_pngs_outside_budget(
     }
 }
 
+/// Whether `plan` contains a divergence anywhere but the tail — any
+/// `Replace` or `Remove` op, regardless of position (a plain streamed
+/// session's plans only ever end in one, per
+/// `stream_shaped_revisions_never_produce_an_interior_replace_or_remove`,
+/// but this predicate does not assume that; it is what `TerminalSink::emit`
+/// checks, alongside the caller's own `retain_pngs` gate, to decide whether
+/// the batch rewrite below applies). An empty plan (no ops at all) is
+/// `false`, same as a pure Keep+Append plan.
+fn plan_has_interior_divergence(plan: &Plan) -> bool {
+    plan.ops
+        .iter()
+        .any(|op| matches!(op, PlanOp::Replace { .. } | PlanOp::Remove { .. }))
+}
+
+/// Builds the operation list for a batch divergence-tail rewrite (AT-3-506):
+/// a revision whose plan diverges from the previous layout at
+/// `reanchor_from` and is not a pure tail append (it contains at least one
+/// `Replace`/`Remove`). Cursor-up by the exact row span the stale
+/// `reanchor_from..` tail occupied on screen (summed from `placed` by id,
+/// not by index — see below), erase it in one shot, delete every stale
+/// Kitty image in that span, then re-place every block from
+/// `reanchor_from` in the new plan's document order — `Keep` blocks from
+/// their retained PNG, `Append`/`Replace` blocks from their freshly
+/// rendered PNG. Pure and independent of any live terminal, the same shape
+/// as `tail_replace_operations`/`sync_window_operations`.
+///
+/// This exists because per-op replay (`replace`'s `top_is_reachable` cursor
+/// query plus `remove`'s bare Kitty-delete-with-no-row-clear) only stays
+/// correct when a revision touches nothing but the last on-screen block.
+/// The agent-viewer's whole-document sends can shrink the block count
+/// (e.g. a transcript `Reset` after a shorter new answer starts) and
+/// change interior blocks in the same revision, which breaks both of
+/// those per-op assumptions: `top_is_reachable` evaluates `was_last`
+/// against the *pre-plan* snapshot's length, not "does this revision still
+/// place anything after this block," and `remove` never clears the text
+/// cells its image used to cover. Rewriting the whole divergent span as
+/// one unit sidesteps both — there is no per-op cursor arithmetic against
+/// a screen state that may have already diverged from `placed`'s
+/// bookkeeping.
+///
+/// `placed` is looked up **by id**, not by trusting its index to line up
+/// with `previous`/`plan`, since the per-op `replace` path this batch path
+/// replaces pushes replaced entries to the end of `placed` rather than
+/// keeping them in position — an id-keyed lookup stays correct regardless
+/// of what order `placed` happens to hold entries in.
+///
+/// Returns the operations plus the new tail of `PlacedState` entries (in
+/// the new plan's document order) that the caller splices in at
+/// `reanchor_from` to replace the old tail.
+#[allow(clippy::too_many_arguments)]
+fn divergence_rewrite_operations(
+    placed: &[PlacedState],
+    previous: &[tmath_render::PlannedBlock],
+    plan: &Plan,
+    prepared: &[PreparedBlock],
+    reanchor_from: usize,
+    cell: CellSize,
+    max_image_pixels: u64,
+    retain: bool,
+) -> Result<(Vec<TerminalOp>, Vec<PlacedState>), RenderError> {
+    let stale_ids: Vec<u64> = previous[reanchor_from.min(previous.len())..]
+        .iter()
+        .map(|block| block.id)
+        .collect();
+    let old_rows_total: u32 = stale_ids
+        .iter()
+        .filter_map(|id| placed.iter().find(|entry| entry.id == *id))
+        .map(|entry| entry.rows)
+        .fold(0u32, |total, rows| total.saturating_add(rows));
+
+    let mut operations = Vec::new();
+    if old_rows_total > 0 {
+        operations.push(TerminalOp::Local(
+            format!("\x1b[{old_rows_total}A\r").into_bytes(),
+        ));
+    }
+    for id in &stale_ids {
+        let image_id = u32::try_from(*id).map_err(|_| stream_error())?;
+        operations.push(TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
+            image_id,
+        )));
+    }
+    if old_rows_total > 0 {
+        operations.push(TerminalOp::Local(clear_rows(old_rows_total)));
+    }
+
+    let mut new_tail = Vec::with_capacity(plan.ops.len().saturating_sub(reanchor_from));
+    for (index, operation) in plan.ops.iter().enumerate().skip(reanchor_from) {
+        match operation {
+            PlanOp::Keep { id } => {
+                let entry = placed
+                    .iter()
+                    .find(|entry| entry.id == *id)
+                    .ok_or_else(stream_error)?;
+                let (width, height, rgba) =
+                    decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
+                let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
+                let image_id = u32::try_from(*id).map_err(|_| stream_error())?;
+                operations.extend(append_operations(
+                    image_id, width, height, &rgba, cols, rows, true,
+                ));
+                new_tail.push(PlacedState {
+                    id: *id,
+                    rows,
+                    pixels: u64::from(width) * u64::from(height),
+                    png: entry.png.clone(),
+                });
+            }
+            PlanOp::Append { block } | PlanOp::Replace { block, .. } => {
+                let (rendered, png, _) = rendered_event(prepared, index)?;
+                let (width, height, rgba) =
+                    decode_png(png, max_image_pixels).map_err(|_| stream_error())?;
+                if width != rendered.width_px || height != rendered.height_px {
+                    return Err(stream_error());
+                }
+                let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
+                let image_id = u32::try_from(block.id).map_err(|_| stream_error())?;
+                operations.extend(append_operations(
+                    image_id, width, height, &rgba, cols, rows, true,
+                ));
+                new_tail.push(PlacedState {
+                    id: block.id,
+                    rows,
+                    pixels: u64::from(width) * u64::from(height),
+                    png: retained_png(png, retain),
+                });
+            }
+            PlanOp::Remove { .. } => {}
+        }
+    }
+    operations.push(TerminalOp::Local(b"\x1b[0J".to_vec()));
+
+    Ok((operations, new_tail))
+}
+
 /// Builds the operation list for a visibility-driven viewport sync
 /// (AT-3-503): deletes every id in `emitted_ids` that is not among the new
 /// `visible` range's ids, moves the cursor home, re-emits every block in
@@ -1137,6 +1327,50 @@ mod tests {
             }
         }
         assert!(direct_bytes(&emitted).is_empty());
+    }
+
+    #[test]
+    fn plan_has_interior_divergence_is_false_for_empty_and_keep_append_only_plans() {
+        assert!(!plan_has_interior_divergence(&Plan {
+            ops: Vec::new(),
+            reanchor_from: None,
+        }));
+        assert!(!plan_has_interior_divergence(&Plan {
+            ops: vec![
+                PlanOp::Keep { id: 1 },
+                PlanOp::Keep { id: 2 },
+                PlanOp::Append { block: planned(3) },
+            ],
+            reanchor_from: Some(2),
+        }));
+    }
+
+    #[test]
+    fn plan_has_interior_divergence_is_true_when_any_replace_or_remove_is_present() {
+        assert!(plan_has_interior_divergence(&Plan {
+            ops: vec![
+                PlanOp::Keep { id: 1 },
+                PlanOp::Replace {
+                    old_id: 2,
+                    block: planned(10),
+                },
+            ],
+            reanchor_from: Some(1),
+        }));
+        assert!(plan_has_interior_divergence(&Plan {
+            ops: vec![PlanOp::Keep { id: 1 }, PlanOp::Remove { id: 2 }],
+            reanchor_from: Some(1),
+        }));
+        // A Remove buried after Keep+Append still counts, matching that the
+        // predicate does not assume stream-shaped (last-op-only) plans.
+        assert!(plan_has_interior_divergence(&Plan {
+            ops: vec![
+                PlanOp::Keep { id: 1 },
+                PlanOp::Append { block: planned(2) },
+                PlanOp::Remove { id: 3 },
+            ],
+            reanchor_from: Some(1),
+        }));
     }
 
     /// AT-3-503: moving the window (e.g. scrolling one block further) deletes
@@ -1493,5 +1727,245 @@ mod tests {
             retained <= (budget + 1) as usize,
             "retained PNG count {retained} exceeds the budget-derived bound"
         );
+    }
+
+    // --- AT-3-506: batch divergence-tail rewrite ---
+
+    fn planned(id: u64) -> tmath_render::PlannedBlock {
+        tmath_render::PlannedBlock {
+            id,
+            hash: [0; 32],
+            width_px: 1,
+            height_px: 1,
+        }
+    }
+
+    fn rendered_1x1() -> RenderedBlock {
+        RenderedBlock {
+            png: Vec::new(),
+            width_px: 1,
+            height_px: 1,
+            formula_errors: Vec::new(),
+            duration_ms: 0,
+        }
+    }
+
+    fn prepared_1x1(png: Vec<u8>) -> PreparedBlock {
+        PreparedBlock {
+            rendered: Some(Arc::new(rendered_1x1())),
+            png: Some(png),
+            cache: Some(CacheOutcome::Miss),
+        }
+    }
+
+    /// Reproduces the exact `blocks=9 -> blocks=2` shrink trace from the
+    /// live logs: 9 blocks placed (ids 1-9, one row each), then a revision
+    /// with 2 blocks where index 0 is unchanged (Keep id=1) and index 1's
+    /// content changed (Replace id=2 -> a new id). Old ids 3-9 are stale.
+    /// `reanchor_from` is 1 (the first non-Keep op).
+    #[test]
+    fn divergence_rewrite_clears_the_whole_stale_tail_and_replaces_in_document_order() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed: Vec<PlacedState> = (1..=9u64)
+            .map(|id| placed(id, 1, rgba8_png(1, 1)))
+            .collect();
+        let previous: Vec<tmath_render::PlannedBlock> = (1..=9u64).map(planned).collect();
+
+        let plan = Plan {
+            ops: vec![
+                PlanOp::Keep { id: 1 },
+                PlanOp::Replace {
+                    old_id: 2,
+                    block: tmath_render::PlannedBlock {
+                        id: 10,
+                        hash: [1; 32],
+                        width_px: 1,
+                        height_px: 1,
+                    },
+                },
+                PlanOp::Remove { id: 9 },
+                PlanOp::Remove { id: 8 },
+                PlanOp::Remove { id: 7 },
+                PlanOp::Remove { id: 6 },
+                PlanOp::Remove { id: 5 },
+                PlanOp::Remove { id: 4 },
+                PlanOp::Remove { id: 3 },
+            ],
+            reanchor_from: Some(1),
+        };
+        let prepared = vec![
+            PreparedBlock {
+                rendered: None,
+                png: None,
+                cache: None,
+            }, // index 0: Keep, never read by `emit`/`emit_batch`
+            prepared_1x1(rgba8_png(1, 1)),
+        ];
+
+        let (operations, new_tail) = divergence_rewrite_operations(
+            &placed,
+            &previous,
+            &plan,
+            &prepared,
+            1,
+            cell,
+            u64::MAX,
+            true,
+        )
+        .unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+
+        // Cursor-up by the sum of stale rows (ids 2..9 = 8 rows, one each),
+        // not just id=2's own row: this is what makes the fix different
+        // from `replace`'s single-block `top_is_reachable` arithmetic.
+        assert!(
+            text.starts_with("\x1b[8A\r"),
+            "cursor-up must cover every stale row from the divergence point, got: {text:?}"
+        );
+        // Every stale id (2-9) gets a Kitty delete — including ids 3-9 that
+        // `Remove` ops covered, which the old per-op `remove()` path also
+        // did, but here they're folded into the same batch as id=2's delete
+        // rather than left for separate, cursor-position-agnostic calls.
+        for id in 2..=9u32 {
+            assert!(
+                text.contains(&format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")),
+                "missing delete for stale id={id}: {text:?}"
+            );
+        }
+        // The whole stale span is erased as text cells too (FIX for
+        // `remove()`'s gap: a bare Kitty delete never clears the rows the
+        // image used to cover).
+        assert!(
+            text.contains("\x1b[2K"),
+            "stale rows must be cleared, not just have their images deleted"
+        );
+        // The new content (id=10, replacing id=2) is placed, in the same
+        // pass, after the clear.
+        assert!(text.contains("i=10,U=1,c=1,r=1,q=2"));
+        // Erase-below closes the rewrite so no remnant from the old
+        // (taller) tail can survive past the newly drawn content.
+        assert!(text.ends_with("\x1b[0J"));
+
+        // The new tail replaces the whole stale span with exactly one
+        // entry (id=10) in document order — ids 2-9 are gone from
+        // `placed`'s future state.
+        assert_eq!(new_tail.len(), 1);
+        assert_eq!(new_tail[0].id, 10);
+    }
+
+    /// A `Keep`-only entry inside the rewritten span is redrawn from its
+    /// retained PNG (not re-rendered), preserving its own row count.
+    #[test]
+    fn divergence_rewrite_redraws_a_kept_block_after_the_divergence_point_from_its_retained_png() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![
+            placed(1, 1, rgba8_png(1, 1)),
+            placed(2, 2, rgba8_png(1, 2)),
+            placed(3, 1, rgba8_png(1, 1)),
+        ];
+        let previous: Vec<tmath_render::PlannedBlock> = vec![planned(1), planned(2), planned(3)];
+        // Index 0 changes (Replace), index 1 (id=2) is unchanged (Keep) but
+        // sits AFTER the divergence point, index 2 (id=3) is removed.
+        let plan = Plan {
+            ops: vec![
+                PlanOp::Replace {
+                    old_id: 1,
+                    block: tmath_render::PlannedBlock {
+                        id: 11,
+                        hash: [2; 32],
+                        width_px: 1,
+                        height_px: 1,
+                    },
+                },
+                PlanOp::Keep { id: 2 },
+                PlanOp::Remove { id: 3 },
+            ],
+            reanchor_from: Some(0),
+        };
+        let prepared = vec![
+            prepared_1x1(rgba8_png(1, 1)),
+            PreparedBlock {
+                rendered: None,
+                png: None,
+                cache: None,
+            }, // index 1: Keep, never read
+        ];
+
+        let (operations, new_tail) = divergence_rewrite_operations(
+            &placed,
+            &previous,
+            &plan,
+            &prepared,
+            0,
+            cell,
+            u64::MAX,
+            true,
+        )
+        .unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+
+        // id=2's retained PNG is redrawn (2 rows), not skipped and not
+        // re-rendered from `prepared` (which has no entry for it).
+        assert!(text.contains("i=2,U=1,c=1,r=2,q=2"));
+        assert!(text.contains("i=11,U=1,c=1,r=1,q=2"));
+
+        // Document-order proof: `new_tail` is [11, 2], matching the plan's
+        // op order (Replace then Keep), NOT insertion/removal order the
+        // way the old per-op `replace()` left `placed` (it pushed replaced
+        // entries to the end, so a later `Keep` id could end up sorted
+        // ahead of a `Replace` id it logically follows). The caller splices
+        // this straight after `placed[..reanchor_from]` with no reordering,
+        // so `placed` stays index-aligned with `previous`/`plan` after a
+        // batch rewrite — unlike after a per-op `replace()`.
+        assert_eq!(new_tail.len(), 2);
+        assert_eq!(new_tail[0].id, 11);
+        assert_eq!(new_tail[1].id, 2);
+        assert_eq!(new_tail[1].rows, 2, "kept block's row count carries over");
+    }
+
+    /// `PlacementPlanner`-driven proof that a plain streamed session (only
+    /// ever appending or tail-editing the single newest block, the way
+    /// `native_stream::run`'s splitter feeds it) never produces an interior
+    /// `Replace`/`Remove` — i.e. `reanchor_from`, when present, always
+    /// points at the last op. This is the invariant that makes it safe for
+    /// stream mode (no retained PNGs, so no batch path available) to keep
+    /// the old per-op `replace`/`remove` path unconditionally: `top_is_reachable`
+    /// can only ever be evaluated for a truly-last block in that mode.
+    #[test]
+    fn stream_shaped_revisions_never_produce_an_interior_replace_or_remove() {
+        let mut planner = PlacementPlanner::new();
+        let mut blocks: Vec<([u8; 32], u32, u32)> = Vec::new();
+
+        // Simulates a streamed answer: blocks accumulate one at a time
+        // (append), and the last block's content grows/changes in place
+        // (tail edit) before the next block starts — never touching an
+        // earlier block once a new one has appended after it.
+        for step in 0..20u8 {
+            if step % 3 == 0 && !blocks.is_empty() {
+                // Tail edit: only the last block's hash changes.
+                let last = blocks.len() - 1;
+                blocks[last].0 = [step; 32];
+            } else {
+                blocks.push(([step; 32], 100, 20));
+            }
+            let plan = planner.plan(&blocks);
+            let last_index = plan.ops.len().saturating_sub(1);
+            for (index, op) in plan.ops.iter().enumerate() {
+                if matches!(op, PlanOp::Replace { .. } | PlanOp::Remove { .. }) {
+                    assert_eq!(
+                        index, last_index,
+                        "stream-shaped revision produced a non-last Replace/Remove at step {step}"
+                    );
+                }
+            }
+        }
     }
 }
