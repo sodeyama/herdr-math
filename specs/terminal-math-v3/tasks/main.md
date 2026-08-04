@@ -49,10 +49,14 @@
 - [x] **T3-105** Per-block limits and deadlines (D7); determinism.
       (AT-3-202/203/205 covered at crate level; commit `20bd570`; 72 crate
       tests green incl. marker-based no-leak audit and byte-determinism)
-- [ ] **T3-106** Wire `tmath render --engine native` (default remains node);
-      no-subprocess assertion. (AT-3-204)
-- [ ] **T3-107** Docs commit: amend `AGENTS.md` required-architecture section and
+- [x] **T3-106** Wire `tmath render --engine native` (default remains node);
+      no-subprocess assertion. (AT-3-204 PASS via hermetic empty-PATH tests
+      in both directions; commit `0ea63c4`; real-terminal visual check still
+      pending for AT-3-206)
+- [x] **T3-107** Docs commit: amend `AGENTS.md` required-architecture section and
       `docs/architecture.md` for the resident in-process engine.
+      (dual-engine migration state documented; native engine labeled opt-in
+      and experimental until AT-3-206)
 
 ## Phase 2 — Incremental pipeline
 
