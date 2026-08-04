@@ -30,6 +30,7 @@ mod agent_allowlist;
 mod agent_viewer;
 mod agent_watcher;
 mod native_render;
+mod native_stream;
 mod render;
 mod terminal_output;
 
@@ -186,6 +187,9 @@ pub(crate) const ASSUMED_CELL_WIDTH_PX: f64 = 8.0;
 
 fn render(args: &[String]) -> Result<i32, String> {
     let parsed = parse_render_args(args)?;
+    if parsed.engine == RenderEngine::Native && parsed.input == "-" && !io::stdin().is_terminal() {
+        return render_native_stream(&parsed);
+    }
     let source = read_document(&parsed.input)?;
 
     let connected = if io::stdout().is_terminal() {
@@ -197,6 +201,30 @@ fn render(args: &[String]) -> Result<i32, String> {
     match parsed.engine {
         RenderEngine::Node => render_with_node(&parsed, &source, connected),
         RenderEngine::Native => render_with_native(&parsed, &source, connected),
+    }
+}
+
+fn render_native_stream(parsed: &RenderArgs) -> Result<i32, String> {
+    let connected = if io::stdout().is_terminal() {
+        match StdioTty::from_control_terminal() {
+            Ok(tty) => Some(connect_terminal_with(tty)?),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    match native_stream::run(
+        parsed.content_width.unwrap_or(480),
+        parsed.font_size.unwrap_or(14),
+        connected,
+    ) {
+        Ok(()) => Ok(0),
+        Err(error) => {
+            let record = serde_json::to_string(error.safe_record())
+                .map_err(|_| "serialize native stream error".to_string())?;
+            eprintln!("{record}");
+            Ok(1)
+        }
     }
 }
 
@@ -298,8 +326,12 @@ pub(crate) fn device_scale_factor(cell: (u32, u32)) -> u32 {
 /// measures the cell size, before any rendering happens so the renderer can
 /// rasterize at the terminal's actual pixel density.
 fn connect_terminal() -> Result<(Terminal<StdioTty>, (u32, u32)), String> {
-    let mut terminal = Terminal::new(StdioTty::default(), 1)
-        .map_err(|error| format!("initialize terminal: {error}"))?;
+    connect_terminal_with(StdioTty::default())
+}
+
+fn connect_terminal_with(tty: StdioTty) -> Result<(Terminal<StdioTty>, (u32, u32)), String> {
+    let mut terminal =
+        Terminal::new(tty, 1).map_err(|error| format!("initialize terminal: {error}"))?;
     // Inside tmux, capability queries cannot round-trip through passthrough,
     // so graphics support is assumed. Enable the window's passthrough option
     // so the forwarded image reaches the outer terminal; everywhere else the

@@ -145,10 +145,18 @@ impl<T: Tty> Terminal<T> {
     /// terminal does not answer in time, so callers can fall back to a
     /// conservative default.
     pub fn cursor_column(&mut self) -> io::Result<Option<u32>> {
+        self.cursor_position()
+            .map(|report| report.map(|(_row, col)| col))
+    }
+
+    /// Queries the cursor's current row and column via `CSI 6n`.
+    ///
+    /// Streaming replacement uses the row to determine whether the previous
+    /// tail's placeholder rows are still reachable in the visible terminal.
+    pub fn cursor_position(&mut self) -> io::Result<Option<(u32, u32)>> {
         self.io.write_all(b"\x1b[6n")?;
         self.io.flush()?;
         self.read_report(Duration::from_millis(200), parse_cursor_position_report)
-            .map(|report| report.map(|(_row, col)| col))
     }
 
     /// Probes whether the terminal can display images. A `a=q` query with a
@@ -238,6 +246,21 @@ pub struct StdioTty {
 }
 
 impl StdioTty {
+    /// Creates terminal I/O for a process whose stdin is carrying document
+    /// bytes. Probe replies and input are read from `/dev/tty`, while terminal
+    /// output continues to use stdout.
+    ///
+    /// The control descriptor is intentionally read-only: the [`Tty`] writer
+    /// always targets stdout, and the descriptor exists only for replies,
+    /// input, termios, and window-size queries.
+    pub fn from_control_terminal() -> io::Result<Self> {
+        let ctrl = std::fs::OpenOptions::new().read(true).open("/dev/tty")?;
+        Ok(Self {
+            saved: None,
+            ctrl: Some(ctrl),
+        })
+    }
+
     /// Runs `f` against the control device: the opened `/dev/tty` when stdin
     /// is not a terminal, otherwise stdin.
     fn with_ctrl_fd<R>(&self, f: impl FnOnce(&rustix::fd::BorrowedFd<'_>) -> R) -> R {
@@ -259,12 +282,11 @@ impl Default for StdioTty {
     }
 }
 
-/// Opens a control device for probes and input when stdin is not a terminal.
+/// Opens a control device for legacy callers when stdin is not a terminal.
 ///
-/// stdout is preferred: it is the original terminal descriptor, which `poll(2)`
-/// reports as `POLLIN` when the emulator answers a query. A freshly opened
-/// `/dev/tty` descriptor reports the readiness as `POLLPRI` on macOS instead of
-/// `POLLIN`, which readiness checks would miss. `/dev/tty` remains a fallback.
+/// Stream mode uses [`StdioTty::from_control_terminal`] explicitly. Other
+/// callers retain the existing stdout-first behavior because some terminals
+/// report probe readiness on that cloned descriptor more reliably.
 fn open_control_terminal() -> Option<File> {
     if io::stdin().is_terminal() {
         return None;
@@ -307,9 +329,13 @@ impl Tty for StdioTty {
             tv_nsec: duration.subsec_nanos() as _,
         });
         self.with_ctrl_fd(|fd| {
-            let mut fds = [rustix::event::PollFd::new(fd, PollFlags::IN)];
+            // A read-only `/dev/tty` can report terminal replies as POLLPRI on
+            // macOS, while cloned stdin/stdout descriptors normally use
+            // POLLIN. Accept both without changing the bounded read path.
+            let readable = PollFlags::IN | PollFlags::PRI;
+            let mut fds = [rustix::event::PollFd::new(fd, readable)];
             let ready = rustix::event::poll(&mut fds, timeout.as_ref()).map_err(io::Error::from)?;
-            Ok(ready > 0 && fds[0].revents().contains(PollFlags::IN))
+            Ok(ready > 0 && fds[0].revents().intersects(readable))
         })
     }
 

@@ -5,7 +5,7 @@ use std::io::Cursor;
 use tmath_core::placement::decode_png;
 use tmath_render::{
     parse_blocks_limited, render_block, ErrorCode, Limits, RenderError, RenderOptions,
-    SafeErrorDetails, SafeErrorRecord, SafeLimitKind,
+    RenderedBlock, SafeErrorDetails, SafeErrorRecord, SafeLimitKind,
 };
 
 const BLOCK_GAP_PX: u32 = 8;
@@ -16,6 +16,23 @@ pub(crate) struct NativeRenderSuccess {
     pub width: u32,
     pub height: u32,
     pub formula_errors: usize,
+}
+
+/// Re-encodes a rendered block through the same RGBA PNG path used by the
+/// one-shot compositor. Stream event byte counts therefore describe the exact
+/// PNG a one-block one-shot native render would produce.
+pub(crate) fn canonical_block_png(
+    rendered: &RenderedBlock,
+    max_pixels: u64,
+) -> Result<Vec<u8>, RenderError> {
+    let (width, height, rgba) = decode_png(&rendered.png, max_pixels)
+        .map_err(|_| internal_error("native block PNG could not be decoded"))?;
+    if width != rendered.width_px || height != rendered.height_px {
+        return Err(internal_error(
+            "native block PNG dimensions did not match its metadata",
+        ));
+    }
+    encode_rgba(width, height, &rgba)
 }
 
 struct DecodedBlock {
