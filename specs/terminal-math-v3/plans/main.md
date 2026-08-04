@@ -2,7 +2,9 @@
 
 ## Status
 
-- Plan state: **Draft (design only; nothing implemented)**
+- Plan state: **Phase 0 complete — all three feasibility gates passed
+  (AT-3-001/002/003); decision recorded at T3-004: proceed with the
+  RaTeX + Typst native engine. Phase 1 not started.**
 - Target release: `0.3.0`
 - Last updated: August 4, 2026
 - Acceptance contract: `../tests/main.md`

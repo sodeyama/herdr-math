@@ -20,11 +20,15 @@
       (AT-3-002 PASS at spike level, ~9-12 ms p50 vs 300 ms budget; commit
       `a7ed163`; evidence `docs/evidence/2026-08-04-v3-cold-start-spike.md`;
       fs-trace variant deferred to Phase 1)
-- [ ] **T3-003** Build the golden corpus: V2 renderer corpus + coverage probe +
+- [x] **T3-003** Build the golden corpus: V2 renderer corpus + coverage probe +
       historically problematic formulas; render with V2 and native spike; record
-      accepted/rejected divergences. (AT-3-003)
-- [ ] **T3-004** Decision checkpoint: proceed with RaTeX+Typst, or revise the plan
+      accepted/rejected divergences. (AT-3-003 PASS, native 31/31, no rejected
+      divergence; commit `ddc9535`; evidence
+      `docs/evidence/2026-08-04-v3-golden-corpus-spike.md`)
+- [x] **T3-004** Decision checkpoint: proceed with RaTeX+Typst, or revise the plan
       to the MathJax+resvg fallback. Update `plans/main.md` status either way.
+      (Decision: **proceed with RaTeX + Typst**; recorded in the AT-3-003
+      evidence file and the plan status block)
 
 ## Phase 1 — Native render crate
 
