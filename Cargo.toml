@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["engine/crates/tmath-core", "engine/crates/tmath"]
+members = ["engine/crates/tmath-core", "engine/crates/tmath", "engine/crates/tmath-render"]
 
 [workspace.package]
 version = "0.2.0"
