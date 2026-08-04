@@ -155,14 +155,16 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         let _ = terminal.reset();
         return Err("this terminal reports no Kitty graphics support".into());
     }
-    let cell = terminal
+    // The terminal-reported cell size. Inside tmux this came from the
+    // winsize fallback (see below), which is not always physical pixels —
+    // `measured_cell` must not be used for anything downstream; the
+    // effective (possibly `TMATH_DPR`-corrected) physical cell computed
+    // below as `cell` is the only one placements, `grid_for`, and the
+    // viewport may use.
+    let measured_cell = terminal
         .cell_size()
         .map_err(|error| format!("measure cell size: {error}"))?
         .ok_or("terminal reported no usable cell size")?;
-    let cell = CellSize {
-        width: cell.0,
-        height: cell.1,
-    };
 
     // Auto-fit content width, font size, and device pixel ratio to this
     // pane's measured geometry so the rendered images match the viewer
@@ -171,7 +173,47 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
     let pane_size = terminal
         .size()
         .map_err(|error| format!("measure viewer pane size: {error}"))?;
-    let fitted = crate::layout::terminal_fit_layout(cell.width, cell.height, pane_size.cols);
+    // `tmux_passthrough` (computed above as `inside_tmux()`) is exactly the
+    // condition under which `Terminal::cell_size` took the winsize fallback
+    // (the `CSI 16t` pixel query is unusable inside tmux) — see the
+    // `TMATH_DPR` section of `layout`'s module doc for why that fallback can
+    // report logical rather than physical pixels and why an explicit
+    // override is needed to correct it.
+    let tmath_dpr_env = std::env::var("TMATH_DPR").ok();
+    let dpr_override =
+        crate::layout::resolve_dpr_override(tmath_dpr_env.as_deref(), tmux_passthrough);
+    if tmux_passthrough && tmath_dpr_env.is_some() && dpr_override.is_none() {
+        // Never log the raw value: it is a stable, small piece of config,
+        // but keeping the log purely event-shaped (per AGENTS.md) avoids any
+        // habit of echoing user-controlled strings here.
+        eprintln!("agent-viewer: TMATH_DPR invalid, ignoring");
+    }
+    let fitted = crate::layout::terminal_fit_layout(
+        measured_cell.0,
+        measured_cell.1,
+        pane_size.cols,
+        dpr_override,
+    );
+    // `fitted.effective_cell_px` is the physical cell the fit actually used
+    // (measured × dpr_override when one applied, unchanged otherwise) — see
+    // the FIX note on `TerminalFitLayout::effective_cell_px`. Every
+    // downstream consumer (the sink's placement grid, `viewer.cell`,
+    // `block_heights`/`grid_for`, the viewport) uses this `cell`, never
+    // `measured_cell`, so a corrected dpr and the cell it was derived from
+    // never disagree.
+    let cell = CellSize {
+        width: fitted.effective_cell_px.0,
+        height: fitted.effective_cell_px.1,
+    };
+    eprintln!(
+        "agent-viewer: fitted cell_w_px={} cell_h_px={} dpr={} dpr_override={} content_width_pt={:.1} pane_cols={}",
+        cell.width,
+        cell.height,
+        fitted.device_pixel_ratio,
+        dpr_override.is_some(),
+        fitted.content_width_pt,
+        pane_size.cols
+    );
     let options = RenderOptions::new(
         fitted.content_width_pt,
         fitted.font_size_pt,
@@ -688,6 +730,76 @@ mod tests {
             viewer.viewport.offset(),
             viewer.viewport.max_offset(),
             "follow keeps the window pinned to the tail across the whole sequence"
+        );
+    }
+
+    /// FIX (TMATH_DPR hotfix): `block_heights` (and therefore the viewport's
+    /// row math) must use `viewer.cell` as the *physical* cell the image was
+    /// actually rasterized at — never the raw measured logical cell a
+    /// `TMATH_DPR` override was meant to correct. This is exactly the bug
+    /// the fix closes: leaving `viewer.cell` at the stale logical cell after
+    /// applying a dpr override makes `grid_for` divide by a cell half the
+    /// real size, doubling every computed row (and column) count. Simulates
+    /// the effect directly (constructing `run_agent_viewer`'s real terminal
+    /// path is not hermetically testable) by building two otherwise
+    /// identical viewers that differ only in `cell`, matching the
+    /// pre-fix (logical) and post-fix (physical, `layout::terminal_fit_
+    /// layout`'s `effective_cell_px`) values for the 7x15-logical /
+    /// dpr-2-override case from `layout`'s own test.
+    #[test]
+    fn block_heights_uses_the_effective_physical_cell_not_the_logical_one() {
+        // Small enough, relative to a rendered block's real pixel height, to
+        // guarantee `div_ceil` actually produces different row counts for
+        // the physical vs. logical cell rather than both rounding up to 1.
+        let physical_cell = CellSize {
+            width: 2,
+            height: 4,
+        };
+        let logical_cell = CellSize {
+            width: 1,
+            height: 2,
+        };
+
+        let mut correct = test_viewer(24);
+        correct.cell = physical_cell;
+        render_and_place(&mut correct, "One block of prose here.\n\n").unwrap();
+        let correct_heights = block_heights(&correct);
+
+        let mut buggy = test_viewer(24);
+        buggy.cell = logical_cell;
+        render_and_place(&mut buggy, "One block of prose here.\n\n").unwrap();
+        let buggy_heights = block_heights(&buggy);
+
+        assert_eq!(correct_heights.len(), 1);
+        assert_eq!(buggy_heights.len(), 1);
+        // Both viewers rendered the exact same block, so its raw pixel
+        // height is identical in both — `block_heights` must divide that
+        // shared pixel height by each viewer's own `cell.height`, so a cell
+        // half the size on the height axis must yield roughly double the
+        // row count. Cross-check against `grid_for` directly (the function
+        // `block_heights` is documented to delegate to) rather than
+        // asserting a hardcoded number, since the exact pixel height
+        // depends on the renderer.
+        let rendered_height_px = correct.planner.blocks()[0].height_px;
+        assert_eq!(rendered_height_px, buggy.planner.blocks()[0].height_px);
+        let expected_correct = tmath_core::placement::grid_for(
+            correct.planner.blocks()[0].width_px,
+            rendered_height_px,
+            physical_cell,
+        )
+        .1;
+        let expected_buggy = tmath_core::placement::grid_for(
+            buggy.planner.blocks()[0].width_px,
+            rendered_height_px,
+            logical_cell,
+        )
+        .1;
+        assert_eq!(correct_heights[0], expected_correct);
+        assert_eq!(buggy_heights[0], expected_buggy);
+        assert!(
+            buggy_heights[0] > correct_heights[0],
+            "a stale logical cell inflates the computed row count: \
+             correct={correct_heights:?} buggy={buggy_heights:?}"
         );
     }
 

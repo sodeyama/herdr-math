@@ -79,6 +79,7 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         &worker,
         &socket_path,
         env::var("TMATH_TMUX_TRANSPORT").ok().as_deref(),
+        env::var("TMATH_DPR").ok().as_deref(),
     );
     let viewer_pane = spawn_viewer_pane(&parsed, &source, &viewer_cmd)?;
     let route = crate::terminal_output::selected_route()?;
@@ -336,14 +337,25 @@ fn viewer_command(
     worker: &std::path::Path,
     socket: &std::path::Path,
     transport: Option<&str>,
+    dpr: Option<&str>,
 ) -> String {
     let transport = transport
         .map(|value| format!(" TMATH_TMUX_TRANSPORT={}", shell_quote(value)))
         .unwrap_or_default();
+    // tmux `split-window` starts the new pane with the *server's*
+    // environment, not the watcher process's — same reason
+    // `TMATH_TMUX_TRANSPORT` and `TMATH_RENDER_WORKER` are forwarded here
+    // explicitly rather than relying on inheritance. Without this, a
+    // `TMATH_DPR` set in the user's shell before running `tmath agent` would
+    // never reach the viewer pane that actually needs it.
+    let dpr = dpr
+        .map(|value| format!(" TMATH_DPR={}", shell_quote(value)))
+        .unwrap_or_default();
     format!(
-        "env TMATH_RENDER_WORKER={}{} {} {} {}",
+        "env TMATH_RENDER_WORKER={}{}{} {} {} {}",
         shell_quote(&worker.display().to_string()),
         transport,
+        dpr,
         shell_quote(&exe.display().to_string()),
         "agent-viewer",
         shell_quote(&socket.display().to_string())
@@ -570,6 +582,7 @@ mod tests {
             std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
+            None,
         );
         assert_eq!(
             cmd,
@@ -583,6 +596,7 @@ mod tests {
             std::path::Path::new("/opt/my tools/tmath"),
             std::path::Path::new("/opt/my site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath agent-1.sock"),
+            None,
             None,
         );
         assert!(
@@ -598,7 +612,50 @@ mod tests {
             std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
+            None,
         );
         assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
+    }
+
+    /// tmux `split-window` panes start with the server's environment, not
+    /// the watcher process's, so `TMATH_DPR` (like `TMATH_TMUX_TRANSPORT`
+    /// and `TMATH_RENDER_WORKER`) must be forwarded explicitly on the
+    /// spawn command line or the viewer pane never sees it.
+    #[test]
+    fn viewer_command_forwards_an_explicit_dpr_override() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/tools/tmath"),
+            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
+            std::path::Path::new("/tmp/tmath-agent-1.sock"),
+            None,
+            Some("2"),
+        );
+        assert!(cmd.contains("TMATH_DPR='2'"));
+    }
+
+    #[test]
+    fn viewer_command_forwards_both_transport_and_dpr_together() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/tools/tmath"),
+            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
+            std::path::Path::new("/tmp/tmath-agent-1.sock"),
+            Some("passthrough"),
+            Some("3"),
+        );
+        assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
+        assert!(cmd.contains("TMATH_DPR='3'"));
+    }
+
+    #[test]
+    fn viewer_command_with_neither_override_omits_both_variables() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/tools/tmath"),
+            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
+            std::path::Path::new("/tmp/tmath-agent-1.sock"),
+            None,
+            None,
+        );
+        assert!(!cmd.contains("TMATH_TMUX_TRANSPORT"));
+        assert!(!cmd.contains("TMATH_DPR"));
     }
 }

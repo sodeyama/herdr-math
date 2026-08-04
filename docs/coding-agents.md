@@ -100,6 +100,20 @@ General guidance:
   `TMATH_TMUX_TRANSPORT=passthrough` to use individually wrapped, ESC-doubled
   DCS commands instead. Outside tmux, `tmath render` probes normally and fails
   closed when Kitty is missing.
+- **Blurry math on a Retina display, inside tmux**: also because queries
+  cannot round-trip inside tmux, the viewer falls back to the terminal's
+  reported window size to estimate the pixel density (device pixel ratio).
+  On some terminal/tmux combinations that fallback itself reports logical
+  pixels rather than physical ones, so the viewer under-estimates the ratio
+  and the terminal upscales the rendered image, producing soft, crushed
+  glyphs. If math looks blurry only inside a tmux-hosted `tmath agent-viewer`
+  pane (not in a directly-run `tmath render`), set `TMATH_DPR` to your
+  display's actual scale factor — `TMATH_DPR=2` for a standard Retina
+  display, `TMATH_DPR=3` for some higher-density laptop panels. `tmath agent`
+  forwards the variable to the viewer pane it spawns automatically, so
+  setting it once in the shell you run `tmath agent` from is enough. Values
+  outside `1`-`4`, or set outside tmux, are ignored and the automatic
+  estimate is used instead.
 - **Captured tool stdout**: a coding agent's shell tool may capture stdout, so
   an agent-launched `tmath render -` is not guaranteed to reach the visible
   terminal. The watcher + viewer pane is the standard agent workflow.
