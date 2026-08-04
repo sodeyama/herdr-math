@@ -1,55 +1,67 @@
 //! `tmath agent-viewer` — the process that runs inside the tmux viewer split.
 //!
-//! It connects to the watcher's Unix socket, renders each new answer document
-//! through the one-shot renderer, and places the result as a scrollback-anchored
-//! Kitty image in its own pane, replacing the previous image. `q`/`Ctrl-C`
-//! close the viewer; the scroll driver maps wheel/arrow input to a re-placed,
-//! vertically shifted image. Render failures leave the previous image intact.
+//! It connects to the watcher's Unix socket and renders each received answer
+//! document through the native V3 pipeline: [`tmath_render::parse_blocks_limited`]
+//! splits the document into semantic blocks, a [`tmath_render::RenderCache`]
+//! renders (or reuses) each block's PNG, and a [`tmath_render::PlacementPlanner`]
+//! diffs the new block list against the previous one to produce `Keep`/
+//! `Append`/`Replace`/`Remove` operations. Those operations are emitted as
+//! per-block Kitty placements through [`crate::native_stream`]'s shared
+//! `StreamSink`/`TerminalSink` machinery — the same emitter stream mode uses,
+//! reused rather than forked.
+//!
+//! There is no composite RGBA buffer: unchanged blocks are never re-rendered
+//! or re-transmitted, and a shorter replacement answer clears its stale
+//! placement instead of leaving orphan cells (`PlanOp::Remove`).
+//!
+//! Follow mode is the only viewport model implemented: new blocks always
+//! append below the last placement, in flowing order, so the pane scrolls
+//! naturally like stream mode. Backward scrolling relies on the pane's own
+//! scrollback (mouse wheel / arrows scroll the tmux pane or outer terminal)
+//! rather than a re-anchored visibility-window; see the `Viewer::follow`
+//! field doc comment for the rationale. `q`/`Ctrl-C` close the viewer.
+//! Render failures leave earlier placements intact (fail closed).
 
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use tmath_core::agent::{Decoder, Message};
 use tmath_core::input::InputDecoder;
-use tmath_core::ipc::{RenderOptions, RenderResponse, IPC_MAX_REQUEST_BYTES};
-use tmath_core::placement::{
-    decode_png, emit_placed_block, CellSize, PlacementLimits, PlacementTracker, TerminalOp,
-};
-use tmath_core::scroll_driver::{is_exit_signal, ScrollDriver};
+use tmath_core::placement::CellSize;
+use tmath_core::scroll_driver::is_exit_signal;
 use tmath_core::terminal::{StdioTty, Terminal};
+use tmath_render::{
+    CacheBudget, Limits, PlacementPlanner, RenderCache, RenderOptions, StreamSplitter,
+};
 
-use crate::render::{render_document_text, renderer_worker_path};
+use crate::native_stream::{self, StreamSink};
 
-const MAX_PIXELS: u64 = 64 * 1024 * 1024;
 const CONNECT_RETRIES: u32 = 50;
 const CONNECT_RETRY_MS: u64 = 100;
 const POLL_TIMEOUT: Duration = Duration::from_millis(40);
 
-/// The currently placed image, kept so a new document can replace it and the
-/// scroll driver can re-place it at a shifted home row.
-struct ImageState {
-    image_id: u32,
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
-    rows: u32,
-    base_home: u32,
-}
-
+/// Whether the viewport currently tracks the newest appended block. Any
+/// manual scroll input disengages follow; `End`/`F` re-engage it. Because
+/// blocks are placed in flowing order in the pane's own main-buffer
+/// scrollback (never cropped or re-anchored), "follow" and "not follow" do
+/// not change what gets transmitted on append — the distinction is
+/// user-visible only through the outer terminal's/tmux's own scroll
+/// position, which this process does not control. Tracking the flag here
+/// keeps the state machine explicit and testable, and is the seam a future
+/// visibility-window implementation (AT-3-503 in full) would extend.
 struct Viewer {
-    tracker: PlacementTracker,
-    cell: CellSize,
-    viewport_cols: u32,
-    viewport_rows: u32,
     stream: UnixStream,
-    current: Option<ImageState>,
-    scroll: ScrollDriver,
-    emitted_offset: i64,
     input: InputDecoder,
     messages: Decoder,
+    follow: bool,
+    cache: RenderCache,
+    limits: Limits,
+    planner: PlacementPlanner,
+    formula_errors: Vec<usize>,
+    options: RenderOptions,
+    sink: StreamSink,
+    blocks_placed: usize,
 }
 
 pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
@@ -58,7 +70,6 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         return Ok(0);
     }
     let socket = args.first().ok_or("agent-viewer requires a socket path")?;
-    let _ = renderer_worker_path()?;
 
     let stream = connect_with_retry(socket)?;
 
@@ -90,27 +101,55 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         width: cell.0,
         height: cell.1,
     };
-    let viewport = terminal
+
+    // Auto-fit content width, font size, and device pixel ratio to this
+    // pane's measured geometry so the rendered images match the viewer
+    // pane's width and the surrounding terminal text size (there is no CLI
+    // override for the viewer, which always runs against a real terminal).
+    let pane_cols = terminal
         .size()
-        .map_err(|error| format!("measure viewer size: {error}"))?;
+        .map_err(|error| format!("measure viewer pane size: {error}"))?
+        .cols;
+    let fitted = crate::layout::terminal_fit_layout(cell.width, cell.height, pane_cols);
+    let options = RenderOptions::new(
+        fitted.content_width_pt,
+        fitted.font_size_pt,
+        fitted.device_pixel_ratio,
+    )
+    .map_err(|_| "invalid agent-viewer render options".to_string())?;
+    let device_pixel_ratio = fitted.device_pixel_ratio;
+    let limits = Limits::default();
+    let scaled = limits.scaled(device_pixel_ratio);
+    let max_entries = usize::try_from(limits.blocks_per_document)
+        .unwrap_or(usize::MAX)
+        .max(1);
+    let cache = RenderCache::new(CacheBudget {
+        max_entries,
+        max_pixels: scaled.image_pixels.max(1),
+    });
+    let sink = StreamSink::new(
+        Some((terminal, (cell.width, cell.height))),
+        scaled.image_pixels,
+    );
 
     let mut viewer = Viewer {
-        tracker: PlacementTracker::new(PlacementLimits::default()),
-        cell,
-        viewport_cols: viewport.cols.max(1),
-        viewport_rows: viewport.rows.max(1),
         stream,
-        current: None,
-        scroll: ScrollDriver::new(0.0),
-        emitted_offset: 0,
         input: InputDecoder::new(),
         messages: Decoder::new(),
+        follow: true,
+        cache,
+        limits,
+        planner: PlacementPlanner::new(),
+        formula_errors: Vec::new(),
+        options,
+        sink,
+        blocks_placed: 0,
     };
     let _ = viewer.stream.set_nonblocking(true);
     eprintln!("agent-viewer: connected; q/Ctrl-C closes");
 
     let loop_result = run_viewer_loop(&mut viewer);
-    let _ = terminal.reset();
+    let _ = viewer.sink.finish();
     loop_result
 }
 
@@ -159,7 +198,10 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
             }
         }
 
-        // Terminal input: `q`/Ctrl-C close the viewer; everything else scrolls.
+        // Terminal input: `q`/Ctrl-C close the viewer. Any scroll-shaped
+        // input disengages follow; `End`/`F` re-engage it. Actual scrolling
+        // is left to the pane's own scrollback (see the `Viewer::follow`
+        // doc comment).
         if stdin_readable() {
             let mut chunk = [0u8; 256];
             let mut stdin = io::stdin();
@@ -170,7 +212,7 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
                         if is_exit_signal(&event) {
                             return Ok(0);
                         }
-                        let _ = viewer.scroll.handle(&event, None);
+                        handle_follow_input(viewer, &event);
                     }
                 }
                 Ok(_) => {}
@@ -179,11 +221,6 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
             }
         }
 
-        // Advance the scroll easing and re-place the image when the offset
-        // moved from the last emitted home row.
-        let _ = viewer.scroll.step(0.02);
-        reemit_if_moved(viewer)?;
-
         let elapsed = start.elapsed();
         if elapsed < POLL_TIMEOUT {
             std::thread::sleep(POLL_TIMEOUT - elapsed);
@@ -191,9 +228,26 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
     }
 }
 
-fn scroll_offset(scroll: &ScrollDriver, rows: u32, viewport_rows: u32) -> i64 {
-    let max = rows.saturating_sub(viewport_rows.max(1)) as i64;
-    (scroll.position().round() as i64).clamp(0, max)
+fn handle_follow_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
+    use tmath_core::input::{Event, KeyEvent};
+    use tmath_core::mouse::Key;
+
+    match event {
+        Event::Key(KeyEvent {
+            key: Key::End,
+            ctrl: false,
+            ..
+        })
+        | Event::Key(KeyEvent {
+            key: Key::Char('F'),
+            ctrl: false,
+            ..
+        }) => viewer.follow = true,
+        other if tmath_core::scroll_driver::scroll_delta(other, None).is_some() => {
+            viewer.follow = false;
+        }
+        _ => {}
+    }
 }
 
 fn stream_readable(stream: &UnixStream) -> bool {
@@ -221,357 +275,63 @@ fn stdin_readable() -> bool {
         .unwrap_or(false)
 }
 
-/// Renders a document and replaces the previous image, keeping the previous
-/// image intact (fail closed) on any render or limit error.
+/// Splits the received document into blocks, plans per-block placement
+/// operations against the previous document's blocks, and emits only the
+/// operations the plan calls for (append/replace/remove); unchanged blocks
+/// are never re-rendered or re-transmitted. Render or limit failures leave
+/// the previously placed blocks intact (fail closed).
+///
+/// The watcher sends whole answers, not deltas, so a fresh [`StreamSplitter`]
+/// is used per document: its job is only to turn this one text into the
+/// current block list (with any unterminated fence/`$$` at the end handled
+/// the same way the stream and watch paths handle it). Placement identity
+/// across documents lives in `viewer.planner`, which persists across calls;
+/// that is what lets `apply_revision` recognize an unchanged prefix, a
+/// changed tail, or a shorter answer between two whole-document sends.
 fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
-    // #region agent log
-    debug_log(
-        "H1,H2,H3,H4,H5",
-        "agent_viewer.rs:render_and_place",
-        "viewer received document",
-        serde_json::json!({
-            "documentBytes": text.len(),
-            "hasCurrentImage": viewer.current.is_some(),
-            "viewportCols": viewer.viewport_cols,
-            "viewportRows": viewer.viewport_rows,
-            "cellWidth": viewer.cell.width,
-            "cellHeight": viewer.cell.height
-        }),
-    );
-    // #endregion
-    if text.len() > IPC_MAX_REQUEST_BYTES {
-        eprintln!("agent-viewer: renderer_input_limit");
+    let mut splitter = StreamSplitter::new(viewer.limits);
+    let revision = splitter
+        .push(text.as_bytes())
+        .and_then(|_| splitter.finish());
+    let revision = match revision {
+        Ok(revision) => revision,
+        Err(error) => {
+            eprintln!(
+                "agent-viewer: renderer_rejected ({:?})",
+                error.safe_record().code
+            );
+            return Ok(());
+        }
+    };
+
+    if let Err(error) = native_stream::apply_revision(
+        &revision,
+        &viewer.options,
+        &mut viewer.cache,
+        &mut viewer.planner,
+        &mut viewer.formula_errors,
+        &mut viewer.sink,
+    ) {
+        eprintln!(
+            "agent-viewer: render_failed ({:?})",
+            error.safe_record().code
+        );
         return Ok(());
     }
-    let scale = crate::device_scale_factor((viewer.cell.width, viewer.cell.height));
-    let mut layout = serde_json::Map::new();
-    layout.insert("deviceScaleFactor".into(), serde_json::json!(scale));
-    let options = Some(RenderOptions {
-        limits: None,
-        layout: Some(serde_json::Value::Object(layout)),
-    });
-    let response = match render_document_text(text, options) {
-        Ok(response) => response,
-        Err(message) => {
-            eprintln!("agent-viewer: render_failed ({message})");
-            return Ok(());
-        }
-    };
-    let success = match &response {
-        RenderResponse::Success(success) => success,
-        RenderResponse::Failure(failure) => {
-            // #region agent log
-            debug_log(
-                "H2",
-                "agent_viewer.rs:renderer_rejected",
-                "renderer rejected document",
-                serde_json::json!({
-                    "documentBytes": text.len(),
-                    "errorCode": failure.error.code,
-                    "retryable": failure.error.retryable
-                }),
-            );
-            // #endregion
-            eprintln!("agent-viewer: renderer_rejected");
-            return Ok(());
-        }
-    };
-    let png = match BASE64.decode(success.base64.as_bytes()) {
-        Ok(png) => png,
-        Err(_) => {
-            eprintln!("agent-viewer: render_invalid_base64");
-            return Ok(());
-        }
-    };
-    let (new_width, new_height, new_rgba) = match decode_png(&png, MAX_PIXELS) {
-        Ok(decoded) => decoded,
-        Err(error) => {
-            eprintln!("agent-viewer: invalid_image ({error})");
-            return Ok(());
-        }
-    };
-    let (width, height, rgba) = match viewer.current.as_ref() {
-        Some(previous) => match append_rgba(
-            previous,
-            new_width,
-            new_height,
-            &new_rgba,
-            viewer.cell.height,
-        ) {
-            Ok(composite) => {
-                // #region agent log
-                debug_log(
-                    "H14",
-                    "agent_viewer.rs:append_history",
-                    "appended answer to viewer history",
-                    serde_json::json!({
-                        "previousHeight": previous.height,
-                        "newAnswerHeight": new_height,
-                        "compositeWidth": composite.0,
-                        "compositeHeight": composite.1
-                    }),
-                );
-                // #endregion
-                composite
-            }
-            Err(error) => {
-                eprintln!("agent-viewer: history_limit ({error})");
-                return Ok(());
-            }
-        },
-        None => (new_width, new_height, new_rgba),
-    };
 
-    let (block, base_home) = match viewer.current.as_ref() {
-        Some(previous) => {
-            let block = match viewer
-                .tracker
-                .replace(previous.image_id, width, height, viewer.cell)
-            {
-                Ok(block) => block,
-                Err(error) => {
-                    eprintln!("agent-viewer: placement_limit ({error})");
-                    return Ok(());
-                }
-            };
-            (block, previous.base_home)
-        }
-        None => {
-            let block = match viewer.tracker.reserve(width, height, viewer.cell) {
-                Ok(block) => block,
-                Err(error) => {
-                    eprintln!("agent-viewer: placement_limit ({error})");
-                    return Ok(());
-                }
-            };
-            (block, 1)
-        }
-    };
-
-    let home = base_home;
-    // #region agent log
-    debug_log(
-        "H3,H4,H5",
-        "agent_viewer.rs:render_geometry",
-        "render decoded and placement reserved",
-        serde_json::json!({
-            "imageWidth": width,
-            "imageHeight": height,
-            "placementCols": block.cols,
-            "placementRows": block.rows,
-            "viewportCols": viewer.viewport_cols,
-            "viewportRows": viewer.viewport_rows,
-            "replacing": viewer.current.is_some(),
-            "maxScrollRows": block.rows.saturating_sub(viewer.viewport_rows)
-        }),
-    );
-    // #endregion
-    let bytes = if viewer.current.is_some() {
-        viewer_replacement(
-            block.image_id,
-            width,
-            height,
-            &rgba,
-            block.cols,
-            block.rows,
-            home,
-        )
-    } else {
-        emit_placed_block(
-            block.image_id,
-            width,
-            height,
-            &rgba,
-            block.cols,
-            block.rows,
-            home,
-        )
-    };
-    crate::terminal_output::write_operations(&bytes)
-        .map_err(|error| format!("write placement: {error}"))?;
-
-    viewer.current = Some(ImageState {
-        image_id: block.image_id,
-        width,
-        height,
-        rgba,
-        rows: block.rows,
-        base_home: home,
-    });
-    let max_scroll = block.rows.saturating_sub(viewer.viewport_rows) as f32;
-    viewer.scroll = ScrollDriver::new(max_scroll);
-    viewer.scroll.jump_to(max_scroll);
-    viewer.emitted_offset = 0;
+    // New content always appends at the bottom of the pane's scrollback, so
+    // any earlier manual scroll is implicitly caught up; re-engage follow.
+    viewer.follow = true;
+    viewer.blocks_placed = viewer.planner.blocks().len();
+    let stats = viewer.cache.stats();
     eprintln!(
-        "agent-viewer: placed image={} rows={} bytes={}",
-        block.image_id, block.rows, success.bytes
+        "agent-viewer: placed blocks={} formula_errors={} cache_hits={} cache_misses={}",
+        viewer.blocks_placed,
+        viewer.formula_errors.iter().sum::<usize>(),
+        stats.hits,
+        stats.misses
     );
     Ok(())
-}
-
-fn append_rgba(
-    previous: &ImageState,
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    gap: u32,
-) -> Result<(u32, u32, Vec<u8>), &'static str> {
-    let composite_width = previous.width.max(width);
-    let composite_height = previous
-        .height
-        .checked_add(gap)
-        .and_then(|value| value.checked_add(height))
-        .ok_or("composite dimensions overflow")?;
-    let pixels = u64::from(composite_width) * u64::from(composite_height);
-    if pixels > MAX_PIXELS {
-        return Err("composite pixel limit exceeded");
-    }
-    let byte_len = usize::try_from(pixels.checked_mul(4).ok_or("composite size overflow")?)
-        .map_err(|_| "composite size overflow")?;
-    let mut composite = vec![0; byte_len];
-    copy_rgba_rows(
-        &mut composite,
-        composite_width,
-        0,
-        previous.width,
-        previous.height,
-        &previous.rgba,
-    );
-    copy_rgba_rows(
-        &mut composite,
-        composite_width,
-        previous.height + gap,
-        width,
-        height,
-        rgba,
-    );
-    Ok((composite_width, composite_height, composite))
-}
-
-fn copy_rgba_rows(
-    destination: &mut [u8],
-    destination_width: u32,
-    destination_y: u32,
-    source_width: u32,
-    source_height: u32,
-    source: &[u8],
-) {
-    let source_stride = source_width as usize * 4;
-    let destination_stride = destination_width as usize * 4;
-    for row in 0..source_height as usize {
-        let source_start = row * source_stride;
-        let destination_start = (destination_y as usize + row) * destination_stride;
-        destination[destination_start..destination_start + source_stride]
-            .copy_from_slice(&source[source_start..source_start + source_stride]);
-    }
-}
-
-/// Re-places the current image shifted by the current eased scroll offset,
-/// when the offset moved from the last emitted home row.
-fn reemit_if_moved(viewer: &mut Viewer) -> Result<bool, String> {
-    let rows = viewer.current.as_ref().map_or(0, |image| image.rows);
-    let offset = scroll_offset(&viewer.scroll, rows, viewer.viewport_rows);
-    if viewer.current.is_none() || offset == viewer.emitted_offset {
-        return Ok(false);
-    }
-    let home;
-    let bytes;
-    {
-        let image = viewer.current.as_ref().expect("checked above");
-        home = (image.base_home as i64 - offset).clamp(1, image.base_home as i64) as u32;
-        let (cropped_height, cropped_rgba) = crop_rgba_top(
-            image.width,
-            image.height,
-            &image.rgba,
-            offset as u32,
-            viewer.cell.height,
-        );
-        let (cropped_cols, cropped_rows) =
-            tmath_core::placement::grid_for(image.width, cropped_height, viewer.cell);
-        bytes = viewer_replacement(
-            image.image_id,
-            image.width,
-            cropped_height,
-            &cropped_rgba,
-            cropped_cols,
-            cropped_rows,
-            home,
-        );
-    }
-    crate::terminal_output::write_operations(&bytes)
-        .map_err(|error| format!("write scroll placement: {error}"))?;
-    viewer.emitted_offset = offset;
-    Ok(true)
-}
-
-/// Clears the dedicated viewer grid before replacing an image so placeholder
-/// cells from a taller previous image cannot survive below the replacement.
-fn viewer_replacement(
-    image_id: u32,
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    cols: u32,
-    rows: u32,
-    home: u32,
-) -> Vec<TerminalOp> {
-    // #region agent log
-    debug_log(
-        "H4",
-        "agent_viewer.rs:viewer_replacement",
-        "replacement clears viewer screen",
-        serde_json::json!({
-            "imageId": image_id,
-            "cols": cols,
-            "rows": rows,
-            "home": home,
-            "clearScreen": true
-        }),
-    );
-    // #endregion
-    let mut operations = vec![
-        TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(image_id)),
-        TerminalOp::Local(b"\x1b[H\x1b[2J".to_vec()),
-    ];
-    operations.extend(emit_placed_block(
-        image_id, width, height, rgba, cols, rows, home,
-    ));
-    operations
-}
-
-fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let payload = serde_json::json!({
-        "sessionId": "f945c2",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": timestamp
-    });
-    crate::terminal_output::write_debug_line(&payload);
-}
-
-/// Crops whole terminal-cell rows from the top of a full RGBA answer.
-fn crop_rgba_top(
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    offset_rows: u32,
-    cell_height: u32,
-) -> (u32, Vec<u8>) {
-    let offset_px = offset_rows
-        .saturating_mul(cell_height.max(1))
-        .min(height.saturating_sub(1));
-    let row_bytes = width as usize * 4;
-    let start = offset_px as usize * row_bytes;
-    (height - offset_px, rgba[start..].to_vec())
 }
 
 #[cfg(test)]
@@ -579,51 +339,137 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scroll_offset_clamps_to_the_viewport() {
-        let mut decoder = tmath_core::input::InputDecoder::new();
+    fn follow_disengages_on_scroll_and_reengages_on_end_or_shift_f() {
+        let mut decoder = InputDecoder::new();
         decoder.push(b"\x1b[<65;10;20M");
-        let wheel = decoder.next_event().expect("wheel");
-        let mut scroll = ScrollDriver::new(30.0);
-        scroll.handle(&wheel, None);
-        for _ in 0..600 {
-            scroll.step(1.0 / 60.0);
-            if scroll.settled() {
-                break;
-            }
+        let wheel = decoder.next_event().expect("wheel event");
+
+        let mut viewer = test_viewer();
+        assert!(viewer.follow);
+        handle_follow_input(&mut viewer, &wheel);
+        assert!(!viewer.follow, "manual scroll disengages follow");
+
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[4~");
+        let end = decoder.next_event().expect("end key");
+        handle_follow_input(&mut viewer, &end);
+        assert!(viewer.follow, "End re-engages follow");
+
+        handle_follow_input(&mut viewer, &wheel);
+        assert!(!viewer.follow);
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"F");
+        let shift_f = decoder.next_event().expect("F key");
+        handle_follow_input(&mut viewer, &shift_f);
+        assert!(viewer.follow, "F re-engages follow");
+    }
+
+    fn test_viewer() -> Viewer {
+        let limits = Limits::default();
+        let options = RenderOptions::default();
+        Viewer {
+            stream: pair_socket(),
+            input: InputDecoder::new(),
+            messages: Decoder::new(),
+            follow: true,
+            cache: RenderCache::new(CacheBudget {
+                max_entries: 16,
+                max_pixels: u64::MAX,
+            }),
+            limits,
+            planner: PlacementPlanner::new(),
+            formula_errors: Vec::new(),
+            options,
+            sink: StreamSink::new(None, limits.image_pixels),
+            blocks_placed: 0,
         }
-        assert_eq!(scroll_offset(&scroll, 50, 20), 3);
-        assert_eq!(scroll_offset(&scroll, 50, 50), 0);
     }
 
-    #[test]
-    fn crop_removes_complete_cell_rows() {
-        let rgba: Vec<u8> = (0..4 * 6 * 4).map(|value| value as u8).collect();
-        let (height, cropped) = crop_rgba_top(4, 6, &rgba, 1, 2);
-        assert_eq!(height, 4);
-        assert_eq!(cropped, rgba[4 * 2 * 4..]);
+    fn pair_socket() -> UnixStream {
+        let (a, _b) = UnixStream::pair().expect("socket pair");
+        a
     }
 
+    /// AT-3-501-shaped: appending a block to a placed answer reuses the
+    /// existing blocks' placement ids and allocates exactly one new id for
+    /// the appended block.
     #[test]
-    fn viewer_replacement_clears_stale_placeholder_cells() {
-        let operations = viewer_replacement(1, 1, 1, &[0, 0, 0, 0], 1, 1, 1);
-        assert!(matches!(
-            operations.get(1),
-            Some(TerminalOp::Local(bytes)) if bytes == b"\x1b[H\x1b[2J"
-        ));
+    fn append_answer_reuses_prior_block_ids_and_allocates_one_new_id() {
+        let mut viewer = test_viewer();
+        render_and_place(&mut viewer, "First block.\n\n").unwrap();
+        let first_ids: Vec<_> = viewer.planner.blocks().iter().map(|b| b.id).collect();
+        assert_eq!(first_ids.len(), 1);
+
+        render_and_place(&mut viewer, "First block.\n\nSecond block.\n\n").unwrap();
+        let second_ids: Vec<_> = viewer.planner.blocks().iter().map(|b| b.id).collect();
+        assert_eq!(second_ids.len(), 2);
+        assert_eq!(
+            second_ids[0], first_ids[0],
+            "the unchanged first block keeps its placement id"
+        );
+        assert_ne!(
+            second_ids[1], first_ids[0],
+            "the appended block gets a fresh id"
+        );
     }
 
+    /// AT-3-505: a shorter replacement answer drops the trailing blocks that
+    /// no longer exist rather than leaving their placements orphaned.
     #[test]
-    fn append_rgba_keeps_previous_pixels_above_new_pixels() {
-        let previous = ImageState {
-            image_id: 1,
-            width: 1,
-            height: 1,
-            rgba: vec![1, 2, 3, 4],
-            rows: 1,
-            base_home: 1,
-        };
-        let (width, height, rgba) = append_rgba(&previous, 1, 1, &[5, 6, 7, 8], 1).unwrap();
-        assert_eq!((width, height), (1, 3));
-        assert_eq!(rgba, vec![1, 2, 3, 4, 0, 0, 0, 0, 5, 6, 7, 8]);
+    fn shorter_replacement_answer_drops_stale_trailing_blocks() {
+        let mut viewer = test_viewer();
+        render_and_place(&mut viewer, "One.\n\nTwo.\n\nThree.\n\n").unwrap();
+        assert_eq!(viewer.planner.blocks().len(), 3);
+
+        render_and_place(&mut viewer, "One.\n\n").unwrap();
+        assert_eq!(
+            viewer.planner.blocks().len(),
+            1,
+            "stale trailing blocks are gone from the planner's placed state, \
+             which is what drives the Remove ops for their placements"
+        );
+    }
+
+    /// Re-sending the exact same document produces no new placement ids and
+    /// no cache misses: the planner reports every block as `Keep` and the
+    /// cache is not touched again for unchanged content.
+    #[test]
+    fn unchanged_resend_allocates_no_new_ids_and_touches_no_new_cache_entries() {
+        let mut viewer = test_viewer();
+        render_and_place(&mut viewer, "Stable answer.\n\n").unwrap();
+        let ids_before: Vec<_> = viewer.planner.blocks().iter().map(|b| b.id).collect();
+        let stats_before = viewer.cache.stats();
+
+        render_and_place(&mut viewer, "Stable answer.\n\n").unwrap();
+        let ids_after: Vec<_> = viewer.planner.blocks().iter().map(|b| b.id).collect();
+        let stats_after = viewer.cache.stats();
+
+        assert_eq!(ids_before, ids_after, "unchanged blocks keep their ids");
+        assert_eq!(
+            stats_before, stats_after,
+            "an unchanged document does not touch the render cache again"
+        );
+    }
+
+    /// Cache hit path: identical block content across two different answers
+    /// (a growing prefix plus a second, distinct answer that repeats it)
+    /// renders the shared content once and reuses it on the second answer.
+    #[test]
+    fn repeated_block_content_across_answers_is_a_cache_hit() {
+        let mut viewer = test_viewer();
+        render_and_place(&mut viewer, "Shared line.\n\n").unwrap();
+        let after_first = viewer.cache.stats();
+        assert_eq!(after_first.misses, 1);
+        assert_eq!(after_first.hits, 0);
+
+        // A distinct second answer whose first block repeats the exact same
+        // source: the planner allocates a new id (position-scoped identity),
+        // but the cache serves the cached render instead of re-rendering.
+        render_and_place(&mut viewer, "Different opener.\n\nShared line.\n\n").unwrap();
+        let after_second = viewer.cache.stats();
+        assert!(
+            after_second.hits > after_first.hits,
+            "repeated block content is served from the cache: {after_second:?}"
+        );
     }
 }
