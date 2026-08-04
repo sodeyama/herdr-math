@@ -91,7 +91,15 @@
       commit `5754153`. Known placeholder: append/scroll trigger a full-window
       redraw (emit-then-redraw) until T3-303's visibility-diff re-emission;
       real-terminal evidence lands with T3-305.)
-- [ ] **T3-303** Visibility-driven scroll re-emission from cache. (AT-3-503)
+- [x] **T3-303** Visibility-driven scroll re-emission from cache. (AT-3-503 PASS
+      at the hermetic byte level: id-based window sync deletes only departures,
+      re-places the window from retained PNGs, erases residual rows, and a
+      2,000-block-history scroll step costs byte-identical output to a 20-block
+      one; append writes are suppressed state-only while follow is disengaged.
+      Also fixes the placement budget acting as a de facto 64-block history cap
+      in viewer mode. Commit `25803cb`; AT-3-503 wording refined in
+      `tests/main.md` to record the whole-window re-placement policy;
+      real-terminal evidence lands with T3-305.)
 - [ ] **T3-304** Bounded history + re-render on scroll-back. (AT-3-504)
 - [ ] **T3-305** Recorded terminal evidence: many-placement behavior in Ghostty
       (+ tmux route). (supports AT-3-501/503; evidence file)
