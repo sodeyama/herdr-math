@@ -63,8 +63,9 @@
 - [x] **T3-201** Streaming block splitter (chunk-safe, UTF-8-safe, unterminated
       constructs as literal). (AT-3-401/404 covered at crate level; commit
       `a83734d`; 88 crate tests green)
-- [ ] **T3-202** Render cache: content hashing, bounded LRU, eviction.
-      (AT-3-304, AT-3-305)
+- [x] **T3-202** Render cache: content hashing, bounded LRU, eviction.
+      (AT-3-304/305 covered at crate level; commit `4a9d6b0`; 96 crate tests
+      green; errors never cached)
 - [ ] **T3-203** Placement planner: prefix reuse, append, tail replace, interior
       edit re-anchoring. (AT-3-301..303)
 - [ ] **T3-204** `tmath render -` stream mode with boundary-driven emission and
