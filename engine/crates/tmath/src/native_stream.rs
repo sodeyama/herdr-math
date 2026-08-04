@@ -45,16 +45,18 @@ enum InputEvent {
 }
 
 pub(crate) fn run(
-    content_width: u32,
-    font_size: u32,
+    content_width: Option<u32>,
+    font_size: Option<u32>,
     connected: Option<(Terminal<StdioTty>, (u32, u32))>,
 ) -> Result<(), RenderError> {
-    let device_pixel_ratio = connected
-        .as_ref()
-        .map_or(1, |(_, cell)| crate::device_scale_factor(*cell) as u8);
+    // Auto-fit to the connected terminal's pane when no explicit override was
+    // given; the non-terminal path (`connected` is `None`, what the hermetic
+    // summary/event-line tests drive) keeps the fixed defaults.
+    let fitted = crate::layout::fitted_layout_for_connected(&connected);
+    let device_pixel_ratio = crate::layout::resolve_device_pixel_ratio(fitted);
     let options = RenderOptions::new(
-        f64::from(content_width),
-        f64::from(font_size),
+        crate::layout::resolve_content_width_pt(content_width, fitted),
+        crate::layout::resolve_font_size_pt(font_size, fitted),
         device_pixel_ratio,
     )
     .map_err(|_| stream_error())?;
