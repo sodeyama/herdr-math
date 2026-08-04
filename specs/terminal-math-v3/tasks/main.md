@@ -85,7 +85,12 @@
       per-block. Includes T3-302 follow mode at basic level; AT-3-503
       visibility-window scrolling deferred to T3-303. Terminal-fit auto
       layout added alongside in `9e83de7`.)
-- [ ] **T3-302** Follow mode + disengage/re-engage. (AT-3-502)
+- [x] **T3-302** Follow mode + disengage/re-engage. (AT-3-502 covered by
+      hermetic unit tests: pure `Viewport` state machine, disengage-on-scroll /
+      End-`F` re-engage, offset stability across appends while disengaged;
+      commit `5754153`. Known placeholder: append/scroll trigger a full-window
+      redraw (emit-then-redraw) until T3-303's visibility-diff re-emission;
+      real-terminal evidence lands with T3-305.)
 - [ ] **T3-303** Visibility-driven scroll re-emission from cache. (AT-3-503)
 - [ ] **T3-304** Bounded history + re-render on scroll-back. (AT-3-504)
 - [ ] **T3-305** Recorded terminal evidence: many-placement behavior in Ghostty
