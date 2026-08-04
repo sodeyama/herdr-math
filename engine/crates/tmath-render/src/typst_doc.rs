@@ -16,6 +16,44 @@ use crate::{
     SafeErrorRecord, ScannerLimits, DARK_THEME_TEXT_COLOR,
 };
 
+/// Line rhythm (D-LINE): the em multiples that produce the composed page's
+/// text metrics. Chosen for comfortable, EVEN spacing across mixed
+/// Japanese/Latin prose at typical terminal font sizes (the live 17pt
+/// build), not to minimize image height.
+///
+/// The original values (`top-edge`/`bottom-edge: "bounds"`, `leading:
+/// 0.35em`) sized each line box to the tightest possible ink bounding box
+/// with a below-default gap between boxes — this reads fine for all-Latin
+/// text (short ascenders/descenders, most glyphs share a similar ink
+/// height) but is uneven and cramped for Japanese: CJK glyphs are close to
+/// full-em height with no ascender/descender rhythm, so a `bounds`-sized
+/// line box varies per line depending on which glyphs happen to appear,
+/// and the tight leading left no room to absorb that variance. There is no
+/// code comment or commit message recording why `bounds`/`0.35em` were
+/// chosen (`git blame`/`git log -S` traced to the T3-103 introducing
+/// commit with no rationale) — the working assumption is that "bounds"
+/// keeps the placed image as short as possible.
+///
+/// Typst's `par.leading` is the gap from one line's `bottom-edge` to the
+/// next line's `top-edge` (see the Typst reference for `par`/`text`), so
+/// baseline-to-baseline distance equals `TEXT_TOP_EDGE_EM -
+/// TEXT_BOTTOM_EDGE_EM + PAR_LEADING_EM`. CJK typography convention calls
+/// for roughly 1.5-1.7x the font size between baselines (vs. Latin's usual
+/// ~1.2x); this picks the middle of that range.
+pub(crate) const TARGET_LINE_ADVANCE_EM: f64 = 1.6;
+/// Top edge fixed at a constant fraction of an em (rather than `"bounds"`)
+/// so every line reserves the same headroom regardless of which glyphs it
+/// contains — close to a typical ascender, comfortably above CJK full-em
+/// glyphs.
+const TEXT_TOP_EDGE_EM: f64 = 0.8;
+/// Bottom edge fixed the same way, extending slightly below the baseline
+/// (negative = below) to give descenders (Latin) and the bottom stroke
+/// weight of CJK glyphs even clearance.
+const TEXT_BOTTOM_EDGE_EM: f64 = -0.3;
+/// `par.leading` is derived so the two edges above plus this leading sum to
+/// exactly `TARGET_LINE_ADVANCE_EM`.
+const PAR_LEADING_EM: f64 = TARGET_LINE_ADVANCE_EM - TEXT_TOP_EDGE_EM + TEXT_BOTTOM_EDGE_EM;
+
 /// A complete, self-contained Typst source document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypstSource {
@@ -70,12 +108,15 @@ pub(crate) fn compose_block_with_deadline(
         source: format!(
             "#set page(width: {width}pt, height: auto, margin: 0pt, fill: none)\n\
              #set text(font: (\"NewCM10\", \"Noto Sans JP\"), size: {font_size}pt, \
-             fill: rgb(\"{color}\"), top-edge: \"bounds\", bottom-edge: \"bounds\")\n\
-             #set par(leading: 0.35em)\n\
+             fill: rgb(\"{color}\"), top-edge: {top_edge}em, bottom-edge: {bottom_edge}em)\n\
+             #set par(leading: {leading}em)\n\
              {body}\n",
             width = options.content_width_pt,
             font_size = options.font_size_pt,
             color = DARK_THEME_TEXT_COLOR,
+            top_edge = TEXT_TOP_EDGE_EM,
+            bottom_edge = TEXT_BOTTOM_EDGE_EM,
+            leading = PAR_LEADING_EM,
         ),
         static_files: context.static_files,
         formula_errors: context.formula_errors,

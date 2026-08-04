@@ -552,14 +552,22 @@ mod tests {
 
     #[test]
     fn output_over_the_pixel_cap_returns_the_safe_pixel_limit_error() {
-        let options = RenderOptions::new(3000.0, 3000.0, 1).unwrap();
+        // A single short word at a huge font size stays on one line (no
+        // wrap), so its height is governed by TARGET_LINE_ADVANCE_EM's
+        // fixed per-line metrics rather than by wrapped line count. Width
+        // and font size are both kept under their own caps
+        // (`image_width_px`/`image_height_px`), but their product exceeds
+        // `image_pixels` (see `output_over_the_pixel_cap...`'s sibling
+        // width/height tests above for the standalone caps) — this must
+        // trip `ImagePixels`, not either per-dimension cap alone.
+        let options = RenderOptions::new(4000.0, 9500.0, 1).unwrap();
         let limits = Limits {
             render_duration_ms: 60_000,
             ..Limits::default()
         };
         let deadline = RenderDeadline::new(limits.render_duration_ms);
         let error = render_prose_block_with_deadline(
-            &block(BlockKind::Paragraph, "one two three four five"),
+            &block(BlockKind::Paragraph, "x"),
             &options,
             &limits,
             &deadline,
@@ -652,5 +660,76 @@ mod tests {
         assert!(nontransparent_pixels(&long.png) > 0);
         assert!(long.width_px > short.width_px);
         assert_ne!(short.png, long.png);
+    }
+
+    // --- Line rhythm (D-LINE) ---
+
+    /// Hard-break a fixed number of ASCII lines (deterministic line count,
+    /// no wrapping) and return the rendered image height in px.
+    fn n_line_height_px(lines: u32) -> u32 {
+        let text = (0..lines)
+            .map(|i| format!("Line {i} of prose text for measurement."))
+            .collect::<Vec<_>>()
+            .join("\\\n");
+        render_prose_block(
+            &block(BlockKind::Paragraph, text),
+            &RenderOptions::default(),
+        )
+        .unwrap()
+        .height_px
+    }
+
+    /// The per-line vertical advance (image height delta per extra line)
+    /// must land within tolerance of `font_size_pt * TARGET_LINE_ADVANCE_EM`
+    /// (DPR 1, so 1pt ~= 1px). Compares two widely separated line counts so
+    /// a single line's fixed top/bottom padding cancels out of the average,
+    /// leaving just the per-line advance.
+    #[test]
+    fn n_line_paragraph_height_matches_the_target_line_advance_within_tolerance() {
+        let short = n_line_height_px(4);
+        let long = n_line_height_px(20);
+        let measured_advance = f64::from(long - short) / 16.0;
+        let expected_advance =
+            RenderOptions::default().font_size_pt * crate::typst_doc::TARGET_LINE_ADVANCE_EM;
+        assert!(
+            (measured_advance - expected_advance).abs() < 0.75,
+            "measured per-line advance {measured_advance:.3}px should be within 0.75px \
+             of the {expected_advance:.3}px target (font_size * TARGET_LINE_ADVANCE_EM)"
+        );
+    }
+
+    /// A heading block must render taller than a same-width bare text line
+    /// (its larger font size plus its own line box), and a heading followed
+    /// by a paragraph must be taller still (the block-level spacing between
+    /// them), so heading text never visually collides with the line above
+    /// or below it.
+    #[test]
+    fn a_heading_is_taller_than_a_bare_text_line_and_leaves_room_before_its_paragraph() {
+        let bare_line = render_prose_block(
+            &block(BlockKind::Paragraph, "Following paragraph text."),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        let heading_only = render_prose_block(
+            &block(BlockKind::Heading, "# Heading"),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        let heading_and_paragraph = render_prose_block(
+            &block(BlockKind::Heading, "# Heading\n\nFollowing paragraph text."),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            heading_only.height_px > bare_line.height_px,
+            "a heading's larger font size should make its line box taller \
+             than a same-content bare text line"
+        );
+        assert!(
+            heading_and_paragraph.height_px > heading_only.height_px + bare_line.height_px,
+            "a heading immediately followed by its paragraph must reserve \
+             visible spacing between them, not just stack their bare heights"
+        );
     }
 }
