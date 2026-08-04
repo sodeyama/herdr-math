@@ -1,6 +1,7 @@
 //! Native Markdown + LaTeX renderer for tmath (V3).
 
 mod block;
+mod cache;
 mod error;
 mod hash;
 mod limits;
@@ -13,6 +14,7 @@ mod stream;
 mod typst_doc;
 
 pub use block::{Block, BlockKind};
+pub use cache::{CacheBudget, CacheStats, RenderCache};
 pub use error::{ErrorCode, RenderError, SafeErrorDetails, SafeErrorRecord, SafeLimitKind};
 pub use hash::content_hash;
 pub use limits::{Limits, ScaledLimits};
