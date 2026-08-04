@@ -114,8 +114,13 @@
 
 ## Phase 4 — Agent sources
 
-- [ ] **T3-401** Delta socket protocol (versioned document/append/replace-tail);
-      codec fixtures incl. malformed/out-of-order. (AT-3-601)
+- [x] **T3-401** Delta socket protocol (versioned document/append/replace-tail);
+      codec fixtures incl. malformed/out-of-order. (AT-3-601 PASS at codec
+      level: strict last+1 sequencing, invalidate-until-next-Document resync,
+      UTF-8 tail-boundary checks, aggregate reassembly cap at
+      IPC_MAX_REQUEST_BYTES, unconditional V2 Document acceptance; 28 codec
+      tests + viewer wiring tests. Commit `6c177dc`. Watcher-side delta
+      emission lands with T3-402/403.)
 - [ ] **T3-402** Claude Code transcript adapter with JSONL fixtures; graceful
       degradation to capture. (AT-3-602)
 - [ ] **T3-403** Rewire capture adapter through the incremental pipeline.
