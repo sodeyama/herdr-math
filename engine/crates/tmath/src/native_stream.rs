@@ -242,9 +242,9 @@ impl StreamSink {
 
     /// Opts a `Terminal` sink into retaining each placed block's PNG bytes
     /// (bounded by the placement-count and pixel limits already enforced),
-    /// which `redraw_window` needs to rebuild the agent-viewer's visibility
+    /// which `sync_window` needs to rebuild the agent-viewer's visibility
     /// window without re-rendering. Plain `tmath render`/`tmath watch`
-    /// stream sessions never call `redraw_window`, so they skip this to
+    /// stream sessions never call `sync_window`, so they skip this to
     /// avoid paying the retained-PNG memory cost for nothing. A no-op in
     /// `Summary` mode.
     pub(crate) fn with_retained_pngs(mut self) -> Self {
@@ -252,6 +252,16 @@ impl StreamSink {
             sink.retain_pngs = true;
         }
         self
+    }
+
+    /// Sets or clears visibility-gated emission (AT-3-503): while suppressed,
+    /// `apply_revision`'s append/replace/remove operations still update
+    /// state but skip terminal writes. See [`TerminalSink::suppress_writes`].
+    /// A no-op in `Summary` mode.
+    pub(crate) fn set_suppress_writes(&mut self, suppress: bool) {
+        if let Self::Terminal(sink) = self {
+            sink.suppress_writes = suppress;
+        }
     }
 
     fn emit(
@@ -291,15 +301,15 @@ impl StreamSink {
         Ok(())
     }
 
-    /// Redraws the visibility window (agent-viewer only). A no-op in
-    /// `Summary` mode. See [`TerminalSink::redraw_window`].
-    pub(crate) fn redraw_window(
+    /// Syncs the visibility window (agent-viewer only). A no-op in `Summary`
+    /// mode. See [`TerminalSink::sync_window`].
+    pub(crate) fn sync_window(
         &mut self,
         visible: std::ops::Range<usize>,
     ) -> Result<(), RenderError> {
         match self {
             Self::Summary => Ok(()),
-            Self::Terminal(sink) => sink.redraw_window(visible),
+            Self::Terminal(sink) => sink.sync_window(visible),
         }
     }
 }
@@ -359,9 +369,9 @@ struct PlacedState {
     rows: u32,
     pixels: u64,
     /// Retained only when `TerminalSink::retain_pngs` is set (agent-viewer
-    /// only), so a viewport redraw ([`TerminalSink::redraw_window`]) can
+    /// only), so a viewport sync ([`TerminalSink::sync_window`]) can
     /// re-emit a currently placed block without re-rendering it. Plain
-    /// stream/watch sessions never call `redraw_window` and leave this
+    /// stream/watch sessions never call `sync_window` and leave this
     /// empty rather than pay the retained-PNG memory cost for nothing.
     png: Vec<u8>,
 }
@@ -376,6 +386,30 @@ pub(crate) struct TerminalSink {
     /// Set only through [`StreamSink::with_retained_pngs`] (agent-viewer's
     /// construction path). See [`PlacedState::png`].
     retain_pngs: bool,
+    /// The image ids [`TerminalSink::sync_window`] most recently emitted on
+    /// screen (agent-viewer only; stream/watch sessions never call
+    /// `sync_window` and leave this empty). Deliberately id-based rather
+    /// than index-based: while `suppress_writes` is set, `apply_revision`
+    /// still mutates `placed` (a suppressed tail replace is remove+push,
+    /// which shifts every later index), so an index range captured before
+    /// those mutations would silently point at the wrong entries by the
+    /// time the next `sync_window` reads it. `sync_window` diffs against
+    /// this by id to delete only what left the window (including an id
+    /// that a suppressed replace/remove already dropped from `placed`
+    /// entirely — that delete must still be sent, since the on-screen
+    /// image itself was never touched) and re-emit only what the new
+    /// window covers.
+    emitted_ids: Vec<u64>,
+    /// When set, `append`/`replace`/`remove` still update `placed` (state
+    /// only) but skip writing to the terminal (AT-3-503's visibility-gated
+    /// emission): while the agent-viewer's follow is disengaged, new/changed
+    /// blocks land outside the visible window, so streaming them to the pane
+    /// bottom would just be undone by the next `sync_window`. The caller
+    /// (`agent_viewer`) sets this before `apply_revision` while disengaged
+    /// and calls `sync_window` afterward to reconcile the screen with the
+    /// (possibly changed) window contents. Always `false` for stream/watch
+    /// sessions, which never disengage follow.
+    suppress_writes: bool,
 }
 
 impl TerminalSink {
@@ -393,6 +427,8 @@ impl TerminalSink {
             placed: Vec::new(),
             first_append_at_line_start,
             retain_pngs: false,
+            emitted_ids: Vec::new(),
+            suppress_writes: false,
         }
     }
 
@@ -441,7 +477,7 @@ impl TerminalSink {
             decoded.rows,
             self.first_append_at_line_start || !self.placed.is_empty(),
         );
-        terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
+        self.write_unless_suppressed(&operations)?;
         self.first_append_at_line_start = true;
         let retained_png = self.retained_png(png);
         self.placed.push(PlacedState {
@@ -469,7 +505,7 @@ impl TerminalSink {
         let old_id_value = self.placed[old_index].id;
         let old_rows = self.placed[old_index].rows;
         let decoded = self.decode(new_id, rendered, png)?;
-        self.validate_placement(decoded.pixels, Some(old_index))?;
+        self.validate_placement(decoded.pixels, Some(old_id))?;
         let top_is_reachable = was_last
             && self
                 .placed
@@ -513,7 +549,7 @@ impl TerminalSink {
             ));
             operations
         };
-        terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
+        self.write_unless_suppressed(&operations)?;
         self.placed.remove(old_index);
         let retained_png = self.retained_png(png);
         self.placed.push(PlacedState {
@@ -532,31 +568,46 @@ impl TerminalSink {
             .position(|placed| placed.id == id)
             .ok_or_else(stream_error)?;
         let image_id = u32::try_from(id).map_err(|_| stream_error())?;
-        terminal_output::write_operations(&[TerminalOp::Graphics(
-            tmath_core::kitty::kitty_delete_id(image_id),
-        )])
-        .map_err(|_| stream_error())?;
+        self.write_unless_suppressed(&[TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
+            image_id,
+        ))])?;
         self.placed.remove(index);
         Ok(())
     }
 
-    /// Full-window redraw for the agent-viewer's scrollable viewport
-    /// (AT-3-502): clears the pane, moves the cursor home, and re-emits only
-    /// the placed blocks in `visible` (a contiguous index range into the
-    /// current placement order) from their retained PNGs. No block is
-    /// re-rendered. This is a structural placeholder for T3-303's
-    /// visibility-diff re-emission — it redraws the whole window on every
-    /// scroll step rather than diffing which placements newly entered or
-    /// left view, which is acceptable for T3-302 but must not be treated as
-    /// the bounded-bytes-per-scroll-step contract.
-    pub(crate) fn redraw_window(
+    /// Syncs the terminal to a new visibility window for the agent-viewer's
+    /// scrollable viewport (AT-3-503): deletes the placements whose id left
+    /// the window (by id, not index — see the `emitted_ids` field doc for
+    /// why), moves the cursor home, re-emits the window's current blocks
+    /// (clamped to `placed`'s bounds) at their window-relative rows from
+    /// retained PNGs, and erases any residual rows below what was just
+    /// drawn. No block is re-rendered, and transmitted bytes are bounded by
+    /// the number of blocks in `visible`, independent of how many blocks
+    /// exist outside it (`placed`'s total length never affects the byte
+    /// cost of a scroll step).
+    ///
+    /// Blocks that stay inside the window across the change are re-sent
+    /// too, not left alone: their window-relative row can shift whenever a
+    /// block enters or leaves ahead of them, and Kitty placements do not
+    /// move on their own. This keeps the byte cost proportional to the
+    /// window (bounded), not to history length, while staying correct for
+    /// any offset change — a coarser diff than "only truly new placements",
+    /// which the doc comment on `sync_window_operations` explains further.
+    pub(crate) fn sync_window(
         &mut self,
         visible: std::ops::Range<usize>,
     ) -> Result<(), RenderError> {
-        let operations =
-            redraw_window_operations(&self.placed, visible, self.cell, self.max_image_pixels)?;
+        let visible = visible.start.min(self.placed.len())..visible.end.min(self.placed.len());
+        let operations = sync_window_operations(
+            &self.placed,
+            &self.emitted_ids,
+            visible.clone(),
+            self.cell,
+            self.max_image_pixels,
+        )?;
         terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
         self.first_append_at_line_start = true;
+        self.emitted_ids = self.placed[visible].iter().map(|entry| entry.id).collect();
         Ok(())
     }
 
@@ -564,6 +615,16 @@ impl TerminalSink {
     /// See [`PlacedState::png`] and [`StreamSink::with_retained_pngs`].
     fn retained_png(&self, png: &[u8]) -> Vec<u8> {
         retained_png(png, self.retain_pngs)
+    }
+
+    /// Writes `operations` to the terminal unless `suppress_writes` is set,
+    /// in which case this is a no-op (the caller still updates `placed`
+    /// state around this call). See the `suppress_writes` field doc.
+    fn write_unless_suppressed(&self, operations: &[TerminalOp]) -> Result<(), RenderError> {
+        if self.suppress_writes {
+            return Ok(());
+        }
+        terminal_output::write_operations(operations).map_err(|_| stream_error())
     }
 
     fn decode(
@@ -588,30 +649,36 @@ impl TerminalSink {
         })
     }
 
+    /// Enforces the concurrent-placement and total-pixel limits against
+    /// what is actually on screen. For stream/watch sessions (`retain_pngs`
+    /// unset) that is every entry in `placed`, since every append/replace
+    /// there writes straight to the terminal. For the agent-viewer
+    /// (`retain_pngs` set), `placed` accumulates the *entire* answer
+    /// history — bounded history eviction is T3-304, not yet implemented,
+    /// so the count here would otherwise reject a session once its history
+    /// crosses `max_concurrent_placements` even though only a handful of
+    /// blocks are ever on screen at once. Counting only `emitted_ids`'s
+    /// entries instead keeps the limit meaningful (it still bounds
+    /// simultaneous on-screen placements and pixels) without it becoming a
+    /// de facto history cap AT-3-503 is supposed to lift.
     fn validate_placement(
         &self,
         new_pixels: u64,
-        replacing: Option<usize>,
+        replacing: Option<u64>,
     ) -> Result<(), RenderError> {
-        let count = self
-            .placed
-            .len()
-            .saturating_add(usize::from(replacing.is_none()));
-        if count > self.placement_limits.max_concurrent_placements {
-            return Err(stream_error());
-        }
-        let pixels = self
-            .placed
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| Some(*index) != replacing)
-            .map(|(_, placed)| placed.pixels)
-            .sum::<u64>()
-            .saturating_add(new_pixels);
-        if pixels > self.placement_limits.max_total_pixels {
-            return Err(stream_error());
-        }
-        Ok(())
+        let on_screen: Vec<(u64, u64)> = if self.retain_pngs {
+            self.placed
+                .iter()
+                .filter(|placed| self.emitted_ids.contains(&placed.id))
+                .map(|placed| (placed.id, placed.pixels))
+                .collect()
+        } else {
+            self.placed
+                .iter()
+                .map(|placed| (placed.id, placed.pixels))
+                .collect()
+        };
+        validate_placement_budget(&on_screen, new_pixels, replacing, self.placement_limits)
     }
 
     fn finish(&mut self) -> Result<(), RenderError> {
@@ -682,6 +749,54 @@ fn tail_replace_operations(replace: TailReplace<'_>) -> Result<Vec<TerminalOp>, 
     Ok(operations)
 }
 
+/// Enforces the concurrent-placement and total-pixel limits against
+/// `on_screen_pixels` (each entry the pixel cost of one placement currently
+/// on screen). `on_screen_start` is `on_screen_pixels`' offset into the
+/// caller's full block list, used to translate `replacing` (an index into
+/// that full list) into `on_screen_pixels`' own index space; a `replacing`
+/// index outside `on_screen_pixels`' range (replacing a block that is not
+/// currently on screen) does not free up on-screen room and is treated the
+/// same as `None`.
+///
+/// For stream/watch sessions, the caller passes every placed block (every
+/// append/replace there writes straight to the terminal, so "on screen" is
+/// everything). For the agent-viewer, the caller passes only the `emitted`
+/// sub-slice: `placed` there accumulates the *entire* answer history —
+/// bounded history eviction is T3-304, not yet implemented — so counting
+/// all of it would reject a session once its history crosses
+/// `max_concurrent_placements` even though only a handful of blocks are
+/// ever on screen at once. See [`TerminalSink::validate_placement`].
+fn validate_placement_budget(
+    on_screen: &[(u64, u64)],
+    new_pixels: u64,
+    replacing: Option<u64>,
+    limits: PlacementLimits,
+) -> Result<(), RenderError> {
+    // Whether `replacing`'s id is actually present in `on_screen` — an id
+    // that is not (replacing a block that is not currently on screen, e.g.
+    // one from history) does not free any on-screen room and is treated the
+    // same as `None` for this budget.
+    let replacing_is_on_screen =
+        replacing.is_some_and(|id| on_screen.iter().any(|(entry_id, _)| *entry_id == id));
+
+    let count = on_screen
+        .len()
+        .saturating_add(usize::from(!replacing_is_on_screen));
+    if count > limits.max_concurrent_placements {
+        return Err(stream_error());
+    }
+    let pixels = on_screen
+        .iter()
+        .filter(|(entry_id, _)| Some(*entry_id) != replacing)
+        .map(|(_, pixels)| *pixels)
+        .sum::<u64>()
+        .saturating_add(new_pixels);
+    if pixels > limits.max_total_pixels {
+        return Err(stream_error());
+    }
+    Ok(())
+}
+
 /// A copy of `png` when `retain` is true, or an empty vec otherwise. Kept as
 /// a free function so `retain_pngs`'s effect on `PlacedState::png` is
 /// testable without constructing a `TerminalSink` (which requires a live
@@ -695,34 +810,87 @@ fn retained_png(png: &[u8], retain: bool) -> Vec<u8> {
     }
 }
 
-/// Builds the operation list for a full-window viewport redraw (AT-3-502):
-/// delete every currently placed image, clear and home the pane, then
-/// re-emit the placements in `visible` (clamped to `placed`'s bounds) from
-/// their retained PNGs. Pure and independent of any live terminal so it can
-/// be tested directly, the same way `tail_replace_operations` is.
-fn redraw_window_operations(
+/// Builds the operation list for a visibility-driven viewport sync
+/// (AT-3-503): deletes every id in `emitted_ids` that is not among the new
+/// `visible` range's ids, moves the cursor home, re-emits every block in
+/// `visible` (clamped to `placed`'s bounds) at its window-relative row
+/// (immediately after the previous one, cursor-relative) from its retained
+/// PNG, and erases any residual rows below what was just drawn. Pure and
+/// independent of any live terminal, the same way `tail_replace_operations`
+/// is.
+///
+/// Deleting by id rather than by a previous index range is deliberate: an id
+/// in `emitted_ids` may no longer exist in `placed` at all (a suppressed
+/// tail replace removes the old id from `placed` while `apply_revision`'s
+/// terminal writes are suppressed — see `TerminalSink::suppress_writes`).
+/// The on-screen image for that id was never touched by the suppressed
+/// write, so its delete must still be sent here or it becomes a
+/// terminal-memory orphan; a stale index range would silently miss it
+/// (`emitted_ids`'s field doc has the full scenario). Deleting an id that
+/// some other, unsuppressed path already removed is a harmless no-op
+/// (`kitty_delete_id` for an id that does not exist does nothing) — dropping
+/// already-gone ids from `emitted_ids` eagerly elsewhere would be a little
+/// tidier but is not required for correctness, so this function does not
+/// need to special-case it.
+///
+/// Blocks that are in both `emitted_ids` and `visible` are still re-sent
+/// (not left untouched): whenever a block enters or leaves ahead of them in
+/// placement order, every later block's window-relative row shifts, and a
+/// Kitty placement does not move on its own. Re-sending the whole `visible`
+/// range keeps this correct without tracking per-block row history, and the
+/// transmitted bytes stay bounded by `visible`'s length plus a constant-size
+/// erase-below — `placed`'s total length (i.e. how much history exists
+/// outside the window) never enters this cost, satisfying AT-3-503's
+/// "independent of history length" clause.
+///
+/// The erase-below (`\x1b[0J`) is what makes a shrinking window (fewer or
+/// shorter blocks than were previously drawn) leave no stale rows: without
+/// it, rows below the new content would still show the old placeholder
+/// cells and image fragments from a taller previous draw. It costs a
+/// constant few bytes regardless of window size, so it does not affect the
+/// history-independence bound. When nothing is drawn (`visible` is empty)
+/// but something was previously on screen, the pane is homed and erased
+/// too, so a scroll past all content still clears what was there.
+fn sync_window_operations(
     placed: &[PlacedState],
+    emitted_ids: &[u64],
     visible: std::ops::Range<usize>,
     cell: CellSize,
     max_image_pixels: u64,
 ) -> Result<Vec<TerminalOp>, RenderError> {
-    let mut operations = vec![TerminalOp::Local(b"\x1b[H\x1b[2J".to_vec())];
-    for entry in placed {
-        let image_id = u32::try_from(entry.id).map_err(|_| stream_error())?;
-        operations.push(TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
-            image_id,
-        )));
+    let visible = visible.start.min(placed.len())..visible.end.min(placed.len());
+    let visible_ids: Vec<u64> = placed[visible.clone()]
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+
+    let mut operations = Vec::new();
+    for &id in emitted_ids {
+        if !visible_ids.contains(&id) {
+            let image_id = u32::try_from(id).map_err(|_| stream_error())?;
+            operations.push(TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
+                image_id,
+            )));
+        }
     }
 
-    let visible = visible.start.min(placed.len())..visible.end.min(placed.len());
-    for entry in &placed[visible] {
-        let (width, height, rgba) =
-            decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
-        let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
-        let image_id = u32::try_from(entry.id).map_err(|_| stream_error())?;
-        operations.extend(append_operations(
-            image_id, width, height, &rgba, cols, rows, true,
-        ));
+    if !visible.is_empty() {
+        // Move home once; each block below is then placed immediately after
+        // the previous one via the cursor-relative form, so no per-block
+        // home-row arithmetic is needed to keep window-relative rows correct.
+        operations.push(TerminalOp::Local(b"\x1b[H".to_vec()));
+        for entry in &placed[visible] {
+            let (width, height, rgba) =
+                decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
+            let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
+            let image_id = u32::try_from(entry.id).map_err(|_| stream_error())?;
+            operations.extend(append_operations(
+                image_id, width, height, &rgba, cols, rows, true,
+            ));
+        }
+        operations.push(TerminalOp::Local(b"\x1b[0J".to_vec()));
+    } else if !emitted_ids.is_empty() {
+        operations.push(TerminalOp::Local(b"\x1b[H\x1b[0J".to_vec()));
     }
 
     Ok(operations)
@@ -827,8 +995,15 @@ mod tests {
         assert!(direct_bytes(&emitted).is_empty());
     }
 
+    /// AT-3-503: moving the window (e.g. scrolling one block further) deletes
+    /// only what left (id=1, no longer among `visible`'s ids) and re-emits
+    /// the whole new `visible` range from cache — including blocks that were
+    /// already on screen (id=2 stays in both `emitted_ids` and the new
+    /// window), which is the "re-send everything inside the window" policy
+    /// documented on `sync_window_operations`. Also asserts the erase-below
+    /// (FIX 1) is present after the last redrawn block.
     #[test]
-    fn redraw_window_clears_deletes_every_placed_image_and_redraws_only_visible() {
+    fn sync_window_deletes_only_what_left_and_resends_the_whole_new_window() {
         let cell = CellSize {
             width: 1,
             height: 1,
@@ -839,51 +1014,239 @@ mod tests {
             placed(3, 1, rgba8_png(1, 1)),
         ];
 
-        let operations = redraw_window_operations(&placed, 1..3, cell, u64::MAX).unwrap();
+        let operations = sync_window_operations(&placed, &[1, 2], 1..3, cell, u64::MAX).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
 
-        assert!(text.starts_with("\x1b[H\x1b[2J"), "home and clear first");
-        // Every placed image is deleted, including the one outside the
-        // visible range (id=1), so no stale image lingers off-window.
+        // Only id=1 left the window (was in `emitted_ids`, not among
+        // `visible`'s ids); id=2 stayed in both and is not deleted.
         assert!(text.contains("\x1b_Ga=d,d=I,i=1,q=2\x1b\\"));
-        assert!(text.contains("\x1b_Ga=d,d=I,i=2,q=2\x1b\\"));
-        assert!(text.contains("\x1b_Ga=d,d=I,i=3,q=2\x1b\\"));
-        // Only the visible range (indices 1..3, ids 2 and 3) is re-emitted.
+        assert!(!text.contains("\x1b_Ga=d,d=I,i=2,q=2\x1b\\"));
+        assert!(!text.contains("\x1b_Ga=d,d=I,i=3,q=2\x1b\\"));
+        assert!(text.contains("\x1b[H"), "home once before re-emitting");
+        // Both blocks now inside the window (ids 2 and 3) are re-emitted,
+        // even though id=2 was already visible before this sync.
         assert!(text.contains("i=2,U=1,c=1,r=3,q=2"));
         assert!(text.contains("i=3,U=1,c=1,r=1,q=2"));
         // id=1's placement command (as opposed to its delete) never appears.
         assert!(!text.contains("i=1,U=1,c=1"));
+        // FIX 1: an erase-below follows the last redrawn block, so any rows
+        // left over from a taller previous draw are cleared.
+        assert!(
+            text.ends_with("\x1b[0J"),
+            "erase-below follows the redrawn blocks: {text:?}"
+        );
     }
 
+    /// FIX 2 regression: `emitted_ids` may contain an id that a suppressed
+    /// tail replace already removed from `placed` entirely (the on-screen
+    /// image for that id was never touched, since the write was
+    /// suppressed). `sync_window_operations` must still emit its delete —
+    /// an index-range diff would silently miss this, since the id simply
+    /// is not present anywhere in `placed` to compute an index for.
     #[test]
-    fn redraw_window_with_empty_visible_range_still_clears_and_deletes() {
+    fn sync_window_deletes_an_emitted_id_no_longer_present_in_placed() {
         let cell = CellSize {
             width: 1,
             height: 1,
         };
+        // `placed` no longer has id=99 (as if a suppressed replace dropped
+        // it), but it is still recorded as on screen.
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
+        let emitted_ids = [99u64, 1];
 
-        let operations = redraw_window_operations(&placed, 0..0, cell, u64::MAX).unwrap();
+        let operations =
+            sync_window_operations(&placed, &emitted_ids, 0..1, cell, u64::MAX).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
 
-        assert!(text.starts_with("\x1b[H\x1b[2J"));
-        assert!(text.contains("\x1b_Ga=d,d=I,i=1,q=2\x1b\\"));
-        assert!(!text.contains("U=1,c=1"), "no placement is re-emitted");
+        assert!(
+            text.contains("\x1b_Ga=d,d=I,i=99,q=2\x1b\\"),
+            "the orphaned on-screen id is still deleted: {text:?}"
+        );
+        assert!(
+            !text.contains("\x1b_Ga=d,d=I,i=1,q=2\x1b\\"),
+            "id=1 stayed visible"
+        );
+        assert!(text.contains("i=1,U=1,c=1,r=2,q=2"));
     }
 
+    /// Scrolling past all content deletes everything that was on screen and
+    /// emits nothing new — no stale placement is left behind, and the pane
+    /// is homed and erased (FIX 1) rather than left with the old rows.
     #[test]
-    fn redraw_window_clamps_an_out_of_range_visible_slice_instead_of_panicking() {
+    fn sync_window_with_empty_visible_range_deletes_the_previous_window() {
         let cell = CellSize {
             width: 1,
             height: 1,
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
-        let operations = redraw_window_operations(&placed, 0..5, cell, u64::MAX).unwrap();
+
+        let operations = sync_window_operations(&placed, &[1], 0..0, cell, u64::MAX).unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.contains("\x1b_Ga=d,d=I,i=1,q=2\x1b\\"));
+        assert!(!text.contains("U=1,c=1"), "no placement is re-emitted");
+        assert!(
+            text.ends_with("\x1b[H\x1b[0J"),
+            "home and erase clear the stale rows when nothing is re-emitted: {text:?}"
+        );
+    }
+
+    /// A fresh sync (`emitted_ids` starts empty, as it does for the first
+    /// `sync_window` call after construction) emits the visible range with
+    /// no deletes, since nothing was on screen to remove.
+    #[test]
+    fn sync_window_from_empty_emitted_only_adds() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![placed(1, 2, rgba8_png(1, 2))];
+        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX).unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("a=d,d=I"), "nothing to delete");
+        assert!(text.contains("i=1,U=1,c=1,r=2,q=2"));
+    }
+
+    /// An empty sync (nothing was on screen, and the new window is also
+    /// empty) is a true no-op: no delete, no home/clear, no draw.
+    #[test]
+    fn sync_window_from_empty_to_empty_is_a_no_op() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![placed(1, 2, rgba8_png(1, 2))];
+        let operations = sync_window_operations(&placed, &[], 0..0, cell, u64::MAX).unwrap();
+        assert!(operations.is_empty());
+    }
+
+    #[test]
+    fn sync_window_clamps_an_out_of_range_slice_instead_of_panicking() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![placed(1, 2, rgba8_png(1, 2))];
+        let operations = sync_window_operations(&placed, &[1], 0..5, cell, u64::MAX).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("i=1,U=1,c=1,r=2,q=2"));
+    }
+
+    /// AT-3-503's core byte-budget claim: the bytes transmitted for one
+    /// scroll step depend only on the visible-block count, never on how much
+    /// history exists outside the window — doubling history length must not
+    /// change the transmitted byte count for the same-size window.
+    #[test]
+    fn sync_window_byte_cost_is_independent_of_history_length() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        // Image ids are pinned to a single digit (1..=9, cycling) so the
+        // transmitted byte count cannot differ merely because a longer
+        // history means more decimal digits in the ids near the window —
+        // the claim under test is about window size, not id-formatting
+        // coincidence.
+        let short_history: Vec<PlacedState> = (0..20u64)
+            .map(|i| placed(i % 9 + 1, 1, rgba8_png(1, 1)))
+            .collect();
+        let long_history: Vec<PlacedState> = (0..2000u64)
+            .map(|i| placed(i % 9 + 1, 1, rgba8_png(1, 1)))
+            .collect();
+
+        // Same-size window (5 blocks), scrolled one block forward, deep in
+        // each history (so the "history outside the window" size differs by
+        // orders of magnitude between the two cases). `emitted_ids` is the
+        // previous window's ids in both cases (same values, since ids cycle
+        // 1..=9), so the delete set is bounded the same way too.
+        let previously_emitted = [5u64, 6, 7, 8, 9];
+        let short_bytes = direct_bytes(
+            &sync_window_operations(&short_history, &previously_emitted, 5..10, cell, u64::MAX)
+                .unwrap(),
+        );
+        let long_bytes = direct_bytes(
+            &sync_window_operations(
+                &long_history,
+                &previously_emitted,
+                995..1000,
+                cell,
+                u64::MAX,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(
+            short_bytes.len(),
+            long_bytes.len(),
+            "a scroll step over a 2000-block history must cost the same bytes \
+             as the same step over a 20-block history"
+        );
+    }
+
+    /// The agent-viewer's `TerminalSink::validate_placement` passes only the
+    /// blocks whose id is in `emitted_ids` (not the whole history) to this
+    /// budget check — this test exercises the underlying pure function
+    /// directly: a small on-screen window (5 blocks) accepts a new placement
+    /// well within `max_concurrent_placements` regardless of the ids' own
+    /// values (i.e. regardless of how much history exists with other ids).
+    #[test]
+    fn validate_placement_budget_counts_only_the_on_screen_slice() {
+        let limits = PlacementLimits {
+            max_concurrent_placements: 8,
+            max_total_pixels: u64::MAX,
+        };
+        let on_screen: Vec<(u64, u64)> = (1..=5u64).map(|id| (id, 1)).collect();
+        assert!(validate_placement_budget(&on_screen, 1, None, limits).is_ok());
+        // A different id range (as if 10_000 blocks with other ids came
+        // before the window) does not change the outcome: only
+        // `on_screen`'s own length is counted.
+        let on_screen_far: Vec<(u64, u64)> = (10_000..10_005u64).map(|id| (id, 1)).collect();
+        assert!(validate_placement_budget(&on_screen_far, 1, None, limits).is_ok());
+    }
+
+    /// A full on-screen window (at `max_concurrent_placements`) rejects one
+    /// more append, the same way the pre-T3-303 whole-history check did —
+    /// the fix narrows what counts as "on screen", it does not remove the
+    /// limit.
+    #[test]
+    fn validate_placement_budget_still_rejects_a_full_on_screen_window() {
+        let limits = PlacementLimits {
+            max_concurrent_placements: 4,
+            max_total_pixels: u64::MAX,
+        };
+        let on_screen: Vec<(u64, u64)> = (1..=4u64).map(|id| (id, 1)).collect();
+        assert!(validate_placement_budget(&on_screen, 1, None, limits).is_err());
+    }
+
+    /// `replacing` keys on id membership: replacing an id that is on screen
+    /// does not count as a new placement, so a full window still accepts
+    /// the replacement.
+    #[test]
+    fn validate_placement_budget_replacing_an_on_screen_block_frees_its_slot() {
+        let limits = PlacementLimits {
+            max_concurrent_placements: 4,
+            max_total_pixels: u64::MAX,
+        };
+        let on_screen: Vec<(u64, u64)> = (101..=104u64).map(|id| (id, 1)).collect();
+        assert!(validate_placement_budget(&on_screen, 1, Some(101), limits).is_ok());
+    }
+
+    /// `replacing` an id that is not on screen (a block from history, not
+    /// currently visible) does not free any on-screen room — it is treated
+    /// as a new placement for budget purposes.
+    #[test]
+    fn validate_placement_budget_replacing_an_off_screen_block_does_not_free_room() {
+        let limits = PlacementLimits {
+            max_concurrent_placements: 4,
+            max_total_pixels: u64::MAX,
+        };
+        let on_screen: Vec<(u64, u64)> = (101..=104u64).map(|id| (id, 1)).collect();
+        assert!(validate_placement_budget(&on_screen, 1, Some(50), limits).is_err());
     }
 
     /// FIX 2: plain `tmath render`/`tmath watch` stream sessions construct

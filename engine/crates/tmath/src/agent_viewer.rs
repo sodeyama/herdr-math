@@ -18,15 +18,20 @@
 //! ([`crate::viewer_viewport::Viewport`]), per plan section D6. Follow mode
 //! pins that window to the newest block as answers stream in; any manual
 //! scroll input disengages follow and `End`/`F` re-engage it (AT-3-502). A
-//! window change triggers a full redraw of the visible blocks from their
-//! retained PNGs (see [`native_stream::StreamSink::redraw_window`]) — no
-//! block is re-rendered on scroll. `q`/`Ctrl-C` close the viewer. Render
-//! failures leave earlier placements intact (fail closed).
+//! window change syncs the terminal from cached PNGs
+//! (see [`native_stream::StreamSink::sync_window`]): placements that left
+//! the window are deleted, and the window's current blocks are re-emitted —
+//! no block is re-rendered, and the transmitted bytes are bounded by the
+//! window size, independent of how much history exists outside it
+//! (AT-3-503). While follow is disengaged, `apply_revision`'s writes for
+//! new/changed blocks are suppressed (state still updates; see
+//! [`native_stream::StreamSink::set_suppress_writes`]) since they would
+//! land outside the window, and `sync_visible_window` reconciles the screen
+//! afterward instead. `q`/`Ctrl-C` close the viewer. Render failures leave
+//! earlier placements intact (fail closed).
 //!
-//! Re-emitting only the placements whose visibility changed (bounded bytes
-//! per scroll step, AT-3-503) and bounded history eviction with re-render on
-//! scroll-back (AT-3-504) are out of scope here; both build on this
-//! viewport.
+//! Bounded history eviction with re-render on scroll-back (AT-3-504) is out
+//! of scope here; it builds on this viewport and the retained-PNG cache.
 
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
@@ -268,10 +273,10 @@ fn handle_scroll_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
         eprintln!("agent-viewer: follow={}", viewer.viewport.following());
     }
     // Render/limit failures elsewhere in this module are fail-closed (log and
-    // keep the previous placements intact); a redraw failure follows the same
+    // keep the previous placements intact); a sync failure follows the same
     // contract rather than tearing down the viewer process over a scroll step.
     if moved {
-        if let Err(error) = redraw_visible_window(viewer) {
+        if let Err(error) = sync_visible_window(viewer) {
             eprintln!("agent-viewer: {error}");
         }
     }
@@ -315,16 +320,18 @@ fn block_heights(viewer: &Viewer) -> Vec<u32> {
         .collect()
 }
 
-/// Redraws the terminal from the viewport's current visible-block range.
-fn redraw_visible_window(viewer: &mut Viewer) -> Result<(), String> {
+/// Syncs the terminal to the viewport's current visible-block range
+/// (AT-3-503): deletes placements that left the window and re-emits the
+/// window's current blocks from cache, without touching anything outside
+/// it. An empty visible range (no blocks, or the window scrolled past all
+/// content) is passed through so a previously non-empty window gets its
+/// placements deleted too, rather than left stale on screen.
+fn sync_visible_window(viewer: &mut Viewer) -> Result<(), String> {
     let visible = viewer.viewport.visible_blocks();
-    if visible.is_empty() {
-        return Ok(());
-    }
     viewer
         .sink
-        .redraw_window(visible.first..visible.last_exclusive)
-        .map_err(|error| format!("redraw_failed ({:?})", error.safe_record().code))
+        .sync_window(visible.first..visible.last_exclusive)
+        .map_err(|error| format!("sync_failed ({:?})", error.safe_record().code))
 }
 
 /// Splits the received document into blocks, plans per-block placement
@@ -356,6 +363,20 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         }
     };
 
+    // While follow is disengaged, new/changed blocks land outside the
+    // reader's visible window (new content only ever appends at the bottom;
+    // an edited block that happens to be inside the window is still covered
+    // because `sync_visible_window` below re-emits the whole window, not
+    // just what changed). Suppressing terminal writes here means
+    // `apply_revision` still updates all placement state (ids, hashes, the
+    // render cache, retained PNGs) exactly as it would streaming — only the
+    // terminal bytes are skipped, so the pane is not disturbed by output the
+    // reader cannot currently see. `sync_visible_window` afterward is what
+    // actually reconciles the screen, and its cost is bounded by the window
+    // size (AT-3-503), not by how much history changed.
+    viewer
+        .sink
+        .set_suppress_writes(!viewer.viewport.following());
     if let Err(error) = native_stream::apply_revision(
         &revision,
         &viewer.options,
@@ -364,29 +385,25 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         &mut viewer.formula_errors,
         &mut viewer.sink,
     ) {
+        viewer.sink.set_suppress_writes(false);
         eprintln!(
             "agent-viewer: render_failed ({:?})",
             error.safe_record().code
         );
         return Ok(());
     }
+    viewer.sink.set_suppress_writes(false);
 
-    // `apply_revision` already streamed the append/replace/remove operations
-    // it planned straight to the pane bottom (the same as stream mode),
-    // which is correct while follow is engaged but would otherwise push new
-    // content into the reader's scrolled-back window. Feeding the new block
-    // heights into the viewport keeps the model in sync: while follow is
-    // engaged the window re-pins to the bottom, matching what was just
-    // streamed, so no extra redraw is needed. While disengaged, the offset
-    // is deliberately left as-is per AT-3-502, so the pane now shows the
-    // freshly appended block(s) at the bottom instead of the reader's
-    // scrolled-back view — an immediate redraw restores the correct window
-    // from the model. This emit-then-redraw double write is the T3-302
-    // placeholder full-window cost; T3-303's visibility-gated emission
-    // replaces it with re-emitting only what actually changed.
+    // Feed the new block heights into the viewport: while follow is engaged
+    // the window re-pins to the bottom, matching what `apply_revision` just
+    // streamed directly, so no extra sync is needed. While disengaged, the
+    // offset is deliberately left as-is per AT-3-502, and the writes above
+    // were suppressed, so the screen is still showing the reader's prior
+    // window — `sync_visible_window` reconciles it against the (possibly
+    // now-different) window contents using only cached PNGs.
     viewer.viewport.set_block_heights(block_heights(viewer));
     if !viewer.viewport.following() {
-        if let Err(error) = redraw_visible_window(viewer) {
+        if let Err(error) = sync_visible_window(viewer) {
             eprintln!("agent-viewer: {error}");
         }
     }
@@ -495,6 +512,49 @@ mod tests {
             viewer.viewport.offset(),
             offset_after_scroll,
             "the offset measured from the top stays stable across an append while disengaged"
+        );
+    }
+
+    /// AT-3-503: `render_and_place` suppresses terminal writes while follow
+    /// is disengaged (visibility-gated emission), but placement *state* must
+    /// still update exactly as if writes were not suppressed — the planner's
+    /// block list, ids, and viewport heights all reflect the new document,
+    /// so re-engaging follow (`End`) immediately shows the correct tail
+    /// without needing another `render_and_place` call.
+    #[test]
+    fn append_while_disengaged_still_updates_state_for_the_next_sync() {
+        let mut viewer = test_viewer(2);
+        render_and_place(&mut viewer, "One.\n\nTwo.\n\n").unwrap();
+
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[<64;10;20M"); // wheel up
+        let wheel_up = decoder.next_event().expect("wheel event");
+        handle_scroll_input(&mut viewer, &wheel_up);
+        assert!(!viewer.viewport.following());
+
+        let rows_before = viewer.viewport.total_rows();
+        render_and_place(&mut viewer, "One.\n\nTwo.\n\nThree.\n\nFour.\n\n").unwrap();
+        assert_eq!(
+            viewer.planner.blocks().len(),
+            4,
+            "the planner's block state reflects the new document even though \
+             the writes for it were suppressed"
+        );
+        assert!(
+            viewer.viewport.total_rows() > rows_before,
+            "viewport heights grow from the updated planner state (two new \
+             blocks), not skipped alongside the writes"
+        );
+
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[4~");
+        let end = decoder.next_event().expect("end key");
+        handle_scroll_input(&mut viewer, &end);
+        assert!(viewer.viewport.following(), "End re-engages follow");
+        assert_eq!(
+            viewer.viewport.offset(),
+            viewer.viewport.max_offset(),
+            "re-engaging follow jumps straight to the up-to-date tail"
         );
     }
 

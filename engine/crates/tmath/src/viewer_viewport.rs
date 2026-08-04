@@ -170,6 +170,12 @@ pub struct VisibleRange {
 }
 
 impl VisibleRange {
+    /// Not called from `agent_viewer` (since T3-303, `sync_visible_window`
+    /// passes an empty range straight through to `sync_window`, which
+    /// correctly deletes a previously non-empty window's placements rather
+    /// than skip the call). Kept as a tested public predicate for the empty
+    /// case.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.first >= self.last_exclusive
     }
