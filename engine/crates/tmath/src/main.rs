@@ -35,6 +35,7 @@ mod native_stream;
 mod native_watch;
 mod render;
 mod terminal_output;
+mod transcript_adapter;
 mod viewer_viewport;
 
 fn main() {

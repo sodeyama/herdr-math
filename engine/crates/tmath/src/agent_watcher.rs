@@ -14,13 +14,16 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use tmath_core::agent::{
-    capture, display_pane, encode_document, encode_quit, find_answer, kill_pane, shell_quote,
-    split_viewer, PaneId,
+    capture, display_pane, encode_append, encode_document, encode_quit, find_answer, kill_pane,
+    pane_current_path, shell_quote, split_viewer, PaneId,
 };
 use tmath_core::input::InputDecoder;
 use tmath_core::scroll_driver::is_exit_signal;
 
 use crate::render::renderer_worker_path;
+use crate::transcript_adapter::{
+    newest_transcript_file, project_transcript_dir, TranscriptAdapter, TranscriptDelta,
+};
 
 /// Inactivity (ms) an answer must hold before it is emitted.
 const DEFAULT_WAIT_MS: u64 = 600;
@@ -87,6 +90,25 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         let _ = crate::enable_tmux_passthrough();
     }
 
+    // D5's source-adapter priority: prefer a Claude Code transcript when one
+    // can be located and opened, since it yields the original Markdown
+    // source with no capture-side heuristics. `transcript` being `None`
+    // (not found, or a later read/parse failure) always means "use the
+    // existing tmux capture-pane path below" — the two never run at once,
+    // and there is no separate error state to recover from: `None` itself
+    // is the fallback.
+    let transcript = open_transcript_for(&source);
+    eprintln!(
+        "tmath agent: source={}",
+        if transcript.is_some() {
+            "transcript"
+        } else {
+            "capture"
+        }
+    );
+    let mut transcript = transcript;
+    let mut transcript_seq: u64 = 0;
+
     eprintln!(
         "tmath agent: watching {} → {}; q/Ctrl-C to stop",
         source.as_str(),
@@ -103,6 +125,32 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     loop {
         if peer.is_none() {
             peer = accept_peer(&listener);
+        }
+
+        if let Some(adapter) = transcript.as_mut() {
+            if !pane_alive(&source) {
+                eprintln!("tmath agent: source pane closed; stopping");
+                return finish(&mut peer, &viewer_pane);
+            }
+            match adapter.poll() {
+                Ok(deltas) => {
+                    for delta in deltas {
+                        emit_transcript_delta(&mut peer, delta, &mut transcript_seq);
+                    }
+                }
+                Err(_) => {
+                    // Fail closed: degrade to the capture adapter for the
+                    // rest of this session rather than retry a transcript
+                    // that stopped making sense (AT-3-602). No content, only
+                    // the event name, ever reaches this log line.
+                    eprintln!("tmath agent: source=capture (transcript_degraded)");
+                    transcript = None;
+                }
+            }
+            if transcript.is_some() {
+                std::thread::sleep(Duration::from_millis(parsed.poll_ms));
+                continue;
+            }
         }
 
         if stdin_has_input() {
@@ -439,6 +487,56 @@ fn stdin_has_input() -> bool {
 
 /// Writes a document message to the viewer, tolerating a not-yet-connected or
 /// disconnected viewer.
+/// Locates and opens a Claude Code transcript for the watched pane's current
+/// working directory, or `None` when there is no usable transcript — the
+/// caller's fallback is simply "keep using the capture adapter", not a
+/// retry loop here. Resolution: `tmux display-message`'s
+/// `#{pane_current_path}` for the pane's cwd, `$HOME` joined with the
+/// Claude Code project-slug rule (D5) for the transcript directory, then
+/// the most recently modified `*.jsonl` file in it.
+fn open_transcript_for(source: &PaneId) -> Option<TranscriptAdapter> {
+    let home = env::var_os("HOME")?;
+    let cwd = tmux_output(&pane_current_path(source)).ok()?;
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return None;
+    }
+    let dir = project_transcript_dir(std::path::Path::new(&home), std::path::Path::new(cwd))?;
+    let file = newest_transcript_file(&dir)?;
+    TranscriptAdapter::open(&file).ok()
+}
+
+/// Sends one transcript-derived delta to the viewer as the corresponding
+/// T3-401 wire message: a `Reset` becomes a whole `Document` frame (and
+/// resets the sequence counter, matching `DeltaState`'s resync contract on
+/// the receiving end), an `Append` becomes an `Append` frame carrying the
+/// next sequence number.
+fn emit_transcript_delta(peer: &mut Option<UnixStream>, delta: TranscriptDelta, seq: &mut u64) {
+    let frame = match delta {
+        TranscriptDelta::Reset(text) => {
+            *seq = 0;
+            encode_document(&text)
+        }
+        TranscriptDelta::Append(text) => {
+            *seq += 1;
+            encode_append(*seq, &text)
+        }
+    };
+    let Ok(frame) = frame else {
+        eprintln!("tmath agent: transcript delta exceeds renderer bound");
+        return;
+    };
+    match peer.as_mut() {
+        Some(stream) => {
+            if let Err(error) = stream.write_all(&frame) {
+                eprintln!("tmath agent: viewer disconnected ({error}); dropping");
+                *peer = None;
+            }
+        }
+        None => eprintln!("tmath agent: no viewer connected; transcript delta dropped"),
+    }
+}
+
 fn emit_document(peer: &mut Option<UnixStream>, text: &str, viewer_pane: &PaneId) {
     let Ok(frame) = encode_document(text) else {
         eprintln!("tmath agent: document exceeds renderer bound");
@@ -657,5 +755,79 @@ mod tests {
         );
         assert!(!cmd.contains("TMATH_TMUX_TRANSPORT"));
         assert!(!cmd.contains("TMATH_DPR"));
+    }
+
+    // AT-3-602 supervisor fix 1: reassembling a two-message answer must not
+    // fuse the messages into one paragraph. This drives the actual wire path
+    // (`emit_transcript_delta` -> a real `UnixStream` -> `Decoder` ->
+    // `DeltaState::apply`, exactly as the viewer would see it) rather than
+    // asserting on `TranscriptDelta` text directly, so it proves the
+    // document-level invariant the supervisor asked for.
+    #[test]
+    fn a_two_message_answer_reassembles_with_a_blank_line_between_messages() {
+        let (mut tx, mut rx) = UnixStream::pair().unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut peer = Some(tx.try_clone().unwrap());
+        let mut seq = 0u64;
+
+        emit_transcript_delta(
+            &mut peer,
+            TranscriptDelta::Reset("Part one.".to_string()),
+            &mut seq,
+        );
+        emit_transcript_delta(
+            &mut peer,
+            TranscriptDelta::Append("\n\nPart two.".to_string()),
+            &mut seq,
+        );
+        tx.flush().unwrap();
+        drop(tx);
+        drop(peer);
+
+        let mut bytes = Vec::new();
+        rx.read_to_end(&mut bytes).unwrap();
+
+        let mut decoder = tmath_core::agent::Decoder::new();
+        decoder.push(&bytes);
+        let mut state = tmath_core::agent::DeltaState::new(usize::MAX);
+        let mut applied = 0;
+        while let Some(message) = decoder.next_message() {
+            state.apply(&message.unwrap()).unwrap();
+            applied += 1;
+        }
+
+        assert_eq!(applied, 2, "both frames decoded");
+        assert_eq!(state.document(), "Part one.\n\nPart two.");
+    }
+
+    // AT-3-602 supervisor fix 1, Reset side: the first block of a fresh
+    // answer must not gain a leading separator.
+    #[test]
+    fn a_reset_does_not_get_a_leading_separator() {
+        let (mut tx, mut rx) = UnixStream::pair().unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut peer = Some(tx.try_clone().unwrap());
+        let mut seq = 0u64;
+
+        emit_transcript_delta(
+            &mut peer,
+            TranscriptDelta::Reset("Only message.".to_string()),
+            &mut seq,
+        );
+        tx.flush().unwrap();
+        drop(tx);
+        drop(peer);
+
+        let mut bytes = Vec::new();
+        rx.read_to_end(&mut bytes).unwrap();
+
+        let mut decoder = tmath_core::agent::Decoder::new();
+        decoder.push(&bytes);
+        let mut state = tmath_core::agent::DeltaState::new(usize::MAX);
+        while let Some(message) = decoder.next_message() {
+            state.apply(&message.unwrap()).unwrap();
+        }
+
+        assert_eq!(state.document(), "Only message.");
     }
 }

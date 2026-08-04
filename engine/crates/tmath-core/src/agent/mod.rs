@@ -16,5 +16,6 @@ pub use codec::{
     DeltaState, Message, DELTA_PROTOCOL_VERSION,
 };
 pub use tmux::{
-    capture, display_pane, kill_pane, shell_quote, split_viewer, valid_pane_id, PaneId,
+    capture, display_pane, kill_pane, pane_current_path, shell_quote, split_viewer, valid_pane_id,
+    PaneId,
 };
