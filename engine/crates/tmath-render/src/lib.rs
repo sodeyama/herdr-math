@@ -9,6 +9,7 @@ mod math;
 mod options;
 mod prose;
 mod scanner;
+mod stream;
 mod typst_doc;
 
 pub use block::{Block, BlockKind};
@@ -20,6 +21,7 @@ pub use math::{render_formula, MathImage};
 pub use options::{RenderOptions, RenderOptionsError, DARK_THEME_TEXT_COLOR};
 pub use prose::{render_prose_block, RenderedImage};
 pub use scanner::{scan_latex, Formula, ScannerLimits};
+pub use stream::{Revision, StreamSplitter};
 pub use typst_doc::{compose_block, TypstSource};
 
 /// A rendered block image and any formula-local safe errors.
