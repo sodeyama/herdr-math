@@ -60,6 +60,11 @@ fn no_shell_eval_of_user_input() {
     let root = workspace_root();
     for path in rust_sources(&root) {
         let source = fs::read_to_string(&path).unwrap();
+        // Test modules contain inert adversarial input fixtures such as
+        // `#eval(...)`; audit only the compiled production portion.
+        let source = source
+            .split_once("\n#[cfg(test)]")
+            .map_or(source.as_str(), |(production, _)| production);
         // The documented renderer/native-helper spawns use fixed paths; an eval
         // or variable-driven shell invocation would be a new threat surface.
         if source.contains("eval(") || source.contains("sh -c") {

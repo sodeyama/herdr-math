@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde_json::json;
-use tmath_core::ipc::{RenderOptions, RenderResponse, IPC_MAX_REQUEST_BYTES};
+use tmath_core::ipc::{RenderOptions as IpcRenderOptions, RenderResponse, IPC_MAX_REQUEST_BYTES};
 use tmath_core::placement::{
     decode_png, emit_placed_block_cursor, CellSize, PlacementError, PlacementLimits,
     PlacementTracker,
@@ -29,6 +29,7 @@ use crate::render::{render_document_text, renderer_worker_path};
 mod agent_allowlist;
 mod agent_viewer;
 mod agent_watcher;
+mod native_render;
 mod render;
 mod terminal_output;
 
@@ -76,6 +77,7 @@ fn help_text() -> String {
          USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath agent [OPTIONS]\n  tmath agent-viewer <socket-path>\n  tmath agent-enable [<dir>]\n  tmath agent-disable [<dir>]\n  tmath agent-allowed [<dir>]\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
          \n\
          OPTIONS (render):\n  --content-width <px>  Render width in pixels (default 480)\n  --font-size <px>      Base font size in pixels (default 14)\n\
+  --engine <engine>     Renderer: node or native (default node)\n\
          \n\
          OPTIONS (agent):\n  --source-pane <id>  tmux pane to watch (default: current pane)\n  --percent <p>       Viewer split width in percent (default 35)\n  --wait-ms <ms>      Answer settle debounce (default 600)\n  --poll-ms <ms>      Pane poll interval (default 250)\n  --history <lines>   Scrollback lines to capture (default 500)\n\
          \n\
@@ -101,18 +103,26 @@ fn help_text() -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderEngine {
+    Node,
+    Native,
+}
+
 /// Parsed render arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenderArgs {
     input: String,
     content_width: Option<u32>,
     font_size: Option<u32>,
+    engine: RenderEngine,
 }
 
 fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     let mut input: Option<String> = None;
     let mut content_width: Option<u32> = None;
     let mut font_size: Option<u32> = None;
+    let mut engine = RenderEngine::Node;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -134,6 +144,19 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
                 );
                 index += 2;
             }
+            "--engine" => {
+                let value = args.get(index + 1).ok_or("--engine needs a value")?;
+                engine = match value.as_str() {
+                    "node" => RenderEngine::Node,
+                    "native" => RenderEngine::Native,
+                    _ => {
+                        return Err(format!(
+                            "invalid render engine {value:?}; expected 'node' or 'native'"
+                        ))
+                    }
+                };
+                index += 2;
+            }
             "--help" | "-h" => return Err("use 'tmath --help'".into()),
             other if other.starts_with('-') && other != "-" => {
                 return Err(format!("unknown option {other:?}"));
@@ -152,6 +175,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
         input,
         content_width,
         font_size,
+        engine,
     })
 }
 
@@ -170,6 +194,17 @@ fn render(args: &[String]) -> Result<i32, String> {
         None
     };
 
+    match parsed.engine {
+        RenderEngine::Node => render_with_node(&parsed, &source, connected),
+        RenderEngine::Native => render_with_native(&parsed, &source, connected),
+    }
+}
+
+fn render_with_node(
+    parsed: &RenderArgs,
+    source: &str,
+    connected: Option<(Terminal<StdioTty>, (u32, u32))>,
+) -> Result<i32, String> {
     let mut layout = serde_json::Map::new();
     if let Some(width) = parsed.content_width {
         layout.insert("contentWidthPx".into(), json!(width));
@@ -181,13 +216,12 @@ fn render(args: &[String]) -> Result<i32, String> {
         let scale = device_scale_factor(*cell);
         layout.insert("deviceScaleFactor".into(), json!(scale));
     }
-    let options = (!layout.is_empty()).then_some(RenderOptions {
+    let options = (!layout.is_empty()).then_some(IpcRenderOptions {
         limits: None,
         layout: Some(serde_json::Value::Object(layout)),
     });
 
-    let response = render_document_text(&source, options)?;
-    match response {
+    match render_document_text(source, options)? {
         RenderResponse::Success(success) => {
             let png = BASE64
                 .decode(success.base64.as_bytes())
@@ -209,6 +243,45 @@ fn render(args: &[String]) -> Result<i32, String> {
                 failure.error.code, failure.error.retryable
             );
             Ok(1)
+        }
+    }
+}
+
+fn render_with_native(
+    parsed: &RenderArgs,
+    source: &str,
+    connected: Option<(Terminal<StdioTty>, (u32, u32))>,
+) -> Result<i32, String> {
+    let scale = connected
+        .as_ref()
+        .map_or(1, |(_, cell)| device_scale_factor(*cell));
+    let result = native_render::render_document_native(
+        source,
+        parsed.content_width.unwrap_or(480),
+        parsed.font_size.unwrap_or(14),
+        scale as u8,
+    );
+    let success = match result {
+        Ok(success) => success,
+        Err(error) => {
+            let record = serde_json::to_string(error.safe_record())
+                .map_err(|_| "serialize native renderer error".to_string())?;
+            eprintln!("{record}");
+            return Ok(1);
+        }
+    };
+
+    match connected {
+        Some((terminal, cell)) => place_in_terminal(terminal, cell, &success.png),
+        None => {
+            println!(
+                "ok width={} height={} bytes={} renderer=native formula_errors={}",
+                success.width,
+                success.height,
+                success.png.len(),
+                success.formula_errors
+            );
+            Ok(0)
         }
     }
 }
@@ -267,7 +340,11 @@ fn connect_terminal() -> Result<(Terminal<StdioTty>, (u32, u32)), String> {
 /// `terminal` and `cell` come from `connect_terminal`, called before
 /// rendering so the renderer could rasterize at the terminal's actual pixel
 /// density.
-fn place_in_terminal(mut terminal: Terminal<StdioTty>, cell: (u32, u32), png: &[u8]) -> Result<i32, String> {
+fn place_in_terminal(
+    mut terminal: Terminal<StdioTty>,
+    cell: (u32, u32),
+    png: &[u8],
+) -> Result<i32, String> {
     const MAX_PIXELS: u64 = 64 * 1024 * 1024;
     let (width, height, rgba) = decode_png(png, MAX_PIXELS)
         .map_err(|error: PlacementError| format!("decode rendered image: {error}"))?;
@@ -540,13 +617,22 @@ mod tests {
         let parsed = parse_render_args(&args(&["doc.md"])).unwrap();
         assert_eq!(parsed.input, "doc.md");
         assert_eq!(parsed.content_width, None);
+        assert_eq!(parsed.engine, RenderEngine::Node);
 
-        let parsed =
-            parse_render_args(&args(&["--content-width", "800", "--font-size", "18", "-"]))
-                .unwrap();
+        let parsed = parse_render_args(&args(&[
+            "--content-width",
+            "800",
+            "--font-size",
+            "18",
+            "--engine",
+            "native",
+            "-",
+        ]))
+        .unwrap();
         assert_eq!(parsed.input, "-");
         assert_eq!(parsed.content_width, Some(800));
         assert_eq!(parsed.font_size, Some(18));
+        assert_eq!(parsed.engine, RenderEngine::Native);
     }
 
     #[test]
@@ -563,6 +649,10 @@ mod tests {
         assert!(
             parse_render_args(&args(&["--bogus", "-"])).is_err(),
             "unknown option"
+        );
+        assert!(
+            parse_render_args(&args(&["--engine", "unknown", "-"])).is_err(),
+            "unknown engine"
         );
     }
 
@@ -585,6 +675,7 @@ mod tests {
         assert!(help.contains("agent-allowed"));
         assert!(help.contains("--content-width"));
         assert!(help.contains("--font-size"));
+        assert!(help.contains("--engine"));
         assert!(help.contains("--source-pane"));
     }
 }

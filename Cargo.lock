@@ -2402,9 +2402,11 @@ name = "tmath"
 version = "0.2.0"
 dependencies = [
  "base64",
+ "png 0.18.1",
  "rustix",
  "serde_json",
  "tmath-core",
+ "tmath-render",
 ]
 
 [[package]]
