@@ -38,9 +38,10 @@
 - [x] **T3-102** Port the scanner (`scan-latex.ts`) to Rust with the V2 fixture
       corpus. (AT-3-102 PASS; commit `7901b92`; 28 scanner tests incl. a
       fixture-sync guard over `answer-corpus.json`)
-- [ ] **T3-103** Markdown mapping: pulldown-cmark → Typst structured content
+- [x] **T3-103** Markdown mapping: pulldown-cmark → Typst structured content
       (no string-concatenated markup); syntect code blocks; inert links/images.
-      (AT-3-101, AT-3-701 groundwork)
+      (AT-3-101 groundwork + AT-3-701 injection corpus; commit `13f31f5`;
+      60 crate tests green)
 - [ ] **T3-104** Math rendering: RaTeX display + inline embedding; per-formula
       fail-closed error badges. (AT-3-103, AT-3-104)
 - [ ] **T3-105** Per-block limits and deadlines (D7); determinism.
