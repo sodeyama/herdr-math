@@ -14,13 +14,19 @@
 //! or re-transmitted, and a shorter replacement answer clears its stale
 //! placement instead of leaving orphan cells (`PlanOp::Remove`).
 //!
-//! Follow mode is the only viewport model implemented: new blocks always
-//! append below the last placement, in flowing order, so the pane scrolls
-//! naturally like stream mode. Backward scrolling relies on the pane's own
-//! scrollback (mouse wheel / arrows scroll the tmux pane or outer terminal)
-//! rather than a re-anchored visibility-window; see the `Viewer::follow`
-//! field doc comment for the rationale. `q`/`Ctrl-C` close the viewer.
-//! Render failures leave earlier placements intact (fail closed).
+//! The viewer owns an explicit visibility window over the placed blocks
+//! ([`crate::viewer_viewport::Viewport`]), per plan section D6. Follow mode
+//! pins that window to the newest block as answers stream in; any manual
+//! scroll input disengages follow and `End`/`F` re-engage it (AT-3-502). A
+//! window change triggers a full redraw of the visible blocks from their
+//! retained PNGs (see [`native_stream::StreamSink::redraw_window`]) — no
+//! block is re-rendered on scroll. `q`/`Ctrl-C` close the viewer. Render
+//! failures leave earlier placements intact (fail closed).
+//!
+//! Re-emitting only the placements whose visibility changed (bounded bytes
+//! per scroll step, AT-3-503) and bounded history eviction with re-render on
+//! scroll-back (AT-3-504) are out of scope here; both build on this
+//! viewport.
 
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
@@ -29,32 +35,24 @@ use std::time::{Duration, Instant};
 use tmath_core::agent::{Decoder, Message};
 use tmath_core::input::InputDecoder;
 use tmath_core::placement::CellSize;
-use tmath_core::scroll_driver::is_exit_signal;
+use tmath_core::scroll_driver::{is_exit_signal, scroll_delta};
 use tmath_core::terminal::{StdioTty, Terminal};
 use tmath_render::{
     CacheBudget, Limits, PlacementPlanner, RenderCache, RenderOptions, StreamSplitter,
 };
 
 use crate::native_stream::{self, StreamSink};
+use crate::viewer_viewport::Viewport;
 
 const CONNECT_RETRIES: u32 = 50;
 const CONNECT_RETRY_MS: u64 = 100;
 const POLL_TIMEOUT: Duration = Duration::from_millis(40);
 
-/// Whether the viewport currently tracks the newest appended block. Any
-/// manual scroll input disengages follow; `End`/`F` re-engage it. Because
-/// blocks are placed in flowing order in the pane's own main-buffer
-/// scrollback (never cropped or re-anchored), "follow" and "not follow" do
-/// not change what gets transmitted on append — the distinction is
-/// user-visible only through the outer terminal's/tmux's own scroll
-/// position, which this process does not control. Tracking the flag here
-/// keeps the state machine explicit and testable, and is the seam a future
-/// visibility-window implementation (AT-3-503 in full) would extend.
 struct Viewer {
     stream: UnixStream,
     input: InputDecoder,
     messages: Decoder,
-    follow: bool,
+    viewport: Viewport,
     cache: RenderCache,
     limits: Limits,
     planner: PlacementPlanner,
@@ -62,6 +60,12 @@ struct Viewer {
     options: RenderOptions,
     sink: StreamSink,
     blocks_placed: usize,
+    /// Measured terminal cell size, used to convert the planner's per-block
+    /// pixel dimensions into the row heights the viewport tracks. Computing
+    /// heights from `planner.blocks()` (rather than reading them back out of
+    /// `sink`) keeps the viewport buildable and testable in `StreamSink::Summary`
+    /// mode, which has no terminal and no placed-block state of its own.
+    cell: CellSize,
 }
 
 pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
@@ -106,11 +110,10 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
     // pane's measured geometry so the rendered images match the viewer
     // pane's width and the surrounding terminal text size (there is no CLI
     // override for the viewer, which always runs against a real terminal).
-    let pane_cols = terminal
+    let pane_size = terminal
         .size()
-        .map_err(|error| format!("measure viewer pane size: {error}"))?
-        .cols;
-    let fitted = crate::layout::terminal_fit_layout(cell.width, cell.height, pane_cols);
+        .map_err(|error| format!("measure viewer pane size: {error}"))?;
+    let fitted = crate::layout::terminal_fit_layout(cell.width, cell.height, pane_size.cols);
     let options = RenderOptions::new(
         fitted.content_width_pt,
         fitted.font_size_pt,
@@ -130,13 +133,14 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
     let sink = StreamSink::new(
         Some((terminal, (cell.width, cell.height))),
         scaled.image_pixels,
-    );
+    )
+    .with_retained_pngs();
 
     let mut viewer = Viewer {
         stream,
         input: InputDecoder::new(),
         messages: Decoder::new(),
-        follow: true,
+        viewport: Viewport::new(pane_size.rows),
         cache,
         limits,
         planner: PlacementPlanner::new(),
@@ -144,6 +148,7 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         options,
         sink,
         blocks_placed: 0,
+        cell,
     };
     let _ = viewer.stream.set_nonblocking(true);
     eprintln!("agent-viewer: connected; q/Ctrl-C closes");
@@ -198,10 +203,10 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
             }
         }
 
-        // Terminal input: `q`/Ctrl-C close the viewer. Any scroll-shaped
-        // input disengages follow; `End`/`F` re-engage it. Actual scrolling
-        // is left to the pane's own scrollback (see the `Viewer::follow`
-        // doc comment).
+        // Terminal input: `q`/Ctrl-C close the viewer. `End`/`F` re-engage
+        // follow and jump the viewport to the bottom; any other scroll-shaped
+        // input disengages follow and moves the viewport. A window change
+        // triggers a redraw of the newly visible blocks.
         if stdin_readable() {
             let mut chunk = [0u8; 256];
             let mut stdin = io::stdin();
@@ -212,7 +217,7 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
                         if is_exit_signal(&event) {
                             return Ok(0);
                         }
-                        handle_follow_input(viewer, &event);
+                        handle_scroll_input(viewer, &event);
                     }
                 }
                 Ok(_) => {}
@@ -228,11 +233,17 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
     }
 }
 
-fn handle_follow_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
+/// Routes one decoded input event through the viewport (AT-3-502): `End`/`F`
+/// re-engage follow and jump to the bottom; any other scroll-shaped event
+/// (wheel, arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`) disengages follow and moves
+/// the window by the same row mapping stream mode's scroll driver uses. A
+/// window that actually moved triggers a redraw of the newly visible blocks.
+fn handle_scroll_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
     use tmath_core::input::{Event, KeyEvent};
     use tmath_core::mouse::Key;
 
-    match event {
+    let following_before = viewer.viewport.following();
+    let moved = match event {
         Event::Key(KeyEvent {
             key: Key::End,
             ctrl: false,
@@ -242,11 +253,27 @@ fn handle_follow_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
             key: Key::Char('F'),
             ctrl: false,
             ..
-        }) => viewer.follow = true,
-        other if tmath_core::scroll_driver::scroll_delta(other, None).is_some() => {
-            viewer.follow = false;
+        }) => {
+            let before = viewer.viewport.offset();
+            viewer.viewport.jump_to_bottom_and_follow();
+            viewer.viewport.offset() != before
         }
-        _ => {}
+        other => match scroll_delta(other, None) {
+            Some(delta) => viewer.viewport.scroll_by(delta),
+            None => false,
+        },
+    };
+
+    if viewer.viewport.following() != following_before {
+        eprintln!("agent-viewer: follow={}", viewer.viewport.following());
+    }
+    // Render/limit failures elsewhere in this module are fail-closed (log and
+    // keep the previous placements intact); a redraw failure follows the same
+    // contract rather than tearing down the viewer process over a scroll step.
+    if moved {
+        if let Err(error) = redraw_visible_window(viewer) {
+            eprintln!("agent-viewer: {error}");
+        }
     }
 }
 
@@ -273,6 +300,31 @@ fn stdin_readable() -> bool {
     rustix::event::poll(&mut fds, Some(&timeout))
         .map(|n| n > 0)
         .unwrap_or(false)
+}
+
+/// Converts the planner's current per-block pixel dimensions into the row
+/// heights the viewport tracks, using the measured terminal cell size.
+fn block_heights(viewer: &Viewer) -> Vec<u32> {
+    viewer
+        .planner
+        .blocks()
+        .iter()
+        .map(|block| {
+            tmath_core::placement::grid_for(block.width_px, block.height_px, viewer.cell).1
+        })
+        .collect()
+}
+
+/// Redraws the terminal from the viewport's current visible-block range.
+fn redraw_visible_window(viewer: &mut Viewer) -> Result<(), String> {
+    let visible = viewer.viewport.visible_blocks();
+    if visible.is_empty() {
+        return Ok(());
+    }
+    viewer
+        .sink
+        .redraw_window(visible.first..visible.last_exclusive)
+        .map_err(|error| format!("redraw_failed ({:?})", error.safe_record().code))
 }
 
 /// Splits the received document into blocks, plans per-block placement
@@ -319,9 +371,25 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // New content always appends at the bottom of the pane's scrollback, so
-    // any earlier manual scroll is implicitly caught up; re-engage follow.
-    viewer.follow = true;
+    // `apply_revision` already streamed the append/replace/remove operations
+    // it planned straight to the pane bottom (the same as stream mode),
+    // which is correct while follow is engaged but would otherwise push new
+    // content into the reader's scrolled-back window. Feeding the new block
+    // heights into the viewport keeps the model in sync: while follow is
+    // engaged the window re-pins to the bottom, matching what was just
+    // streamed, so no extra redraw is needed. While disengaged, the offset
+    // is deliberately left as-is per AT-3-502, so the pane now shows the
+    // freshly appended block(s) at the bottom instead of the reader's
+    // scrolled-back view — an immediate redraw restores the correct window
+    // from the model. This emit-then-redraw double write is the T3-302
+    // placeholder full-window cost; T3-303's visibility-gated emission
+    // replaces it with re-emitting only what actually changed.
+    viewer.viewport.set_block_heights(block_heights(viewer));
+    if !viewer.viewport.following() {
+        if let Err(error) = redraw_visible_window(viewer) {
+            eprintln!("agent-viewer: {error}");
+        }
+    }
     viewer.blocks_placed = viewer.planner.blocks().len();
     let stats = viewer.cache.stats();
     eprintln!(
@@ -344,34 +412,100 @@ mod tests {
         decoder.push(b"\x1b[<65;10;20M");
         let wheel = decoder.next_event().expect("wheel event");
 
-        let mut viewer = test_viewer();
-        assert!(viewer.follow);
-        handle_follow_input(&mut viewer, &wheel);
-        assert!(!viewer.follow, "manual scroll disengages follow");
+        // A tall viewport in rows relative to the content built below leaves
+        // scroll_delta's clamp with room to move, so the assertions exercise
+        // the follow flag transition rather than getting clamped to 0 either
+        // way.
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        assert!(viewer.viewport.following());
+        handle_scroll_input(&mut viewer, &wheel);
+        assert!(
+            !viewer.viewport.following(),
+            "manual scroll disengages follow"
+        );
 
         let mut decoder = InputDecoder::new();
         decoder.push(b"\x1b[4~");
         let end = decoder.next_event().expect("end key");
-        handle_follow_input(&mut viewer, &end);
-        assert!(viewer.follow, "End re-engages follow");
+        handle_scroll_input(&mut viewer, &end);
+        assert!(viewer.viewport.following(), "End re-engages follow");
 
-        handle_follow_input(&mut viewer, &wheel);
-        assert!(!viewer.follow);
+        handle_scroll_input(&mut viewer, &wheel);
+        assert!(!viewer.viewport.following());
         let mut decoder = InputDecoder::new();
         decoder.push(b"F");
         let shift_f = decoder.next_event().expect("F key");
-        handle_follow_input(&mut viewer, &shift_f);
-        assert!(viewer.follow, "F re-engages follow");
+        handle_scroll_input(&mut viewer, &shift_f);
+        assert!(viewer.viewport.following(), "F re-engages follow");
     }
 
-    fn test_viewer() -> Viewer {
+    /// AT-3-502: while follow is engaged, an appended block keeps the
+    /// viewport pinned to the bottom (the newest block stays visible).
+    #[test]
+    fn append_while_following_keeps_the_viewport_pinned_to_the_tail() {
+        let mut viewer = test_viewer(2);
+        render_and_place(&mut viewer, "One.\n\n").unwrap();
+        assert!(viewer.viewport.following());
+        assert_eq!(
+            viewer.viewport.offset(),
+            viewer.viewport.max_offset(),
+            "follow keeps the window pinned to the bottom after the first block"
+        );
+
+        render_and_place(&mut viewer, "One.\n\nTwo.\n\nThree.\n\n").unwrap();
+        assert!(
+            viewer.viewport.following(),
+            "appending does not disengage follow"
+        );
+        assert_eq!(
+            viewer.viewport.offset(),
+            viewer.viewport.max_offset(),
+            "follow re-pins to the bottom as blocks are appended"
+        );
+    }
+
+    /// AT-3-502: this test replaces the pre-T3-302 behavior where
+    /// `render_and_place` unconditionally re-engaged follow after every
+    /// document. Once a manual scroll has disengaged follow, an appended
+    /// block must not silently re-engage it, and the scrolled-up offset must
+    /// not jump to the new bottom.
+    #[test]
+    fn append_while_disengaged_does_not_reengage_follow_or_move_the_offset() {
+        let mut viewer = test_viewer(2);
+        render_and_place(&mut viewer, "One.\n\nTwo.\n\nThree.\n\n").unwrap();
+        assert!(viewer.viewport.following());
+
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[<64;10;20M"); // wheel up
+        let wheel_up = decoder.next_event().expect("wheel event");
+        handle_scroll_input(&mut viewer, &wheel_up);
+        assert!(
+            !viewer.viewport.following(),
+            "manual scroll disengages follow"
+        );
+        let offset_after_scroll = viewer.viewport.offset();
+
+        render_and_place(&mut viewer, "One.\n\nTwo.\n\nThree.\n\nFour.\n\n").unwrap();
+        assert!(
+            !viewer.viewport.following(),
+            "appending while disengaged must not re-engage follow"
+        );
+        assert_eq!(
+            viewer.viewport.offset(),
+            offset_after_scroll,
+            "the offset measured from the top stays stable across an append while disengaged"
+        );
+    }
+
+    fn test_viewer(pane_rows: u32) -> Viewer {
         let limits = Limits::default();
         let options = RenderOptions::default();
         Viewer {
             stream: pair_socket(),
             input: InputDecoder::new(),
             messages: Decoder::new(),
-            follow: true,
+            viewport: Viewport::new(pane_rows),
             cache: RenderCache::new(CacheBudget {
                 max_entries: 16,
                 max_pixels: u64::MAX,
@@ -382,6 +516,10 @@ mod tests {
             options,
             sink: StreamSink::new(None, limits.image_pixels),
             blocks_placed: 0,
+            cell: CellSize {
+                width: 1,
+                height: 1,
+            },
         }
     }
 
@@ -395,7 +533,7 @@ mod tests {
     /// the appended block.
     #[test]
     fn append_answer_reuses_prior_block_ids_and_allocates_one_new_id() {
-        let mut viewer = test_viewer();
+        let mut viewer = test_viewer(24);
         render_and_place(&mut viewer, "First block.\n\n").unwrap();
         let first_ids: Vec<_> = viewer.planner.blocks().iter().map(|b| b.id).collect();
         assert_eq!(first_ids.len(), 1);
@@ -417,7 +555,7 @@ mod tests {
     /// no longer exist rather than leaving their placements orphaned.
     #[test]
     fn shorter_replacement_answer_drops_stale_trailing_blocks() {
-        let mut viewer = test_viewer();
+        let mut viewer = test_viewer(24);
         render_and_place(&mut viewer, "One.\n\nTwo.\n\nThree.\n\n").unwrap();
         assert_eq!(viewer.planner.blocks().len(), 3);
 
@@ -435,7 +573,7 @@ mod tests {
     /// cache is not touched again for unchanged content.
     #[test]
     fn unchanged_resend_allocates_no_new_ids_and_touches_no_new_cache_entries() {
-        let mut viewer = test_viewer();
+        let mut viewer = test_viewer(24);
         render_and_place(&mut viewer, "Stable answer.\n\n").unwrap();
         let ids_before: Vec<_> = viewer.planner.blocks().iter().map(|b| b.id).collect();
         let stats_before = viewer.cache.stats();
@@ -456,7 +594,7 @@ mod tests {
     /// renders the shared content once and reuses it on the second answer.
     #[test]
     fn repeated_block_content_across_answers_is_a_cache_hit() {
-        let mut viewer = test_viewer();
+        let mut viewer = test_viewer(24);
         render_and_place(&mut viewer, "Shared line.\n\n").unwrap();
         let after_first = viewer.cache.stats();
         assert_eq!(after_first.misses, 1);

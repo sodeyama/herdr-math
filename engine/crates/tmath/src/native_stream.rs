@@ -240,6 +240,20 @@ impl StreamSink {
         }
     }
 
+    /// Opts a `Terminal` sink into retaining each placed block's PNG bytes
+    /// (bounded by the placement-count and pixel limits already enforced),
+    /// which `redraw_window` needs to rebuild the agent-viewer's visibility
+    /// window without re-rendering. Plain `tmath render`/`tmath watch`
+    /// stream sessions never call `redraw_window`, so they skip this to
+    /// avoid paying the retained-PNG memory cost for nothing. A no-op in
+    /// `Summary` mode.
+    pub(crate) fn with_retained_pngs(mut self) -> Self {
+        if let Self::Terminal(sink) = &mut self {
+            sink.retain_pngs = true;
+        }
+        self
+    }
+
     fn emit(
         &mut self,
         plan: &Plan,
@@ -275,6 +289,18 @@ impl StreamSink {
             io::stdout().flush().map_err(|_| stream_error())?;
         }
         Ok(())
+    }
+
+    /// Redraws the visibility window (agent-viewer only). A no-op in
+    /// `Summary` mode. See [`TerminalSink::redraw_window`].
+    pub(crate) fn redraw_window(
+        &mut self,
+        visible: std::ops::Range<usize>,
+    ) -> Result<(), RenderError> {
+        match self {
+            Self::Summary => Ok(()),
+            Self::Terminal(sink) => sink.redraw_window(visible),
+        }
     }
 }
 
@@ -327,11 +353,17 @@ fn rendered_event(
     Ok((rendered, png, cache))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PlacedState {
     id: u64,
     rows: u32,
     pixels: u64,
+    /// Retained only when `TerminalSink::retain_pngs` is set (agent-viewer
+    /// only), so a viewport redraw ([`TerminalSink::redraw_window`]) can
+    /// re-emit a currently placed block without re-rendering it. Plain
+    /// stream/watch sessions never call `redraw_window` and leave this
+    /// empty rather than pay the retained-PNG memory cost for nothing.
+    png: Vec<u8>,
 }
 
 pub(crate) struct TerminalSink {
@@ -341,6 +373,9 @@ pub(crate) struct TerminalSink {
     placement_limits: PlacementLimits,
     placed: Vec<PlacedState>,
     first_append_at_line_start: bool,
+    /// Set only through [`StreamSink::with_retained_pngs`] (agent-viewer's
+    /// construction path). See [`PlacedState::png`].
+    retain_pngs: bool,
 }
 
 impl TerminalSink {
@@ -357,6 +392,7 @@ impl TerminalSink {
             placement_limits: PlacementLimits::default(),
             placed: Vec::new(),
             first_append_at_line_start,
+            retain_pngs: false,
         }
     }
 
@@ -407,10 +443,12 @@ impl TerminalSink {
         );
         terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
         self.first_append_at_line_start = true;
+        let retained_png = self.retained_png(png);
         self.placed.push(PlacedState {
             id,
             rows: decoded.rows,
             pixels: decoded.pixels,
+            png: retained_png,
         });
         Ok(())
     }
@@ -428,27 +466,31 @@ impl TerminalSink {
             .iter()
             .position(|placed| placed.id == old_id)
             .ok_or_else(stream_error)?;
-        let old = self.placed[old_index];
+        let old_id_value = self.placed[old_index].id;
+        let old_rows = self.placed[old_index].rows;
         let decoded = self.decode(new_id, rendered, png)?;
         self.validate_placement(decoded.pixels, Some(old_index))?;
         let top_is_reachable = was_last
-            && self.placed.last().is_some_and(|placed| placed.id == old.id)
+            && self
+                .placed
+                .last()
+                .is_some_and(|placed| placed.id == old_id_value)
             && self
                 .terminal
                 .cursor_position()
                 .ok()
                 .flatten()
-                .is_some_and(|(row, _)| row > old.rows);
+                .is_some_and(|(row, _)| row > old_rows);
 
         let operations = if top_is_reachable {
             tail_replace_operations(TailReplace {
-                old_image_id: old.id,
+                old_image_id: old_id_value,
                 new_image_id: decoded.id,
                 width_px: rendered.width_px,
                 height_px: rendered.height_px,
                 rgba: &decoded.rgba,
                 cols: decoded.cols,
-                old_rows: old.rows,
+                old_rows,
                 new_rows: decoded.rows,
             })?
         } else {
@@ -458,7 +500,7 @@ impl TerminalSink {
             // bottom. In-place interior re-anchoring belongs to Phase 3 viewer
             // work, where viewport and history state are explicit.
             let mut operations = vec![TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
-                u32::try_from(old.id).map_err(|_| stream_error())?,
+                u32::try_from(old_id_value).map_err(|_| stream_error())?,
             ))];
             operations.extend(append_operations(
                 decoded.id,
@@ -473,10 +515,12 @@ impl TerminalSink {
         };
         terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
         self.placed.remove(old_index);
+        let retained_png = self.retained_png(png);
         self.placed.push(PlacedState {
             id: new_id,
             rows: decoded.rows,
             pixels: decoded.pixels,
+            png: retained_png,
         });
         Ok(())
     }
@@ -494,6 +538,32 @@ impl TerminalSink {
         .map_err(|_| stream_error())?;
         self.placed.remove(index);
         Ok(())
+    }
+
+    /// Full-window redraw for the agent-viewer's scrollable viewport
+    /// (AT-3-502): clears the pane, moves the cursor home, and re-emits only
+    /// the placed blocks in `visible` (a contiguous index range into the
+    /// current placement order) from their retained PNGs. No block is
+    /// re-rendered. This is a structural placeholder for T3-303's
+    /// visibility-diff re-emission — it redraws the whole window on every
+    /// scroll step rather than diffing which placements newly entered or
+    /// left view, which is acceptable for T3-302 but must not be treated as
+    /// the bounded-bytes-per-scroll-step contract.
+    pub(crate) fn redraw_window(
+        &mut self,
+        visible: std::ops::Range<usize>,
+    ) -> Result<(), RenderError> {
+        let operations =
+            redraw_window_operations(&self.placed, visible, self.cell, self.max_image_pixels)?;
+        terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
+        self.first_append_at_line_start = true;
+        Ok(())
+    }
+
+    /// A copy of `png` when `retain_pngs` is set, or an empty vec otherwise.
+    /// See [`PlacedState::png`] and [`StreamSink::with_retained_pngs`].
+    fn retained_png(&self, png: &[u8]) -> Vec<u8> {
+        retained_png(png, self.retain_pngs)
     }
 
     fn decode(
@@ -612,6 +682,52 @@ fn tail_replace_operations(replace: TailReplace<'_>) -> Result<Vec<TerminalOp>, 
     Ok(operations)
 }
 
+/// A copy of `png` when `retain` is true, or an empty vec otherwise. Kept as
+/// a free function so `retain_pngs`'s effect on `PlacedState::png` is
+/// testable without constructing a `TerminalSink` (which requires a live
+/// terminal). See [`TerminalSink::retained_png`] and
+/// [`StreamSink::with_retained_pngs`].
+fn retained_png(png: &[u8], retain: bool) -> Vec<u8> {
+    if retain {
+        png.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Builds the operation list for a full-window viewport redraw (AT-3-502):
+/// delete every currently placed image, clear and home the pane, then
+/// re-emit the placements in `visible` (clamped to `placed`'s bounds) from
+/// their retained PNGs. Pure and independent of any live terminal so it can
+/// be tested directly, the same way `tail_replace_operations` is.
+fn redraw_window_operations(
+    placed: &[PlacedState],
+    visible: std::ops::Range<usize>,
+    cell: CellSize,
+    max_image_pixels: u64,
+) -> Result<Vec<TerminalOp>, RenderError> {
+    let mut operations = vec![TerminalOp::Local(b"\x1b[H\x1b[2J".to_vec())];
+    for entry in placed {
+        let image_id = u32::try_from(entry.id).map_err(|_| stream_error())?;
+        operations.push(TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
+            image_id,
+        )));
+    }
+
+    let visible = visible.start.min(placed.len())..visible.end.min(placed.len());
+    for entry in &placed[visible] {
+        let (width, height, rgba) =
+            decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
+        let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
+        let image_id = u32::try_from(entry.id).map_err(|_| stream_error())?;
+        operations.extend(append_operations(
+            image_id, width, height, &rgba, cols, rows, true,
+        ));
+    }
+
+    Ok(operations)
+}
+
 fn clear_rows(rows: u32) -> Vec<u8> {
     let rows = rows.max(1);
     let mut bytes = Vec::new();
@@ -646,6 +762,28 @@ mod tests {
         let mut bytes = Vec::new();
         tmath_core::placement::write_terminal_ops(&mut bytes, operations, false).unwrap();
         bytes
+    }
+
+    fn rgba8_png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(io::Cursor::new(&mut bytes), width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&vec![0xffu8; (width * height * 4) as usize])
+            .unwrap();
+        drop(writer);
+        bytes
+    }
+
+    fn placed(id: u64, rows: u32, png: Vec<u8>) -> PlacedState {
+        PlacedState {
+            id,
+            rows,
+            pixels: u64::from(rows),
+            png,
+        }
     }
 
     #[test]
@@ -687,5 +825,75 @@ mod tests {
             }
         }
         assert!(direct_bytes(&emitted).is_empty());
+    }
+
+    #[test]
+    fn redraw_window_clears_deletes_every_placed_image_and_redraws_only_visible() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![
+            placed(1, 2, rgba8_png(1, 2)),
+            placed(2, 3, rgba8_png(1, 3)),
+            placed(3, 1, rgba8_png(1, 1)),
+        ];
+
+        let operations = redraw_window_operations(&placed, 1..3, cell, u64::MAX).unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.starts_with("\x1b[H\x1b[2J"), "home and clear first");
+        // Every placed image is deleted, including the one outside the
+        // visible range (id=1), so no stale image lingers off-window.
+        assert!(text.contains("\x1b_Ga=d,d=I,i=1,q=2\x1b\\"));
+        assert!(text.contains("\x1b_Ga=d,d=I,i=2,q=2\x1b\\"));
+        assert!(text.contains("\x1b_Ga=d,d=I,i=3,q=2\x1b\\"));
+        // Only the visible range (indices 1..3, ids 2 and 3) is re-emitted.
+        assert!(text.contains("i=2,U=1,c=1,r=3,q=2"));
+        assert!(text.contains("i=3,U=1,c=1,r=1,q=2"));
+        // id=1's placement command (as opposed to its delete) never appears.
+        assert!(!text.contains("i=1,U=1,c=1"));
+    }
+
+    #[test]
+    fn redraw_window_with_empty_visible_range_still_clears_and_deletes() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![placed(1, 2, rgba8_png(1, 2))];
+
+        let operations = redraw_window_operations(&placed, 0..0, cell, u64::MAX).unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.starts_with("\x1b[H\x1b[2J"));
+        assert!(text.contains("\x1b_Ga=d,d=I,i=1,q=2\x1b\\"));
+        assert!(!text.contains("U=1,c=1"), "no placement is re-emitted");
+    }
+
+    #[test]
+    fn redraw_window_clamps_an_out_of_range_visible_slice_instead_of_panicking() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![placed(1, 2, rgba8_png(1, 2))];
+        let operations = redraw_window_operations(&placed, 0..5, cell, u64::MAX).unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("i=1,U=1,c=1,r=2,q=2"));
+    }
+
+    /// FIX 2: plain `tmath render`/`tmath watch` stream sessions construct
+    /// their sink with `retain_pngs` left at its `false` default (only the
+    /// agent-viewer opts in via `StreamSink::with_retained_pngs`), so their
+    /// `PlacedState` entries must carry no PNG bytes at all.
+    #[test]
+    fn retained_png_is_empty_unless_retention_is_enabled() {
+        let png = rgba8_png(2, 3);
+        assert!(retained_png(&png, false).is_empty());
+        assert_eq!(retained_png(&png, true), png);
     }
 }
