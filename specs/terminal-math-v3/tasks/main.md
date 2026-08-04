@@ -121,8 +121,14 @@
       IPC_MAX_REQUEST_BYTES, unconditional V2 Document acceptance; 28 codec
       tests + viewer wiring tests. Commit `6c177dc`. Watcher-side delta
       emission lands with T3-402/403.)
-- [ ] **T3-402** Claude Code transcript adapter with JSONL fixtures; graceful
-      degradation to capture. (AT-3-602)
+- [x] **T3-402** Claude Code transcript adapter with JSONL fixtures; graceful
+      degradation to capture. (AT-3-602 PASS with synthesized inline JSONL
+      fixtures: EOF-start read-only tail, bounded per-poll reads, rotation and
+      truncation recovery, malformed-line skip, char-boundary-safe block
+      truncation, Document/Append delta emission with blank-line separators
+      verified at the reassembled-document level; I/O failures degrade to the
+      capture adapter. Commit `b8f0a8f`. ReplaceTail emission is an unused
+      seam until a transcript format rewrites tails in place.)
 - [ ] **T3-403** Rewire capture adapter through the incremental pipeline.
       (AT-3-604)
 - [ ] **T3-404** Streaming end-to-end replay evidence. (AT-3-603)
