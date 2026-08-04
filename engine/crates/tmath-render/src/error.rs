@@ -110,6 +110,23 @@ impl RenderError {
             "render limit exceeded",
         )
     }
+
+    pub(crate) fn deadline_exceeded(limit: u64, duration_ms: u64) -> Self {
+        Self::new(
+            SafeErrorRecord {
+                code: ErrorCode::RendererTimeout,
+                retryable: false,
+                details: Some(SafeErrorDetails {
+                    limit_kind: Some(SafeLimitKind::RenderDurationMs),
+                    limit: Some(limit),
+                    actual: Some(duration_ms),
+                    duration_ms: Some(duration_ms),
+                    ..SafeErrorDetails::default()
+                }),
+            },
+            "render deadline exceeded",
+        )
+    }
 }
 
 impl fmt::Display for RenderError {

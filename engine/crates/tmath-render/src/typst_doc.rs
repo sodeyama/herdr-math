@@ -10,8 +10,10 @@ use std::iter::Peekable;
 use pulldown_cmark::{Alignment, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag};
 
 use crate::{
-    render_formula, scan_latex, Block, BlockKind, ErrorCode, Limits, MathImage, RenderError,
-    RenderOptions, SafeErrorRecord, ScannerLimits, DARK_THEME_TEXT_COLOR,
+    limits::{render_guard, RenderDeadline},
+    math::render_formula_with_deadline,
+    scan_latex, Block, BlockKind, ErrorCode, Limits, MathImage, RenderError, RenderOptions,
+    SafeErrorRecord, ScannerLimits, DARK_THEME_TEXT_COLOR,
 };
 
 /// A complete, self-contained Typst source document.
@@ -34,18 +36,31 @@ impl TypstSource {
 
 /// Composes one Markdown block into a self-contained Typst document.
 pub fn compose_block(block: &Block, options: &RenderOptions) -> Result<TypstSource, RenderError> {
-    Limits::default().check_source_bytes_per_block(block.source.len() as u64)?;
+    let _guard = render_guard()?;
+    let limits = Limits::default();
+    let deadline = RenderDeadline::new(limits.render_duration_ms);
+    compose_block_with_deadline(block, options, &limits, &deadline)
+}
+
+pub(crate) fn compose_block_with_deadline(
+    block: &Block,
+    options: &RenderOptions,
+    limits: &Limits,
+    deadline: &RenderDeadline,
+) -> Result<TypstSource, RenderError> {
+    limits.check_source_bytes_per_block(block.source.len() as u64)?;
     validate_options(options)?;
     if supports_math_embedding(block.kind) {
         // This block-wide pass enforces scanner counters before individual text
         // runs are converted into safe Typst nodes.
         scan_latex(&block.source, &ScannerLimits::default())?;
     }
+    deadline.checkpoint()?;
 
     let mut events = Parser::new_ext(&block.source, Options::ENABLE_TABLES).peekable();
     let nodes = parse_nodes(&mut events);
     let mut body = String::new();
-    let mut context = MathContext::new(block.index, options);
+    let mut context = MathContext::new(block.index, options, limits, deadline);
     render_nodes(&nodes, &mut body, &mut context)?;
     if body.is_empty() {
         body.push_str("#text(\"\")");
@@ -243,16 +258,25 @@ struct MathContext<'a> {
     block_index: usize,
     next_formula_index: usize,
     options: &'a RenderOptions,
+    limits: &'a Limits,
+    deadline: &'a RenderDeadline,
     static_files: Vec<(String, Vec<u8>)>,
     formula_errors: Vec<SafeErrorRecord>,
 }
 
 impl<'a> MathContext<'a> {
-    fn new(block_index: usize, options: &'a RenderOptions) -> Self {
+    fn new(
+        block_index: usize,
+        options: &'a RenderOptions,
+        limits: &'a Limits,
+        deadline: &'a RenderDeadline,
+    ) -> Self {
         Self {
             block_index,
             next_formula_index: 0,
             options,
+            limits,
+            deadline,
             static_files: Vec::new(),
             formula_errors: Vec::new(),
         }
@@ -265,7 +289,13 @@ impl<'a> MathContext<'a> {
             push_text_call(output, &text[cursor..formula.start]);
             let formula_index = self.next_formula_index;
             self.next_formula_index += 1;
-            match render_formula(&formula.latex, formula.display, self.options) {
+            match render_formula_with_deadline(
+                &formula.latex,
+                formula.display,
+                self.options,
+                self.limits,
+                self.deadline,
+            ) {
                 Ok(image) => {
                     let name = format!("math-{}-{formula_index}.png", self.block_index);
                     push_math_image(output, &name, &image, formula.display);

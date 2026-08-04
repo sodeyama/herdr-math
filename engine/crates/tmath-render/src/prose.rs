@@ -1,14 +1,14 @@
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 use typst::layout::{Abs, PagedDocument};
 use typst_as_lib::typst_kit_options::TypstKitFontOptions;
 use typst_as_lib::TypstEngine;
 
 use crate::{
-    compose_block, Block, ErrorCode, Limits, MathImage, RenderError, RenderOptions, SafeErrorRecord,
+    limits::{render_guard, RenderDeadline},
+    typst_doc::compose_block_with_deadline,
+    Block, ErrorCode, Limits, MathImage, RenderError, RenderOptions, SafeErrorRecord,
 };
 
 /// A rendered transparent prose image.
@@ -18,6 +18,8 @@ pub struct RenderedImage {
     pub width_px: u32,
     pub height_px: u32,
     pub formula_errors: Vec<SafeErrorRecord>,
+    /// Wall-clock time spent in this block's guarded render pipeline.
+    pub duration_ms: u64,
 }
 
 /// Renders one Markdown prose block through the native Typst engine.
@@ -25,13 +27,30 @@ pub fn render_prose_block(
     block: &Block,
     options: &RenderOptions,
 ) -> Result<RenderedImage, RenderError> {
-    let source = compose_block(block, options)?;
+    let _guard = render_guard()?;
+    let limits = Limits::default();
+    let deadline = RenderDeadline::new(limits.render_duration_ms);
+    let mut image = render_prose_block_with_deadline(block, options, &limits, &deadline)?;
+    image.duration_ms = deadline.checkpoint()?;
+    Ok(image)
+}
+
+pub(crate) fn render_prose_block_with_deadline(
+    block: &Block,
+    options: &RenderOptions,
+    limits: &Limits,
+    deadline: &RenderDeadline,
+) -> Result<RenderedImage, RenderError> {
+    let source = compose_block_with_deadline(block, options, limits, deadline)?;
+    deadline.checkpoint()?;
     render_typst_source(
         source.as_str(),
         &source.static_files,
         source.formula_errors.clone(),
         options,
         true,
+        limits,
+        deadline,
     )
 }
 
@@ -39,6 +58,8 @@ pub(crate) fn render_display_math_block(
     block_index: usize,
     image: MathImage,
     options: &RenderOptions,
+    limits: &Limits,
+    deadline: &RenderDeadline,
 ) -> Result<RenderedImage, RenderError> {
     let name = format!("math-{block_index}-0.png");
     let total_height = image.height_pt + image.depth_pt;
@@ -50,7 +71,16 @@ pub(crate) fn render_display_math_block(
         image_width = image.width_pt,
         image_height = total_height,
     );
-    render_typst_source(&source, &[(name, image.png)], Vec::new(), options, false)
+    deadline.checkpoint()?;
+    render_typst_source(
+        &source,
+        &[(name, image.png)],
+        Vec::new(),
+        options,
+        false,
+        limits,
+        deadline,
+    )
 }
 
 fn render_typst_source(
@@ -59,18 +89,16 @@ fn render_typst_source(
     formula_errors: Vec<SafeErrorRecord>,
     options: &RenderOptions,
     trim_right: bool,
+    limits: &Limits,
+    deadline: &RenderDeadline,
 ) -> Result<RenderedImage, RenderError> {
     let static_file_refs = static_files
         .iter()
         .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
         .collect::<Vec<_>>();
     let dpr = options.device_pixel_ratio.clamp(1, 4);
-    let scaled_limits = Limits::default().scaled(dpr);
+    let scaled_limits = limits.scaled(dpr);
 
-    let _guard = engine_holder()
-        .lock()
-        .map_err(|_| renderer_error("Typst engine holder was poisoned"))?;
-    let started = Instant::now();
     let engine = TypstEngine::builder()
         .main_file(source.to_owned())
         .with_static_file_resolver(static_file_refs)
@@ -80,7 +108,9 @@ fn render_typst_source(
         .compile()
         .output
         .map_err(|_| renderer_error("Typst compilation failed"))?;
+    deadline.checkpoint()?;
     let pixmap = typst_render::render_merged(&document, f32::from(dpr), Abs::zero(), None);
+    deadline.checkpoint()?;
     let raster_width_px = pixmap.width();
     let height_px = pixmap.height();
 
@@ -88,6 +118,7 @@ fn render_typst_source(
     scaled_limits.check_image_height_px(height_px)?;
     scaled_limits.check_image_pixels(u64::from(raster_width_px) * u64::from(height_px))?;
 
+    deadline.checkpoint()?;
     let full_width_png = pixmap
         .encode_png()
         .map_err(|_| renderer_error("PNG encoding failed"))?;
@@ -98,13 +129,13 @@ fn render_typst_source(
         (full_width_png, raster_width_px)
     };
     scaled_limits.check_raw_png_bytes(png.len() as u64)?;
-    scaled_limits.check_render_duration_ms(started.elapsed().as_millis() as u64)?;
 
     Ok(RenderedImage {
         png,
         width_px,
         height_px,
         formula_errors,
+        duration_ms: 0,
     })
 }
 
@@ -186,11 +217,6 @@ fn decoded_rgba(bytes: &[u8], color_type: png::ColorType) -> Result<Vec<u8>, Ren
     }
 }
 
-fn engine_holder() -> &'static Mutex<()> {
-    static HOLDER: OnceLock<Mutex<()>> = OnceLock::new();
-    HOLDER.get_or_init(|| Mutex::new(()))
-}
-
 fn embedded_font_options() -> TypstKitFontOptions {
     TypstKitFontOptions::default()
         .include_system_fonts(false)
@@ -214,7 +240,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::{BlockKind, SafeLimitKind};
+    use crate::{compose_block, BlockKind, SafeLimitKind};
 
     fn block(kind: BlockKind, source: impl Into<String>) -> Block {
         Block {
@@ -512,9 +538,16 @@ mod tests {
     #[test]
     fn output_over_the_pixel_cap_returns_the_safe_pixel_limit_error() {
         let options = RenderOptions::new(3000.0, 3000.0, 1).unwrap();
-        let error = render_prose_block(
+        let limits = Limits {
+            render_duration_ms: 60_000,
+            ..Limits::default()
+        };
+        let deadline = RenderDeadline::new(limits.render_duration_ms);
+        let error = render_prose_block_with_deadline(
             &block(BlockKind::Paragraph, "one two three four five"),
             &options,
+            &limits,
+            &deadline,
         )
         .unwrap_err();
         assert_eq!(error.safe_record().code, ErrorCode::ImageTooLarge);

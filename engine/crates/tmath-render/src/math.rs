@@ -1,5 +1,4 @@
 use std::io::Cursor;
-use std::time::Instant;
 
 use ratex_layout::{layout, to_display_list, LayoutOptions};
 use ratex_parser::parser::parse;
@@ -8,6 +7,7 @@ use ratex_types::color::Color;
 use ratex_types::math_style::MathStyle;
 
 use crate::{
+    limits::{render_guard, RenderDeadline},
     ErrorCode, Limits, RenderError, RenderOptions, SafeErrorRecord, DARK_THEME_TEXT_COLOR,
 };
 
@@ -28,7 +28,21 @@ pub fn render_formula(
     display: bool,
     options: &RenderOptions,
 ) -> Result<MathImage, RenderError> {
-    let started = Instant::now();
+    // Queueing for the resident engine is not charged to the block's execution
+    // budget; the cooperative deadline starts once this render owns the engine.
+    let _guard = render_guard()?;
+    let limits = Limits::default();
+    let deadline = RenderDeadline::new(limits.render_duration_ms);
+    render_formula_with_deadline(latex, display, options, &limits, &deadline)
+}
+
+pub(crate) fn render_formula_with_deadline(
+    latex: &str,
+    display: bool,
+    options: &RenderOptions,
+    limits: &Limits,
+    deadline: &RenderDeadline,
+) -> Result<MathImage, RenderError> {
     let ast = parse(latex).map_err(invalid_latex_error)?;
     let layout_options = LayoutOptions {
         style: if display {
@@ -41,6 +55,7 @@ pub fn render_formula(
     };
     let layout_box = layout(&ast, &layout_options);
     let display_list = to_display_list(&layout_box);
+    deadline.checkpoint()?;
     let font_size_pt = options.font_size_pt;
     let width_pt = display_list.width * font_size_pt;
     let height_pt = display_list.height * font_size_pt;
@@ -58,6 +73,7 @@ pub fn render_formula(
         ..RatexRenderOptions::default()
     };
     let png = render_to_png(&display_list, &render_options).map_err(invalid_latex_error)?;
+    deadline.checkpoint()?;
     let (width_px, height_px) = png_dimensions(&png).map_err(|message| {
         RenderError::new(
             SafeErrorRecord {
@@ -68,12 +84,12 @@ pub fn render_formula(
             message,
         )
     })?;
-    let scaled_limits = Limits::default().scaled(options.device_pixel_ratio);
+    let scaled_limits = limits.scaled(options.device_pixel_ratio);
     scaled_limits.check_image_width_px(width_px)?;
     scaled_limits.check_image_height_px(height_px)?;
     scaled_limits.check_image_pixels(u64::from(width_px) * u64::from(height_px))?;
     scaled_limits.check_raw_png_bytes(png.len() as u64)?;
-    scaled_limits.check_render_duration_ms(started.elapsed().as_millis() as u64)?;
+    deadline.checkpoint()?;
 
     Ok(MathImage {
         png,
@@ -187,7 +203,13 @@ mod tests {
         for _ in 0..32 {
             latex = format!(r"\frac{{x}}{{{latex}}}");
         }
-        let error = render_formula(&latex, true, &options).unwrap_err();
+        let limits = Limits {
+            render_duration_ms: 60_000,
+            ..Limits::default()
+        };
+        let deadline = RenderDeadline::new(limits.render_duration_ms);
+        let error =
+            render_formula_with_deadline(&latex, true, &options, &limits, &deadline).unwrap_err();
         assert_eq!(error.safe_record().code, ErrorCode::ImageTooLarge);
         assert_eq!(
             error.safe_record().details.as_ref().unwrap().limit_kind,

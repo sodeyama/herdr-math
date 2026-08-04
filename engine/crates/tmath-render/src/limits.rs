@@ -1,4 +1,6 @@
 use crate::{ErrorCode, RenderError, SafeLimitKind};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Instant;
 
 /// Finite render limits expressed at device pixel ratio 1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -197,6 +199,54 @@ fn check_limit(
         Ok(())
     } else {
         Err(RenderError::limit_exceeded(code, limit_kind, limit, actual))
+    }
+}
+
+/// Cooperative wall-clock deadline shared by one block render.
+///
+/// Rust cannot safely interrupt a Typst or RaTeX call while it is executing.
+/// The renderer therefore uses two levels of protection: cheap checkpoints
+/// between pipeline stages fail the render as soon as control returns, while
+/// the measured duration is returned to callers so a higher-level supervisor
+/// can observe healthy renders and enforce a harder isolation boundary later.
+pub(crate) struct RenderDeadline {
+    started: Instant,
+    limit_ms: u64,
+}
+
+pub(crate) fn render_guard() -> Result<MutexGuard<'static, ()>, RenderError> {
+    static HOLDER: OnceLock<Mutex<()>> = OnceLock::new();
+    HOLDER.get_or_init(|| Mutex::new(())).lock().map_err(|_| {
+        RenderError::new(
+            crate::SafeErrorRecord {
+                code: ErrorCode::RendererFailed,
+                retryable: false,
+                details: None,
+            },
+            "render engine holder was poisoned",
+        )
+    })
+}
+
+impl RenderDeadline {
+    pub(crate) fn new(limit_ms: u64) -> Self {
+        Self {
+            started: Instant::now(),
+            limit_ms,
+        }
+    }
+
+    pub(crate) fn checkpoint(&self) -> Result<u64, RenderError> {
+        let duration_ms = self.elapsed_ms();
+        if self.limit_ms == 0 || duration_ms > self.limit_ms {
+            Err(RenderError::deadline_exceeded(self.limit_ms, duration_ms))
+        } else {
+            Ok(duration_ms)
+        }
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 }
 
