@@ -117,6 +117,27 @@ General guidance:
 - **Captured tool stdout**: a coding agent's shell tool may capture stdout, so
   an agent-launched `tmath render -` is not guaranteed to reach the visible
   terminal. The watcher + viewer pane is the standard agent workflow.
+- **Configuring font size**: `tmath` reads `config.toml` from the platform
+  config directory (`$XDG_CONFIG_HOME/tmath/config.toml`, or
+  `$HOME/.config/tmath/config.toml` when `XDG_CONFIG_HOME` is unset) if
+  present. It currently has one key:
+  ```toml
+  font_size_pt = 15.0
+  ```
+  `font_size_pt` is a number (integer or float) in `[10, 24]`; a value
+  outside that range, or of the wrong type, is ignored with a warning and
+  the setting falls back to the next precedence level. Unrecognized keys
+  are ignored with a warning naming the key. The full precedence order,
+  highest first: the `--font-size` CLI flag (`tmath render`/`tmath watch`)
+  > the `TMATH_FONT_SIZE_PT` environment variable > `config.toml`'s
+  `font_size_pt` > the terminal auto-fit calculation > the fixed default.
+  `tmath agent-viewer` has no CLI flag of its own (it is spawned by `tmath
+  agent`), so its precedence is env > config > auto-fit > default; it reads
+  the config file itself at startup and logs the resolved source
+  (`agent-viewer: font_size source=<cli|env|config|auto-fit|default>
+  value=<pt>`) — never any other config content. A missing config file is
+  silent (not a warning); the file only ever holds small numeric settings,
+  never document content.
 
 ## Let an agent show math to you
 

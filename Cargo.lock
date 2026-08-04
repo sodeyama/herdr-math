@@ -2469,9 +2469,11 @@ dependencies = [
  "notify",
  "png 0.18.1",
  "rustix",
+ "serde",
  "serde_json",
  "tmath-core",
  "tmath-render",
+ "toml",
 ]
 
 [[package]]

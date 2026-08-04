@@ -214,9 +214,22 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         fitted.content_width_pt,
         pane_size.cols
     );
+    // The agent-viewer has no CLI flag of its own (it is spawned by `tmath
+    // agent`, not run directly), so its font size precedence is env > config
+    // > auto-fit > default — reads the config file directly at startup, per
+    // the config module's doc comment.
+    let font_config = crate::config::config_path()
+        .map(|path| crate::config::load(&path))
+        .unwrap_or_default();
+    let (font_size_pt, font_size_source) =
+        crate::config::resolve_font_size_pt_with_source(None, &font_config, Some(fitted));
+    eprintln!(
+        "agent-viewer: font_size source={} value={font_size_pt}",
+        font_size_source.label()
+    );
     let options = RenderOptions::new(
         fitted.content_width_pt,
-        fitted.font_size_pt,
+        font_size_pt,
         fitted.device_pixel_ratio,
     )
     .map_err(|_| "invalid agent-viewer render options".to_string())?;

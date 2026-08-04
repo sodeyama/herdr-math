@@ -29,6 +29,7 @@ use crate::render::{render_document_text, renderer_worker_path};
 mod agent_allowlist;
 mod agent_viewer;
 mod agent_watcher;
+mod config;
 mod layout;
 mod native_render;
 mod native_stream;
@@ -429,7 +430,15 @@ fn render_with_native(
 ) -> Result<i32, String> {
     let fitted = layout::fitted_layout_for_connected(&connected);
     let content_width_pt = layout::resolve_content_width_pt(parsed.content_width, fitted);
-    let font_size_pt = layout::resolve_font_size_pt(parsed.font_size, fitted);
+    let font_config = config::config_path()
+        .map(|path| config::load(&path))
+        .unwrap_or_default();
+    let (font_size_pt, font_size_source) =
+        config::resolve_font_size_pt_with_source(parsed.font_size, &font_config, fitted);
+    eprintln!(
+        "tmath: font_size source={} value={font_size_pt}",
+        font_size_source.label()
+    );
     let device_pixel_ratio = layout::resolve_device_pixel_ratio(fitted);
     let result = native_render::render_document_native(
         source,

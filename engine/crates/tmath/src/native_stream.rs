@@ -54,9 +54,19 @@ pub(crate) fn run(
     // summary/event-line tests drive) keeps the fixed defaults.
     let fitted = crate::layout::fitted_layout_for_connected(&connected);
     let device_pixel_ratio = crate::layout::resolve_device_pixel_ratio(fitted);
+    let config = crate::config::config_path()
+        .map(|path| crate::config::load(&path))
+        .unwrap_or_default();
+    // Unlike `native_watch.rs`/the agent-viewer, this path's stderr is a
+    // dedicated single-JSON-record error channel (see
+    // `stream_error_is_safe_json_without_input`'s contract test) — no
+    // human-readable log lines belong here, so the resolved font-size
+    // source is not logged on this path.
+    let (font_size_pt, _font_size_source) =
+        crate::config::resolve_font_size_pt_with_source(font_size, &config, fitted);
     let options = RenderOptions::new(
         crate::layout::resolve_content_width_pt(content_width, fitted),
-        crate::layout::resolve_font_size_pt(font_size, fitted),
+        font_size_pt,
         device_pixel_ratio,
     )
     .map_err(|_| stream_error())?;

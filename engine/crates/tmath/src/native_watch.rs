@@ -57,9 +57,20 @@ pub(crate) fn run(
     // defaults, which is what the hermetic tests for this path drive.
     let fitted = crate::layout::fitted_layout_for_connected(&connected);
     let device_pixel_ratio = crate::layout::resolve_device_pixel_ratio(fitted);
+    let config = crate::config::config_path()
+        .map(|path| crate::config::load(&path))
+        .unwrap_or_default();
+    // Like `native_stream.rs`, this path's stderr carries a strict event
+    // stream/final-error-record protocol the integration tests assert on
+    // line-by-line (see `at_3_405_survives_bad_atomic_save_and_recovers`) —
+    // an extra startup log line here shifts what the tests read as the
+    // first line, so the resolved font-size source is not logged on this
+    // path either.
+    let (font_size_pt, _font_size_source) =
+        crate::config::resolve_font_size_pt_with_source(font_size, &config, fitted);
     let options = RenderOptions::new(
         crate::layout::resolve_content_width_pt(content_width, fitted),
-        crate::layout::resolve_font_size_pt(font_size, fitted),
+        font_size_pt,
         device_pixel_ratio,
     )
     .map_err(|_| "invalid native watch render options".to_string())?;

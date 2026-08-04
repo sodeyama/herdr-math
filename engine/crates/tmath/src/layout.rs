@@ -46,8 +46,12 @@ pub(crate) const DEFAULT_CONTENT_WIDTH_PT: f64 = 480.0;
 /// Fixed default font size (pt) used when no terminal is connected.
 pub(crate) const DEFAULT_FONT_SIZE_PT: f64 = 14.0;
 
-const MIN_FONT_SIZE_PT: f64 = 10.0;
-const MAX_FONT_SIZE_PT: f64 = 24.0;
+/// Also the valid range for `config.rs`'s `font_size_pt` config key — the
+/// user-facing setting is clamped to the same bound the terminal-fit
+/// calculation itself respects, so a configured size can never produce a
+/// more extreme result than auto-fit could.
+pub(crate) const MIN_FONT_SIZE_PT: f64 = 10.0;
+pub(crate) const MAX_FONT_SIZE_PT: f64 = 24.0;
 const MIN_CONTENT_WIDTH_PT: f64 = 200.0;
 const MAX_CONTENT_WIDTH_PT: f64 = 4096.0;
 /// Columns reserved as a margin so the placed image's cell grid stays
@@ -157,18 +161,6 @@ pub(crate) fn resolve_content_width_pt(
         .unwrap_or(DEFAULT_CONTENT_WIDTH_PT)
 }
 
-/// Resolves the effective font size in points, with the same override
-/// precedence as [`resolve_content_width_pt`].
-pub(crate) fn resolve_font_size_pt(
-    explicit_px: Option<u32>,
-    fitted: Option<TerminalFitLayout>,
-) -> f64 {
-    explicit_px
-        .map(f64::from)
-        .or_else(|| fitted.map(|layout| layout.font_size_pt))
-        .unwrap_or(DEFAULT_FONT_SIZE_PT)
-}
-
 /// Resolves the effective device pixel ratio: the terminal-fit value when a
 /// terminal is connected, otherwise 1 (matching the fixed-default,
 /// non-terminal path).
@@ -204,7 +196,9 @@ pub(crate) fn resolve_dpr_override(
 /// cell size and pane column count. `None` when no terminal is connected, or
 /// when the pane column count could not be measured — every call site then
 /// falls back to the fixed defaults through [`resolve_content_width_pt`],
-/// [`resolve_font_size_pt`], and [`resolve_device_pixel_ratio`].
+/// `crate::config::resolve_font_size_pt_with_source` (font size now goes
+/// through the config precedence chain, not this module's own resolver),
+/// and [`resolve_device_pixel_ratio`].
 pub(crate) fn fitted_layout_for_connected(
     connected: &Option<(
         tmath_core::terminal::Terminal<tmath_core::terminal::StdioTty>,
@@ -287,7 +281,6 @@ mod tests {
     fn explicit_overrides_take_precedence_over_the_fitted_layout() {
         let fitted = terminal_fit_layout(20, 40, 120, None);
         assert_eq!(resolve_content_width_pt(Some(800), Some(fitted)), 800.0);
-        assert_eq!(resolve_font_size_pt(Some(18), Some(fitted)), 18.0);
     }
 
     #[test]
@@ -296,7 +289,6 @@ mod tests {
             resolve_content_width_pt(None, None),
             DEFAULT_CONTENT_WIDTH_PT
         );
-        assert_eq!(resolve_font_size_pt(None, None), DEFAULT_FONT_SIZE_PT);
         assert_eq!(resolve_device_pixel_ratio(None), 1);
     }
 
@@ -306,10 +298,6 @@ mod tests {
         assert_eq!(
             resolve_content_width_pt(None, Some(fitted)),
             fitted.content_width_pt
-        );
-        assert_eq!(
-            resolve_font_size_pt(None, Some(fitted)),
-            fitted.font_size_pt
         );
         assert_eq!(
             resolve_device_pixel_ratio(Some(fitted)),
