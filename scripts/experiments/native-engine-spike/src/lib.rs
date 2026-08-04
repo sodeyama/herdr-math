@@ -16,6 +16,8 @@ use typst::layout::{Abs, Frame, FrameItem, PagedDocument};
 use typst_as_lib::typst_kit_options::TypstKitFontOptions;
 use typst_as_lib::TypstEngine;
 
+pub mod golden;
+
 pub const TEXT_SIZE_PT: f64 = 12.0;
 const PAGE_WIDTH_PT: f64 = 480.0;
 const PAGE_MARGIN_PT: f64 = 8.0;

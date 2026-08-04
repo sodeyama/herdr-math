@@ -170,3 +170,57 @@ Caveats:
   first-run filesystem/executable cache effects are substantial on this host.
 - Results are host- and load-dependent. The machine-readable evidence is written
   to `out/coldstart-summary.json` on every integration-test run.
+
+## T3-003 golden corpus run
+
+31 cases were rendered by both engines: V2 ok 29, native ok 31, both ok 29.
+The native engine rendered every case, including both cases the V2 renderer
+rejects (`\ce` from mhchem and `\pu`, which V2 reports as `invalid_latex`).
+Artifacts live in `out/golden/` (per-engine PNGs, side-by-side `-pair.png`
+composites on a dark backdrop, and `index.json`).
+
+| Case | V2 | Native | V2 size | Native size |
+|---|---|---|---|---|
+| power-inline | ok | ok | 960x48 | 93x20 |
+| fraction-and-root | ok | ok | 960x130 | 215x88 |
+| sum-and-integral | ok | ok | 960x168 | 191x141 |
+| aligned-equations | ok | ok | 960x78 | 199x66 |
+| matrix | ok | ok | 960x68 | 124x58 |
+| greek-letters | ok | ok | 960x124 | 134x80 |
+| unicode-math | ok | ok | 960x44 | 204x22 |
+| multiline-gathered | ok | ok | 960x76 | 169x65 |
+| probe-01-align | ok | ok | 960x76 | 95x65 |
+| probe-02-gather | ok | ok | 960x76 | 58x65 |
+| probe-03-cases | ok | ok | 960x86 | 192x73 |
+| probe-04-array | ok | ok | 960x68 | 74x58 |
+| probe-05-alphabets | ok | ok | 960x36 | 58x22 |
+| probe-06-text | ok | ok | 960x36 | 131x18 |
+| probe-07-binom | ok | ok | 960x68 | 50x58 |
+| probe-08-overbrace | ok | ok | 960x60 | 53x47 |
+| probe-09-stackrel | ok | ok | 960x42 | 75x31 |
+| probe-10-substack | ok | ok | 960x86 | 68x76 |
+| probe-11-big-delimiters | ok | ok | 960x52 | 48x45 |
+| probe-12-xrightarrow | ok | ok | 960x36 | 86x26 |
+| probe-13-textcolor | ok | ok | 960x36 | 56x19 |
+| probe-14-mhchem | `invalid_latex` | ok | -x- | 70x20 |
+| probe-15-physical-units | `invalid_latex` | ok | -x- | 116x24 |
+| probe-16-cancel | ok | ok | 960x36 | 56x20 |
+| probe-17-boxed | ok | ok | 960x44 | 109x38 |
+| probe-18-equation-tag | ok | ok | 960x34 | 113x29 |
+| probe-19-cjk-text | ok | ok | 960x44 | 192x23 |
+| probe-20-nested-fraction | ok | ok | 960x76 | 86x65 |
+| probe-21-product | ok | ok | 960x84 | 130x75 |
+| probe-22-vmatrix | ok | ok | 960x68 | 66x58 |
+| document-markdown | ok | ok | 960x630 | 840x388 |
+
+Factual observations (no accept/reject judgment here; see the evidence doc):
+
+- Font flavor differs: V2 uses the KaTeX font family, the native path uses
+  RaTeX's Computer Modern set; glyph shapes are close but not identical.
+- In this harness run V2 rendered `bmatrix`/`cases`/`vmatrix` with unstretched
+  delimiters, while the native output stretches them correctly.
+- The document sample differs in styling: V2 uses a sans-serif GitHub-dark
+  theme, the native sample uses NewCM serif and Typst default table strokes;
+  structure (heading, bold, inline math, list, table, highlighted code) matches.
+- Native stacked output is transparent; a supervisor fix replaced the initial
+  alpha-discarding blend with source-over compositing that preserves alpha.

@@ -1263,6 +1263,7 @@ dependencies = [
  "ratex-render",
  "ratex-svg",
  "ratex-types",
+ "serde_json",
  "typst",
  "typst-as-lib",
  "typst-render",
