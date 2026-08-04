@@ -47,13 +47,30 @@
 //! the retained source — never by re-fetching from the watcher. A restore
 //! failure leaves that one block showing nothing rather than disturbing the
 //! rest of the window (fail closed).
+//!
+//! The socket carries versioned delta frames in addition to whole
+//! `Document` frames (AT-3-601): [`tmath_core::agent::DeltaState`]
+//! reassembles the running document text from `Document`/`Append`/
+//! `ReplaceTail` messages and enforces the delta protocol (a monotonic
+//! sequence number, a fixed version) fail-closed — a rejected frame (unknown
+//! version, duplicate/out-of-order sequence, or an invalid `ReplaceTail`
+//! boundary) leaves the document and every placed block untouched and
+//! invalidates delta tracking until the next whole `Document` frame
+//! resyncs it. `apply_incoming_message` is the only caller of
+//! `render_and_place` from the socket read loop; the block-diffing and
+//! placement pipeline itself is unchanged — only how the input text is
+//! assembled is new. A `Document` frame (what a V2-style source still
+//! sends) is always accepted regardless of delta state, so a V3 viewer
+//! stays backward compatible. Delta *emission* on the watcher side is out
+//! of scope here (T3-402/403).
 
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use tmath_core::agent::{Decoder, Message};
+use tmath_core::agent::{Decoder, DeltaState, Message};
 use tmath_core::input::InputDecoder;
+use tmath_core::ipc::IPC_MAX_REQUEST_BYTES;
 use tmath_core::placement::CellSize;
 use tmath_core::scroll_driver::{is_exit_signal, scroll_delta};
 use tmath_core::terminal::{StdioTty, Terminal};
@@ -97,6 +114,16 @@ struct Viewer {
     /// (enforced by the splitter before `render_and_place` ever sees it), so
     /// this stays bounded the same way the render cache's inputs already are.
     block_sources: Vec<Block>,
+    /// Reassembles the running document text from `Document`/`Append`/
+    /// `ReplaceTail` frames (AT-3-601), enforcing the delta protocol's
+    /// version/sequence rules fail-closed. `render_and_place` is called with
+    /// `delta.document()` after every accepted message — the block-diffing
+    /// path is unchanged; only how the input text is assembled is new.
+    /// Constructed with `IPC_MAX_REQUEST_BYTES` as its aggregate byte bound
+    /// — the same cap `encode_document` already enforces per whole-document
+    /// frame, so a delta-reassembled document and a directly-sent one agree
+    /// on the largest document either path can ever produce.
+    delta: DeltaState,
 }
 
 pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
@@ -182,6 +209,7 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         blocks_placed: 0,
         cell,
         block_sources: Vec::new(),
+        delta: DeltaState::new(IPC_MAX_REQUEST_BYTES),
     };
     let _ = viewer.stream.set_nonblocking(true);
     eprintln!("agent-viewer: connected; q/Ctrl-C closes");
@@ -226,8 +254,10 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
                     while let Some(message) = viewer.messages.next_message() {
                         match message {
                             Ok(Message::Quit) => return Ok(0),
-                            Ok(Message::Document { text }) => render_and_place(viewer, &text)?,
-                            Err(_) => eprintln!("agent-viewer: malformed_message dropped"),
+                            Ok(message) => apply_incoming_message(viewer, &message)?,
+                            Err(error) => {
+                                eprintln!("agent-viewer: malformed_message dropped ({error:?})")
+                            }
                         }
                     }
                 }
@@ -333,6 +363,30 @@ fn stdin_readable() -> bool {
     rustix::event::poll(&mut fds, Some(&timeout))
         .map(|n| n > 0)
         .unwrap_or(false)
+}
+
+/// Applies one incoming `Document`/`Append`/`ReplaceTail` message to the
+/// running document (AT-3-601) and, if it changed the text, feeds the
+/// reassembled document through the existing `render_and_place` path — the
+/// same block-diffing/placement pipeline `Document`-only messages always
+/// used. A rejected delta (unknown version, bad sequence, or an invalid
+/// `ReplaceTail` boundary) is fail-closed: it is logged with a stable error
+/// code only (never message content), the previous document and all placed
+/// blocks stay exactly as they were, and — per `DeltaState`'s resync
+/// policy — every later delta is rejected too until the next `Document`
+/// frame. `Quit` never reaches here (handled directly in the read loop).
+fn apply_incoming_message(viewer: &mut Viewer, message: &Message) -> Result<(), String> {
+    match viewer.delta.apply(message) {
+        Ok(Some(text)) => {
+            let text = text.to_string();
+            render_and_place(viewer, &text)
+        }
+        Ok(None) => Ok(()),
+        Err(error) => {
+            eprintln!("agent-viewer: delta_rejected ({error:?})");
+            Ok(())
+        }
+    }
 }
 
 /// Converts the planner's current per-block pixel dimensions into the row
@@ -637,6 +691,88 @@ mod tests {
         );
     }
 
+    /// AT-3-601 happy path: a `Document` followed by an `Append` and a
+    /// `ReplaceTail` each drive `render_and_place` through the normal
+    /// block-diffing path — the delta protocol only changes how the input
+    /// text is assembled, not what happens to it afterward.
+    #[test]
+    fn document_append_and_replace_tail_all_reach_render_and_place() {
+        use tmath_core::agent::Message;
+
+        let mut viewer = test_viewer(24);
+        apply_incoming_message(
+            &mut viewer,
+            &Message::Document {
+                text: "One.\n\n".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(viewer.planner.blocks().len(), 1);
+        assert_eq!(viewer.delta.document(), "One.\n\n");
+
+        apply_incoming_message(
+            &mut viewer,
+            &Message::Append {
+                version: tmath_core::agent::DELTA_PROTOCOL_VERSION,
+                seq: 1,
+                text: "Two.\n\n".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(viewer.planner.blocks().len(), 2);
+        assert_eq!(viewer.delta.document(), "One.\n\nTwo.\n\n");
+
+        let keep_bytes = "One.\n\n".len();
+        apply_incoming_message(
+            &mut viewer,
+            &Message::ReplaceTail {
+                version: tmath_core::agent::DELTA_PROTOCOL_VERSION,
+                seq: 2,
+                keep_bytes,
+                text: "Three.\n\n".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(viewer.delta.document(), "One.\n\nThree.\n\n");
+        assert_eq!(viewer.planner.blocks().len(), 2);
+    }
+
+    /// AT-3-601 fail-closed: a rejected delta (here, an out-of-order
+    /// sequence number) must not call `render_and_place` at all — the
+    /// previously placed blocks and document text stay exactly as they were.
+    #[test]
+    fn a_rejected_delta_does_not_reach_render_and_place() {
+        use tmath_core::agent::Message;
+
+        let mut viewer = test_viewer(24);
+        apply_incoming_message(
+            &mut viewer,
+            &Message::Document {
+                text: "One.\n\n".to_string(),
+            },
+        )
+        .unwrap();
+        let blocks_before = viewer.planner.blocks().len();
+
+        // seq=5 with nothing at seq=1..=4 first is out of order.
+        apply_incoming_message(
+            &mut viewer,
+            &Message::Append {
+                version: tmath_core::agent::DELTA_PROTOCOL_VERSION,
+                seq: 5,
+                text: "orphan".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            viewer.planner.blocks().len(),
+            blocks_before,
+            "the rejected delta never reached render_and_place"
+        );
+        assert_eq!(viewer.delta.document(), "One.\n\n");
+    }
+
     /// AT-3-502: this test replaces the pre-T3-302 behavior where
     /// `render_and_place` unconditionally re-engaged follow after every
     /// document. Once a manual scroll has disengaged follow, an appended
@@ -801,6 +937,7 @@ mod tests {
                 height: 1,
             },
             block_sources: Vec::new(),
+            delta: DeltaState::new(IPC_MAX_REQUEST_BYTES),
         }
     }
 
