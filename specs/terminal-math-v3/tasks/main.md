@@ -72,8 +72,10 @@
 - [x] **T3-204** `tmath render -` stream mode with boundary-driven emission and
       tail coalescing. (AT-3-402/403 PASS via hermetic event-line tests;
       commit `e791f79`; interior in-place re-anchoring deferred to Phase 3)
-- [ ] **T3-205** `tmath watch <file>` (FS events, changed-block re-render).
-      (AT-3-405)
+- [x] **T3-205** `tmath watch <file>` (FS events, changed-block re-render).
+      (AT-3-405 PASS via hermetic event-line tests; commit `33527c2`;
+      known gap: no dedicated SIGTERM-exit test yet — carried to Phase 6
+      hardening)
 
 ## Phase 3 — Viewer v2
 
