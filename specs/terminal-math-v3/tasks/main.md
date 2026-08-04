@@ -66,8 +66,9 @@
 - [x] **T3-202** Render cache: content hashing, bounded LRU, eviction.
       (AT-3-304/305 covered at crate level; commit `4a9d6b0`; 96 crate tests
       green; errors never cached)
-- [ ] **T3-203** Placement planner: prefix reuse, append, tail replace, interior
-      edit re-anchoring. (AT-3-301..303)
+- [x] **T3-203** Placement planner: prefix reuse, append, tail replace, interior
+      edit re-anchoring. (AT-3-301..303 op-level coverage; commit `26030fe`;
+      byte-level fake-tty assertions land with the T3-204 wiring)
 - [ ] **T3-204** `tmath render -` stream mode with boundary-driven emission and
       tail coalescing. (AT-3-402, AT-3-403)
 - [ ] **T3-205** `tmath watch <file>` (FS events, changed-block re-render).
