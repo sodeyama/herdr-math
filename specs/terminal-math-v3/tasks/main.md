@@ -32,8 +32,9 @@
 
 ## Phase 1 — Native render crate
 
-- [ ] **T3-101** Create `engine/crates/tmath-render`: block model, options,
+- [x] **T3-101** Create `engine/crates/tmath-render`: block model, options,
       `SafeErrorRecord` mapping; pin `ratex-*`/`typst*` versions.
+      (commit `31fc843`; 16 unit tests, clippy clean)
 - [ ] **T3-102** Port the scanner (`scan-latex.ts`) to Rust with the V2 fixture
       corpus. (AT-3-102)
 - [ ] **T3-103** Markdown mapping: pulldown-cmark → Typst structured content
