@@ -109,3 +109,64 @@ also groups the red marker rows to count wrapped lines.
   not have those fonts in its embedded set. PNG embedding is self-contained and
   passes the acceptance thresholds. Enabling standalone SVG would require a
   Cargo feature change outside the pinned dependency contract for this task.
+
+## T3-002 cold start
+
+AT-3-002 passes on the release build. The measurement integration test builds
+`coldstart` once with `cargo build --release --offline --bin coldstart`, performs
+one unmeasured warmup spawn to populate filesystem and executable caches, and
+then records 10 fresh process runs. Wall-clock timing starts immediately before
+`Command::output()` spawns the child and ends after child exit, so it includes OS
+process startup and stdout capture. The in-process timer starts at the first
+statement of `main`.
+
+| Run | Wall-clock | Engine build | First render | In-process total |
+|---:|---:|---:|---:|---:|
+| 1 | 8.752 ms | 2.310 ms | 2.167 ms | 4.516 ms |
+| 2 | 8.146 ms | 2.239 ms | 1.991 ms | 4.267 ms |
+| 3 | 8.616 ms | 2.360 ms | 2.246 ms | 4.655 ms |
+| 4 | 8.671 ms | 2.295 ms | 2.224 ms | 4.561 ms |
+| 5 | 8.895 ms | 2.372 ms | 2.173 ms | 4.600 ms |
+| 6 | 8.696 ms | 2.322 ms | 2.111 ms | 4.471 ms |
+| 7 | 10.134 ms | 3.075 ms | 2.687 ms | 5.829 ms |
+| 8 | 10.041 ms | 3.103 ms | 2.304 ms | 5.466 ms |
+| 9 | 9.791 ms | 2.710 ms | 2.420 ms | 5.177 ms |
+| 10 | 10.243 ms | 2.498 ms | 2.283 ms | 4.834 ms |
+
+| Metric | p50 | p95 |
+|---|---:|---:|
+| Wall-clock | 8.824 ms | 10.194 ms |
+| In-process total | 4.627 ms | 5.666 ms |
+
+The representative first block contains a bold Typst paragraph with one inline
+RaTeX PNG box and a RaTeX display formula below it. Both RaTeX assets are
+produced and kept in memory, resolved by Typst's static file resolver, and the
+final transparent PNG is encoded in memory at DPR 2. Every measured run emitted
+19,177 PNG bytes. The engine configuration exposes 17 embedded Typst font faces,
+and the compiled document was also checked to contain at least one used text
+font face.
+
+The `engine_build_ms` phase starts at process entry and includes RaTeX parsing,
+layout, PNG rasterization, Typst source construction, static resolver setup, and
+embedded-font engine construction. `first_render_ms` covers Typst compilation,
+font-use verification, page rasterization, and final PNG encoding. The remaining
+wall-clock difference is executable loading, dynamic loader/runtime startup,
+stdout I/O, and child teardown.
+
+System-font exclusion is structural rather than syscall-traced because this
+sandbox has no filesystem tracing facility. Both spike binaries use the same
+`embedded_font_options()` construction site, which sets
+`include_system_fonts(false)`, supplies an empty explicit font-directory list,
+and sets `include_embedded_fonts(true)`. Debug assertions guard those invariants
+before `TypstKitFontOptions` is passed to the engine. No filesystem resolver is
+installed for the formula assets.
+
+Caveats:
+
+- The acceptance threshold applies to the release binary; debug performance is
+  not representative and is not used for the assertion.
+- The warmup result was 635.629 ms wall-clock and 14.182 ms in-process. It is
+  excluded from the 10 samples because AT-3-002 specifies warm OS caches and
+  first-run filesystem/executable cache effects are substantial on this host.
+- Results are host- and load-dependent. The machine-readable evidence is written
+  to `out/coldstart-summary.json` on every integration-test run.
