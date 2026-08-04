@@ -11,9 +11,10 @@
 
 ## Phase 0 — Feasibility spikes (gate)
 
-- [ ] **T3-001** Spike: RaTeX SVG/PNG inline boxes embedded in a Typst paragraph
+- [x] **T3-001** Spike: RaTeX SVG/PNG inline boxes embedded in a Typst paragraph
       with baseline metrics; record offsets and wrapping behavior.
-      (AT-3-001; evidence in `docs/evidence/`)
+      (AT-3-001 PASS; commit `9c263dd`; evidence
+      `docs/evidence/2026-08-04-v3-inline-math-baseline-spike.md`)
 - [ ] **T3-002** Spike: embedded-font engine construction (RaTeX OFL set +
       `typst-assets` subset), no system font scan; measure cold start.
       (AT-3-002)
