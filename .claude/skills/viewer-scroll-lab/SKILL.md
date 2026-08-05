@@ -41,9 +41,13 @@ temp/scratch directory, never into the repository.
    injects SGR wheel escapes / the End key directly into the viewer pane's
    stdin via `tmux send-keys -H`, timestamping each injection (latency
    measurements diff these against viewer log lines).
-3. `observe.sh <label> [outdir]` — captures the screen with
-   `screencapture -x` to `shot-<label>.png`. The agent then Reads the PNG
-   to inspect the actual rendered pixels.
+3. `observe.sh <label> [outdir] [x y w h]` — captures the outer terminal
+   WINDOW by CGWindowID (`screencapture -l`, occlusion-immune — a full-screen
+   shot silently photographs whatever app is frontmost instead) to
+   `shot-<label>.png`, optionally cropping to window-relative pixels via
+   `crop.py` for glyph-level zooms. `OBSERVE_APP` overrides the window-owner
+   match (default `ghostty`). The agent then Reads the PNG to inspect the
+   actual rendered pixels.
 
 ## Standard cycle
 
