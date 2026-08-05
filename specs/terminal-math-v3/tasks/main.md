@@ -109,8 +109,18 @@
       pure-function tests plus review (no fake-tty sink harness yet), and one
       tmath-render lib test flaked once under heavy parallel load —
       timing-sensitivity to audit in T3-602.)
-- [ ] **T3-305** Recorded terminal evidence: many-placement behavior in Ghostty
-      (+ tmux route). (supports AT-3-501/503; evidence file)
+- [x] **T3-305** Recorded terminal evidence: many-placement behavior in Ghostty
+      (+ tmux route). (supports AT-3-501/503; evidence file
+      `docs/evidence/2026-08-05-v3-viewer-many-placements.md`. 45-block Ghostty
+      + tmux passthrough session: per-append bytes flat (~18-21 KB) across
+      growing history, per-scroll-step bytes flat (~234-237 KB/10 steps)
+      across two batches at different history depths, delete APCs target
+      single image IDs only (no full-buffer clear), and all 6,630 captured
+      RGBA payloads decompress to their declared dimensions with non-zero
+      glyph content. The visual tofu/overlap check was closed by a same-day
+      supervisor-run live screenshot review on the same commit — see the
+      evidence file's supervisor addendum; screenshots stay local-only per
+      privacy rules.)
 
 ## Phase 4 — Agent sources
 
