@@ -2,9 +2,11 @@
 
 ## Status
 
-- Checklist state: **Implemented — Phases R1 through R4 complete. The one
-  remaining external gate is TR-303's CI-green confirmation on the PR (the
-  job is committed and the same four smokes pass locally).**
+- Checklist state: **Complete — Phases R1 through R4 done. TR-303's
+  `tmux-smokes` CI job ran green on PR #6 (all three CI jobs passing),
+  closing the last external gate. The CI run also caught and fixed a
+  latent probe nondeterminism: the TR-302(b) split pane silently depended
+  on a locally installed tmath keeping it alive (`976aae0`).**
 - Plan: `../plans/main.md`
 - Acceptance contract: `../tests/main.md`
 - Rules: one logical change per commit; a task is complete only when its listed
