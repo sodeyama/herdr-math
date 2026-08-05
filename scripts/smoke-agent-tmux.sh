@@ -36,7 +36,7 @@ sleep 0.3
 tmux split-window -h -p 30 -t "$SESSION" 'zsh -f' >/dev/null
 CTL_PANE="$(tmux display-message -p -t "$SESSION" '#{pane_id}')"
 LOG="$(mktemp -t tmath-agent-smoke.XXXXXX)"
-WATCHER_CMD="env TMATH_RENDER_WORKER=$TMATH_RENDER_WORKER $TMATH agent --source-pane $SRC_PANE --wait-ms 300 --poll-ms 100 --percent 30 2> $LOG"
+WATCHER_CMD="$TMATH agent --source-pane $SRC_PANE --wait-ms 300 --poll-ms 100 --percent 30 2> $LOG"
 tmux send-keys -l -t "$CTL_PANE" "$WATCHER_CMD"
 tmux send-keys -t "$CTL_PANE" Enter
 

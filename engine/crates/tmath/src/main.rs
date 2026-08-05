@@ -85,7 +85,7 @@ fn help_text() -> String {
          USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath watch [OPTIONS] <file>\n  tmath agent [OPTIONS]\n  tmath agent-viewer <socket-path>\n  tmath agent-enable [<dir>]\n  tmath agent-disable [<dir>]\n  tmath agent-allowed [<dir>]\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
          \n\
          OPTIONS (render):\n  --content-width <px>  Render width in pixels (overrides auto-fit; default 480 without a terminal)\n  --font-size <px>      Base font size in pixels (overrides auto-fit; default 14 without a terminal)\n\
-  --engine <engine>     Renderer: node or native (default node)\n\
+  --engine <engine>     Renderer: native or node (default native; node is deprecated)\n\
          \n\
          OPTIONS (watch):\n  --content-width <px>  Render width in pixels (overrides auto-fit; default 480 without a terminal)\n  --font-size <px>      Base font size in pixels (overrides auto-fit; default 14 without a terminal)\n\
   --engine <engine>     Renderer: native only (default native)\n\
@@ -104,13 +104,13 @@ fn help_text() -> String {
          `tmath watch` monitors the file's parent directory and updates only\n\
          changed blocks. Ctrl-C exits; non-terminal mode also exits on SIGTERM.\n\
          \n\
-         With `--engine native` and a connected terminal, content width, font\n\
+         With the default `native` engine and a connected terminal, content width, font\n\
          size, and device pixel ratio are auto-fit to the terminal's measured\n\
          cell size and pane width so the image fits the pane and its text size\n\
          matches the surrounding terminal text. Precedence: an explicit\n\
          `--content-width`/`--font-size` value always wins; otherwise the\n\
          auto-fit value applies when a terminal is connected; otherwise the\n\
-         fixed defaults above apply. The `node` engine and a non-terminal\n\
+         fixed defaults above apply. `--engine node` and a non-terminal\n\
          destination always use the fixed defaults (plus any explicit\n\
          override). `tmath agent-viewer` always auto-fits its pane; it has no\n\
          CLI override.\n\
@@ -156,7 +156,7 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     let mut input: Option<String> = None;
     let mut content_width: Option<u32> = None;
     let mut font_size: Option<u32> = None;
-    let mut engine = RenderEngine::Node;
+    let mut engine = RenderEngine::Native;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -705,11 +705,12 @@ fn diagnose(args: &[String]) -> Result<i32, String> {
     }
     let mut problems = 0u32;
 
+    println!("native renderer: in-process (default)");
+
     match renderer_worker_path() {
-        Ok(_) => println!("renderer subprocess: available"),
+        Ok(_) => println!("renderer subprocess: available (optional; --engine node)"),
         Err(message) => {
-            println!("renderer subprocess: missing ({message})");
-            problems += 1;
+            println!("renderer subprocess: unavailable ({message}; optional for --engine node)")
         }
     }
 
@@ -719,11 +720,8 @@ fn diagnose(args: &[String]) -> Result<i32, String> {
         .stderr(Stdio::null())
         .status()
     {
-        Ok(status) if status.success() => println!("node: available"),
-        _ => {
-            println!("node: missing");
-            problems += 1;
-        }
+        Ok(status) if status.success() => println!("node: available (optional; --engine node)"),
+        _ => println!("node: unavailable (optional; --engine node)"),
     }
 
     if io::stdout().is_terminal() {
@@ -788,7 +786,7 @@ mod tests {
         let parsed = parse_render_args(&args(&["doc.md"])).unwrap();
         assert_eq!(parsed.input, "doc.md");
         assert_eq!(parsed.content_width, None);
-        assert_eq!(parsed.engine, RenderEngine::Node);
+        assert_eq!(parsed.engine, RenderEngine::Native);
 
         let parsed = parse_render_args(&args(&[
             "--content-width",
@@ -796,14 +794,14 @@ mod tests {
             "--font-size",
             "18",
             "--engine",
-            "native",
+            "node",
             "-",
         ]))
         .unwrap();
         assert_eq!(parsed.input, "-");
         assert_eq!(parsed.content_width, Some(800));
         assert_eq!(parsed.font_size, Some(18));
-        assert_eq!(parsed.engine, RenderEngine::Native);
+        assert_eq!(parsed.engine, RenderEngine::Node);
     }
 
     #[test]

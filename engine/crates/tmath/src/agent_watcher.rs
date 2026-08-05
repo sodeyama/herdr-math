@@ -20,7 +20,6 @@ use tmath_core::agent::{
 use tmath_core::input::InputDecoder;
 use tmath_core::scroll_driver::is_exit_signal;
 
-use crate::render::renderer_worker_path;
 use crate::transcript_adapter::{
     project_transcript_dir, resolve_transcript_file, TranscriptAdapter, TranscriptDelta,
 };
@@ -74,7 +73,6 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         return Ok(0);
     }
     let parsed = parse_agent_args(args)?;
-    let _ = renderer_worker_path()?;
     let source = parsed
         .source
         .clone()
@@ -92,12 +90,8 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     listener.set_nonblocking(true).ok();
 
     let exe = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
-    let worker = renderer_worker_path()?;
-    // tmux starts the viewer pane with the server's environment, so the
-    // renderer worker path must be passed explicitly on the command line.
     let viewer_cmd = viewer_command(
         &exe,
-        &worker,
         &socket_path,
         env::var("TMATH_TMUX_TRANSPORT").ok().as_deref(),
         env::var("TMATH_DPR").ok().as_deref(),
@@ -455,45 +449,35 @@ fn spawn_viewer_pane(
 }
 
 /// Builds the shell command that runs the viewer in a fresh tmux pane,
-/// injecting the renderer worker path because tmux panes inherit the server
+/// forwarding tmux/DPR/log overrides because tmux panes inherit the server's
 /// environment rather than the watcher's.
 fn viewer_command(
     exe: &std::path::Path,
-    worker: &std::path::Path,
     socket: &std::path::Path,
     transport: Option<&str>,
     dpr: Option<&str>,
     viewer_log: Option<&str>,
 ) -> String {
-    let transport = transport
-        .map(|value| format!(" TMATH_TMUX_TRANSPORT={}", shell_quote(value)))
-        .unwrap_or_default();
-    // tmux `split-window` starts the new pane with the *server's*
-    // environment, not the watcher process's — same reason
-    // `TMATH_TMUX_TRANSPORT` and `TMATH_RENDER_WORKER` are forwarded here
-    // explicitly rather than relying on inheritance. Without this, a
-    // `TMATH_DPR` set in the user's shell before running `tmath agent` would
-    // never reach the viewer pane that actually needs it.
-    let dpr = dpr
-        .map(|value| format!(" TMATH_DPR={}", shell_quote(value)))
-        .unwrap_or_default();
-    // Same reasoning: the viewer's diagnostic `eprintln!`s are off by
-    // default (see `agent_viewer::viewer_log_enabled`'s doc comment), so an
-    // evidence run that sets `TMATH_VIEWER_LOG` in the shell it runs `tmath
-    // agent` from needs it forwarded here to reach the viewer pane at all.
-    let viewer_log = viewer_log
-        .map(|value| format!(" TMATH_VIEWER_LOG={}", shell_quote(value)))
-        .unwrap_or_default();
-    format!(
-        "env TMATH_RENDER_WORKER={}{}{}{} {} {} {}",
-        shell_quote(&worker.display().to_string()),
-        transport,
-        dpr,
-        viewer_log,
-        shell_quote(&exe.display().to_string()),
-        "agent-viewer",
-        shell_quote(&socket.display().to_string())
-    )
+    let mut env_pairs = Vec::new();
+    if let Some(value) = transport {
+        env_pairs.push(format!("TMATH_TMUX_TRANSPORT={}", shell_quote(value)));
+    }
+    if let Some(value) = dpr {
+        env_pairs.push(format!("TMATH_DPR={}", shell_quote(value)));
+    }
+    if let Some(value) = viewer_log {
+        env_pairs.push(format!("TMATH_VIEWER_LOG={}", shell_quote(value)));
+    }
+    let exe = shell_quote(&exe.display().to_string());
+    let socket = shell_quote(&socket.display().to_string());
+    if env_pairs.is_empty() {
+        format!("{exe} agent-viewer {socket}")
+    } else {
+        format!(
+            "env {} {exe} agent-viewer {socket}",
+            env_pairs.join(" ")
+        )
+    }
 }
 
 fn capture_source(pane: &PaneId, history: u32) -> Result<String, String> {
@@ -978,10 +962,9 @@ mod tests {
     }
 
     #[test]
-    fn viewer_command_injects_the_worker_path() {
+    fn viewer_command_runs_the_viewer_without_optional_env_overrides() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             None,
@@ -989,7 +972,7 @@ mod tests {
         );
         assert_eq!(
             cmd,
-            "env TMATH_RENDER_WORKER='/opt/site/dist/renderer/subprocess.js' '/opt/tools/tmath' agent-viewer '/tmp/tmath-agent-1.sock'"
+            "'/opt/tools/tmath' agent-viewer '/tmp/tmath-agent-1.sock'"
         );
     }
 
@@ -997,23 +980,21 @@ mod tests {
     fn viewer_command_quotes_paths_with_spaces() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/my tools/tmath"),
-            std::path::Path::new("/opt/my site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath agent-1.sock"),
             None,
             None,
             None,
         );
-        assert!(
-            cmd.starts_with("env TMATH_RENDER_WORKER='/opt/my site/dist/renderer/subprocess.js'")
+        assert_eq!(
+            cmd,
+            "'/opt/my tools/tmath' agent-viewer '/tmp/tmath agent-1.sock'"
         );
-        assert!(cmd.contains("'/opt/my tools/tmath' agent-viewer"));
     }
 
     #[test]
     fn viewer_command_forwards_an_explicit_tmux_transport() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             None,
@@ -1023,14 +1004,13 @@ mod tests {
     }
 
     /// tmux `split-window` panes start with the server's environment, not
-    /// the watcher process's, so `TMATH_DPR` (like `TMATH_TMUX_TRANSPORT`
-    /// and `TMATH_RENDER_WORKER`) must be forwarded explicitly on the
-    /// spawn command line or the viewer pane never sees it.
+    /// the watcher process's, so `TMATH_DPR` (like `TMATH_TMUX_TRANSPORT`)
+    /// must be forwarded explicitly on the spawn command line or the viewer
+    /// pane never sees it.
     #[test]
     fn viewer_command_forwards_an_explicit_dpr_override() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             Some("2"),
@@ -1043,7 +1023,6 @@ mod tests {
     fn viewer_command_forwards_both_transport_and_dpr_together() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             Some("3"),
@@ -1057,7 +1036,6 @@ mod tests {
     fn viewer_command_with_neither_override_omits_both_variables() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             None,
@@ -1066,6 +1044,7 @@ mod tests {
         assert!(!cmd.contains("TMATH_TMUX_TRANSPORT"));
         assert!(!cmd.contains("TMATH_DPR"));
         assert!(!cmd.contains("TMATH_VIEWER_LOG"));
+        assert!(!cmd.contains("TMATH_RENDER_WORKER"));
     }
 
     /// Same forwarding requirement as `TMATH_DPR`/`TMATH_TMUX_TRANSPORT`:
@@ -1077,7 +1056,6 @@ mod tests {
     fn viewer_command_forwards_an_explicit_viewer_log_flag() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             None,
@@ -1090,7 +1068,6 @@ mod tests {
     fn viewer_command_forwards_all_three_overrides_together() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             Some("3"),
