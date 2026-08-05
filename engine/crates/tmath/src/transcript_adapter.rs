@@ -20,9 +20,16 @@
 //! transcripts (never persisted as fixtures — synthesized JSONL is used for
 //! tests instead, per `AGENTS.md`'s privacy rules):
 //!
-//! - `{"type": "user", ...}` — a new human turn. Marks the end of whatever
-//!   assistant answer was accumulating; the next assistant text starts a
-//!   fresh answer.
+//! - `{"type": "user", ...}` — NOT always a human turn: Claude Code also
+//!   writes a tool call's result back into the transcript as a
+//!   `type: "user"` line, so a single assistant turn that interleaves text
+//!   with tool calls produces `type: "user"` lines mid-turn. Only a line
+//!   carrying genuine user-authored content (`message.content` a bare
+//!   string, or an array with at least one non-`tool_result` block — see
+//!   [`is_genuine_user_text`]) marks the end of whatever assistant answer
+//!   was accumulating; a tool-result-only line (`message.content` is
+//!   exclusively `tool_result` blocks, the shape observed for every
+//!   real tool result) changes nothing.
 //! - `{"type": "assistant", "message": {"content": [...]}}` — one assistant
 //!   turn fragment. `content` is a list of blocks; this adapter only reads
 //!   blocks shaped `{"type": "text", "text": "..."}` and ignores every other
@@ -182,6 +189,51 @@ impl TranscriptAdapter {
     }
 }
 
+/// Whether a `{"type": "user"}` transcript line carries genuine
+/// user-authored content, as opposed to a tool-call result Claude Code logs
+/// back as the same `type: "user"` shape (observed live: a
+/// text -> tool_use -> tool_result -> text sequence within one assistant
+/// turn writes the tool_result as its own `type: "user"` line).
+///
+/// Rule (fail toward "not genuine" — i.e. toward not resetting — whenever
+/// the shape is ambiguous or unrecognized, since a false reset visibly
+/// breaks streaming while a missed reset only delays it to the next
+/// genuine turn):
+/// - `message.content` as a bare string: genuine (the plain-text user-input
+///   shape observed in real transcripts).
+/// - `message.content` as an array: genuine only if at least one block's
+///   `type` is present and is not `"tool_result"` — a block list that is
+///   empty, entirely `tool_result` blocks, or has no readable `type` at
+///   all, is not genuine. (Live transcripts show tool-result lines as
+///   `content: [{"type": "tool_result", ...}]`, always alone; a real user
+///   turn with e.g. `[{"type": "text", ...}]` or
+///   `[{"type": "image", ...}, {"type": "text", ...}]` never mixes in a
+///   `tool_result` block, so "any non-tool_result block present" is
+///   equivalent to "not exclusively tool results" for every shape seen so
+///   far, and is the more conservative of the two for a shape that isn't.)
+/// - Any other `message.content` shape (missing, not a string/array): not
+///   genuine.
+fn is_genuine_user_text(value: &serde_json::Value) -> bool {
+    let Some(content) = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+    else {
+        return false;
+    };
+    if content.is_string() {
+        return true;
+    }
+    let Some(blocks) = content.as_array() else {
+        return false;
+    };
+    blocks.iter().any(|block| {
+        block
+            .get("type")
+            .and_then(|kind| kind.as_str())
+            .is_some_and(|kind| kind != "tool_result")
+    })
+}
+
 /// Parses one complete JSONL line (without its trailing newline) into at
 /// most one delta. Fails closed: malformed JSON, an unrecognized shape, or
 /// a block over the size cap all yield `None` rather than an error — a bad
@@ -195,7 +247,21 @@ fn parse_transcript_line(line: &[u8], awaiting_new_answer: &mut bool) -> Option<
     let kind = value.get("type")?.as_str()?;
 
     if kind == "user" {
-        *awaiting_new_answer = true;
+        // Claude Code writes tool-call results back as `type: "user"` lines
+        // too (the transcript is a single interleaved turn log, not
+        // separate "user" and "tool" streams) — a text -> tool_use ->
+        // tool_result -> text sequence within ONE assistant turn produces a
+        // `type: "user"` line for the tool_result. Treating every such line
+        // as a real answer boundary reset every chunk instead of appending,
+        // so only a line that carries genuine user-authored content marks a
+        // new answer; a line whose `message.content` is exclusively
+        // tool-result blocks (the common shape — a bare string `content` or
+        // any block that is not `tool_result` counts as genuine) changes
+        // nothing and is otherwise ignored, same as any other unrecognized
+        // shape.
+        if is_genuine_user_text(&value) {
+            *awaiting_new_answer = true;
+        }
         return None;
     }
     if kind != "assistant" {
@@ -310,6 +376,34 @@ mod tests {
         r#"{"type":"user","message":{"content":[{"type":"text","text":"hi"}]}}"#.to_string()
     }
 
+    /// A `type: "user"` line shaped like Claude Code's tool-call-result
+    /// carrier (synthesized structure only, per AGENTS.md's privacy rules —
+    /// never copied from a real transcript): `message.content` holds
+    /// exclusively a `tool_result` block, plus the `toolUseResult` sibling
+    /// field real transcripts also carry on this shape (not read by the
+    /// adapter, included only so the fixture matches the real shape this
+    /// bug was found against).
+    fn tool_result_line() -> String {
+        r#"{"type":"user","toolUseResult":{"ok":true},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#.to_string()
+    }
+
+    /// A `type: "user"` line whose content mixes a `tool_result` block with
+    /// unrelated blocks of unrecognized/other types — ambiguous by
+    /// construction, used to prove the "any non-tool_result block counts as
+    /// genuine" rule rather than assuming a specific mixed shape is either
+    /// way.
+    fn mixed_unknown_user_line() -> String {
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"},{"type":"some_future_block_kind"}]}}"#.to_string()
+    }
+
+    /// A `type: "user"` line whose content is present but every block is
+    /// missing a `type` field entirely — the "no readable type at all"
+    /// case `is_genuine_user_text`'s doc comment calls out as failing
+    /// toward "not genuine".
+    fn typeless_block_user_line() -> String {
+        r#"{"type":"user","message":{"content":[{"tool_use_id":"t1","content":"ok"}]}}"#.to_string()
+    }
+
     fn assistant_text_line(text: &str) -> String {
         serde_json::json!({
             "type": "assistant",
@@ -413,6 +507,133 @@ mod tests {
             vec![TranscriptDelta::Reset(
                 "New answer starts here.".to_string()
             )]
+        );
+    }
+
+    // --- tool_result-shaped `type: "user"` lines must not reset (live bug) ---
+
+    /// The exact failure mode reported live: a single assistant turn
+    /// interleaves text with a tool call, so the transcript is
+    /// text -> tool_use -> tool_result -> text, where the tool_result is
+    /// its own `type: "user"` line. Before the fix this produced two
+    /// Resets (full-document replacements); it must produce Reset then
+    /// Append, since the whole sequence is one answer.
+    #[test]
+    fn text_tool_result_text_within_one_turn_is_reset_then_append_not_two_resets() {
+        let path = temp_path("t.jsonl");
+        write_jsonl(
+            &path,
+            &[
+                &assistant_text_line("Before the tool call."),
+                &tool_result_line(),
+                &assistant_text_line("After the tool call."),
+            ],
+        );
+        let mut adapter = reopen_from_start(&path);
+        assert_eq!(
+            adapter.poll().unwrap(),
+            vec![
+                TranscriptDelta::Reset("Before the tool call.".to_string()),
+                TranscriptDelta::Append("\n\nAfter the tool call.".to_string()),
+            ],
+            "the tool_result line must not force a second Reset"
+        );
+    }
+
+    /// A genuine user turn between two answers must still reset, even
+    /// though it now shares the discrimination path with tool-result
+    /// lines — the fix must not overcorrect into ignoring real user turns.
+    #[test]
+    fn a_genuine_user_turn_between_answers_still_resets() {
+        let path = temp_path("t.jsonl");
+        write_jsonl(&path, &[&assistant_text_line("First answer.")]);
+        let mut adapter = reopen_from_start(&path);
+        assert_eq!(
+            adapter.poll().unwrap(),
+            vec![TranscriptDelta::Reset("First answer.".to_string())]
+        );
+
+        append_jsonl(
+            &path,
+            &[&user_line(), &assistant_text_line("Second answer.")],
+        );
+        assert_eq!(
+            adapter.poll().unwrap(),
+            vec![TranscriptDelta::Reset("Second answer.".to_string())]
+        );
+    }
+
+    /// A tool_result-only `type: "user"` line changes nothing on its own:
+    /// polling right after it (before any assistant text follows) yields no
+    /// delta at all, proving it is fully ignored rather than merely
+    /// deferred.
+    #[test]
+    fn a_lone_tool_result_line_produces_no_delta_and_does_not_arm_a_reset() {
+        let path = temp_path("t.jsonl");
+        write_jsonl(&path, &[&assistant_text_line("Answer so far.")]);
+        let mut adapter = reopen_from_start(&path);
+        assert_eq!(
+            adapter.poll().unwrap(),
+            vec![TranscriptDelta::Reset("Answer so far.".to_string())]
+        );
+
+        append_jsonl(&path, &[&tool_result_line()]);
+        assert_eq!(
+            adapter.poll().unwrap(),
+            Vec::new(),
+            "a tool_result line alone must not itself emit or arm anything"
+        );
+
+        append_jsonl(&path, &[&assistant_text_line("Continues.")]);
+        assert_eq!(
+            adapter.poll().unwrap(),
+            vec![TranscriptDelta::Append("\n\nContinues.".to_string())],
+            "the following text must append, not reset, confirming the \
+             tool_result line never armed awaiting_new_answer"
+        );
+    }
+
+    /// Mixed/ambiguous `message.content` shapes: fail toward "not genuine"
+    /// (no reset) unless a block is clearly not a tool_result. A block
+    /// mixing `tool_result` with an unrecognized block type still counts as
+    /// genuine (the non-tool_result block is enough), matching
+    /// `is_genuine_user_text`'s stated rule; a content list whose blocks
+    /// have no readable `type` at all does not.
+    #[test]
+    fn mixed_or_typeless_user_content_follows_the_documented_fail_toward_ignore_rule() {
+        let path = temp_path("t.jsonl");
+        write_jsonl(&path, &[&assistant_text_line("Answer so far.")]);
+        let mut adapter = reopen_from_start(&path);
+        adapter.poll().unwrap();
+
+        // A non-tool_result block present alongside a tool_result block is
+        // genuine (Reset armed): the next assistant text resets.
+        append_jsonl(
+            &path,
+            &[
+                &mixed_unknown_user_line(),
+                &assistant_text_line("Reset one."),
+            ],
+        );
+        assert_eq!(
+            adapter.poll().unwrap(),
+            vec![TranscriptDelta::Reset("Reset one.".to_string())],
+            "a mixed tool_result + unrecognized-block content counts as genuine"
+        );
+
+        // A content list whose blocks carry no `type` at all is NOT
+        // genuine: the next assistant text still appends.
+        append_jsonl(
+            &path,
+            &[
+                &typeless_block_user_line(),
+                &assistant_text_line("Still appended."),
+            ],
+        );
+        assert_eq!(
+            adapter.poll().unwrap(),
+            vec![TranscriptDelta::Append("\n\nStill appended.".to_string())],
+            "content blocks with no readable type must not arm a reset"
         );
     }
 
