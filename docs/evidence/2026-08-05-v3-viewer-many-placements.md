@@ -16,11 +16,10 @@
 
 ## Method note: no screenshots this run
 
-The host running this session has many concurrent Ghostty spaces/tabs across
-unrelated private projects. Three attempts at whole-screen or
-whole-window `screencapture` each captured a different unrelated project's
-private session content (a customer cost dashboard, a git operation log, an
-unrelated agent's chat transcript). None of those images were kept — each
+The host running this session had several other concurrent Ghostty
+spaces/tabs for unrelated private projects. Three attempts at whole-screen
+or whole-window `screencapture` each captured a different unrelated
+project's private session content. None of those images were kept — each
 was deleted from the scratch directory within the same turn it was taken,
 before any further use, and never staged or committed. No reliable
 non-interactive way to bring only the `terminal-math` Ghostty space to the
@@ -58,6 +57,20 @@ touched by the harness.
   (blocks 41-45, after history had grown further and a scroll/follow cycle
   had occurred) measured 18,202-19,817 bytes per append — the same range,
   confirming append cost stays flat as history length increases.
+- Each append's `cache_misses` counter increased by exactly 2 per block
+  (1 -> 3 -> 5 -> ... -> 79 across the 40 initial blocks), and reassembling
+  the transmitted image payloads confirms why: every block transmits two
+  Kitty image ids in immediate succession, and the two decode to identical
+  dimensions and identical alpha-channel content (checked across the first
+  8 blocks' id pairs, e.g. ids 1/2, 3/4, 5/6, 7/8 — each pair matches
+  exactly). What causes the duplicate transmission (a width-probe render
+  versus a final render, or a placement/redraw split) was not identified
+  from the byte stream alone and is not claimed here; the observed fact is
+  that block N's two image ids are duplicate transmissions of the same
+  rendered content, not two different image roles (e.g. not a
+  text-versus-formula split — the lab content alternates between
+  text-only and formula-only blocks, and the duplication happens
+  identically for both kinds).
 - Parsing the reassembled Kitty APC control data across the full session
   (6,630 complete image transmissions) found only `a=T` (transmit-and-
   display) and `a=d,d=I,i=<id>,q=2` (delete a single image ID, quiet) action
@@ -67,13 +80,15 @@ touched by the harness.
 
 ### AT-3-503 — scroll re-emission bounded by visible window, cache reuse, no re-render
 
-- Two consecutive batches of 10 wheel-up scroll steps (`drive.sh <pane> up
-  10 100`) were injected. Byte deltas measured from the pipe-pane capture:
-  first batch 2,366,898 bytes / 10 steps (~236.7 KB/step), second batch
-  (deeper into history) 2,338,480 bytes / 10 steps (~233.8 KB/step). The
-  two batches are within ~1.2% of each other despite the second batch
-  scrolling further back into history, supporting a per-step budget bounded
-  by the visible window rather than by history depth.
+- Two consecutive batches of 10 injected wheel-up scroll steps (`drive.sh
+  <pane> up 10 100`) measured 2,366,898 bytes / 10 steps (~236.7 KB/step)
+  and 2,338,480 bytes / 10 steps (~233.8 KB/step) respectively — within
+  ~1.2% of each other despite the second batch scrolling further back into
+  history, supporting a per-step budget bounded by the visible window
+  rather than by history depth. In this lab session the visible window
+  held ~23 blocks (each with the 2-image duplication noted above), so one
+  sync's cost is dominated by re-transmitting that whole window, not by
+  how much history exists outside it.
 - Pressing `End` (`drive.sh <pane> end`) produced a `follow=true` log line
   immediately following the `follow=false` line logged at the first manual
   scroll, confirming re-engagement on `End`.
@@ -85,7 +100,42 @@ touched by the harness.
   render.
 - No render-pipeline invocation (no new `cache_misses` growth) was observed
   during either scroll batch — only placement/delete APC traffic — meaning
-  scrolling did not trigger the renderer subprocess.
+  scrolling did not trigger the renderer subprocess, for either the
+  injected or the incidental human input described below.
+
+## Injected input versus incidental human interactive input
+
+Two distinct sources of scroll input appear in this run's capture, and both
+support AT-3-501/503 the same way (one input event -> one window sync, cost
+bounded by the visible window, no re-render):
+
+- **Controlled injected input**: `drive.sh`'s fixed-coordinate SGR wheel
+  sequences (`x=10, y=20`), used for the two 10-step batches quoted above.
+  Deterministic count and timing, used for the specific per-batch byte
+  measurements.
+- **Incidental human interactive input**: while this lab session's viewer
+  pane was live, its `tmux pane_id` was also the pane a human operator
+  brought to the foreground and scrolled directly (trackpad/wheel) during
+  the session, alongside the injected batches. This was distinguished from
+  the injected input by decoded mouse events with `Move`/`Down`/`Up` kinds
+  and varying coordinates (`x` ranging roughly 2-26, `y` 62-63), which
+  `drive.sh` never produces. Tracing the viewer's internal visible-range
+  (`first..last_exclusive`) across the run's sync calls shows a smooth,
+  monotonic walk consistent with a human dragging a scroll gesture, not the
+  synthetic script: an initial run of ~23 syncs walking the range from
+  `17..40` down to `0..23` (one full scroll to the top, one row of window
+  movement per step), a symmetric walk back down to `18..40`, then a second
+  up/down round trip of similar shape, followed by a mix of larger jumps
+  and same-range repeats consistent with sub-row trackpad motion (the
+  window's row-granular range does not always change even though the
+  underlying offset moved less than one row). Every one of these
+  human-driven syncs still cost the same ~210-224 KB (the visible-window
+  budget), consistent with the injected-input measurements above — the
+  byte cost tracks the window, not the input source. This is retained as
+  positive real-terminal evidence for T3-305: a human operator interactively
+  scrolling many placements in live Ghostty + tmux, with the viewer's
+  per-sync behavior holding up under organic, variable-rate, non-monotonic
+  scroll input in addition to the synthetic script.
 
 ## Pixel-level validation (screenshot substitute)
 
@@ -122,17 +172,32 @@ overlaps, and scroll-back reaching the first block's true top row. The
 screenshots capture the whole screen and therefore stay local-only per the
 repository's privacy rules; they are not committed. This closes the visual
 portion of the check for this commit; the limitation below stands for the
-byte-capture run itself.
+byte-capture run described in the rest of this document.
 
 ## Limitations
 
 - No screenshot was taken or reviewed during the byte-capture run itself;
   within this run the "no tofu, no stale rows, no overlap" visual claims
   are verified only by the supervisor addendum above, not by an artifact in
-  the repository. A follow-up run should establish a reliable
-  non-interactive way to bring only the `terminal-math` Ghostty space to
-  the front (or use a dedicated, single-project Ghostty window) before
-  attempting screenshots again.
+  the repository. Any further glyph-quality verification belongs to the
+  real-terminal smoke check in the 0.3.0 release gate (T3-603).
+- Per-sync cost is proportional to the size of the visible window
+  (~23 blocks x 2 images in this lab session, ~210-224 KB per sync); this
+  means high-frequency scroll input (e.g. a human's trackpad, or any input
+  source that generates many discrete scroll events in quick succession)
+  multiplies total transmission cost linearly with event count, since this
+  commit performs one window sync per scroll-shaped input event with no
+  batching. A momentum/impulse-summing scroll pipeline was under separate
+  development at the time of this evidence run and is expected to change
+  this profile (coalescing multiple queued scroll events into fewer window
+  syncs); re-measuring per-sync and per-scroll-burst costs against that
+  pipeline belongs to the performance suite (T3-602).
+- The cause of the duplicate 2-images-per-block transmission (identical
+  dimensions and content per pair) was not identified from the byte stream
+  alone; it does not affect the AT-3-501/503 conclusions (both images in a
+  pair are still deleted by individual id, not a buffer clear, and the
+  per-append/per-sync byte totals already include both), but a source-level
+  explanation was out of scope for this evidence run.
 - History eviction re-render (AT-3-504, beyond a bounded cache budget) was
   not exercised — the session only reached 45 blocks and two 10-step scroll
   batches, short of forcing eviction. `cache_hits` staying below
@@ -144,5 +209,5 @@ byte-capture run itself.
   is constant per Kitty APC chunk (`\x1bPtmux;\x1b...\x1b\\`) and does not
   change the scaling conclusions.
 - The scratch capture file (raw Kitty stream containing only synthetic lab
-  content, no real document text) was not committed and was not screenshot;
-  it stays local to this session's scratch directory.
+  content, no real document text) was not committed and was not
+  screenshot; it stays local to this session's scratch directory.
