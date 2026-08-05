@@ -5,7 +5,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
 use tmath_core::placement::{
-    decode_png, emit_placed_block_cursor, CellSize, PlacementLimits, TerminalOp,
+    decode_png, emit_placed_block_cursor, emit_placed_block_row_range_cursor, CellSize,
+    PlacementLimits, TerminalOp,
 };
 use tmath_core::terminal::{StdioTty, Terminal};
 use tmath_render::{
@@ -485,16 +486,33 @@ impl StreamSink {
     }
 
     /// Opts a `Terminal` sink into the agent-viewer's reserved-row-1 live
-    /// status bar (see the `status_bar` module doc) and, in the same call,
-    /// sets [`TerminalSink::pane_rows`] — the two are opt-in together
-    /// because both are viewer-only pane-geometry facts plain stream/watch
-    /// sessions never need. `pane_cols` is the status bar's own draw width;
-    /// `pane_rows` is what [`TerminalSink::emit_batch`]'s clamp check
-    /// compares the stale-tail row span against. A no-op in `Summary` mode.
+    /// status bar (see the `status_bar` module doc), sets
+    /// [`TerminalSink::pane_rows`], and establishes the DECSTBM scroll
+    /// region covering `2..=pane_rows` (stage 1 of the scroll-region
+    /// viewer, see the `scroll_region` module doc) — the three are opt-in
+    /// together because they are all viewer-only pane-geometry facts plain
+    /// stream/watch sessions never need, and the status bar's reserved row
+    /// 1 IS the region's top boundary, not an independent concern. `pane_cols`
+    /// is the status bar's own draw width; `pane_rows` is both what
+    /// [`TerminalSink::emit_batch`]'s clamp check compares the stale-tail
+    /// row span against AND the region's bottom row. A no-op in `Summary`
+    /// mode.
+    ///
+    /// The DECSTBM write (`Terminal::set_scroll_region`) is best-effort: on
+    /// failure, `scroll_region` stays `None` and `append`/`replace` fall
+    /// back to their pre-region behavior for this session — the same
+    /// fail-open posture `Terminal::new`'s own unconditional `INIT_MODES`
+    /// write already has (a construction-time terminal write failing is not
+    /// treated as fatal anywhere in this module).
     pub(crate) fn with_status_bar(mut self, pane_cols: u32, pane_rows: u32) -> Self {
         if let Self::Terminal(sink) = &mut self {
             sink.pane_rows = pane_rows;
             sink.status_bar = Some(StatusBar::new(pane_cols));
+            let top = 2u32;
+            let bottom = pane_rows.max(top);
+            if sink.terminal.set_scroll_region(top, bottom).is_ok() {
+                sink.scroll_region = Some((top, bottom));
+            }
         }
         self
     }
@@ -564,10 +582,11 @@ impl StreamSink {
     pub(crate) fn sync_window(
         &mut self,
         visible: std::ops::Range<usize>,
+        skip_rows_in_first: u32,
     ) -> Result<(), RenderError> {
         match self {
             Self::Summary => Ok(()),
-            Self::Terminal(sink) => sink.sync_window(visible),
+            Self::Terminal(sink) => sink.sync_window(visible, skip_rows_in_first),
         }
     }
 
@@ -722,6 +741,20 @@ pub(crate) struct TerminalSink {
     /// [`StreamSink::with_status_bar`]; updated on every redraw-triggering
     /// event via [`StreamSink::set_status`].
     status_bar: Option<StatusBar>,
+    /// The DECSTBM scroll region's `(top, bottom)` rows (1-indexed,
+    /// inclusive), set together with `status_bar` in
+    /// [`StreamSink::with_status_bar`] — the region always covers
+    /// `2..=pane_rows` whenever the status bar reserves row 1, since the two
+    /// are one architecture (window-managed viewer, stage 1): `None` (the
+    /// default) is what plain stream/watch sessions keep, and `append`/
+    /// `replace` fall back to their pre-region cursor-relative behavior for
+    /// them, exactly as before this field existed. When `Some`, `append`
+    /// routes through [`crate::scroll_region::region_append_operations`]
+    /// and a growing-tail `replace` through
+    /// [`crate::scroll_region::region_tail_replace_operations`] instead —
+    /// see those functions' doc comments for why region-scroll replaces the
+    /// old flowing-append/live-cursor-query behavior.
+    scroll_region: Option<(u32, u32)>,
 }
 
 impl TerminalSink {
@@ -744,6 +777,7 @@ impl TerminalSink {
             retained_window_blocks: u64::MAX,
             pane_rows: 0,
             status_bar: None,
+            scroll_region: None,
         }
     }
 
@@ -868,15 +902,29 @@ impl TerminalSink {
     fn append(&mut self, id: u64, rendered: &RenderedBlock, png: &[u8]) -> Result<(), RenderError> {
         let decoded = self.decode(id, rendered, png)?;
         self.validate_placement(decoded.pixels, None)?;
-        let operations = append_operations(
-            decoded.id,
-            rendered.width_px,
-            rendered.height_px,
-            &decoded.rgba,
-            decoded.cols,
-            decoded.rows,
-            self.first_append_at_line_start || !self.placed.is_empty(),
-        );
+        let operations = if let Some((_, region_bottom)) = self.scroll_region {
+            // Window-managed viewer (stage 1): scroll the DECSTBM region
+            // instead of letting the terminal's own natural scroll push row
+            // 1 (the status bar) out of view — see the `scroll_region`
+            // module doc.
+            crate::scroll_region::region_append_operations(
+                crate::scroll_region::RegionBlock { id, png },
+                self.cell,
+                self.max_image_pixels,
+                region_bottom,
+            )
+            .map_err(|_| stream_error())?
+        } else {
+            append_operations(
+                decoded.id,
+                rendered.width_px,
+                rendered.height_px,
+                &decoded.rgba,
+                decoded.cols,
+                decoded.rows,
+                self.first_append_at_line_start || !self.placed.is_empty(),
+            )
+        };
         self.write_unless_suppressed(&operations)?;
         self.first_append_at_line_start = true;
         let retained_png = self.retained_png(png);
@@ -906,48 +954,90 @@ impl TerminalSink {
         let old_rows = self.placed[old_index].rows;
         let decoded = self.decode(new_id, rendered, png)?;
         self.validate_placement(decoded.pixels, Some(old_id))?;
-        let top_is_reachable = was_last
+        let is_current_tail = was_last
             && self
                 .placed
                 .last()
-                .is_some_and(|placed| placed.id == old_id_value)
-            && self
-                .terminal
-                .cursor_position()
-                .ok()
-                .flatten()
-                .is_some_and(|(row, _)| row > old_rows);
+                .is_some_and(|placed| placed.id == old_id_value);
 
-        let operations = if top_is_reachable {
-            tail_replace_operations(TailReplace {
-                old_image_id: old_id_value,
-                new_image_id: decoded.id,
-                width_px: rendered.width_px,
-                height_px: rendered.height_px,
-                rgba: &decoded.rgba,
-                cols: decoded.cols,
-                old_rows,
-                new_rows: decoded.rows,
-            })?
+        let operations = if let Some((_, region_bottom)) = self.scroll_region {
+            // Window-managed viewer (stage 1): the DECSTBM region confines
+            // all scrolling by construction, so the tail is always
+            // reachable regardless of history above it — no live cursor
+            // query needed (see `region_tail_replace_operations`'s doc
+            // comment). A non-tail replace (interior or the plan's last op
+            // is not actually `placed`'s last entry) still falls back to
+            // delete-and-append, exactly like the non-region path; the
+            // region-managed `emit_batch`/`sync_window` machinery (already
+            // correct per the 2a fix) handles interior divergence, so
+            // `replace` itself only ever needs to special-case the true
+            // tail-growth case.
+            if is_current_tail {
+                crate::scroll_region::region_tail_replace_operations(
+                    old_id_value,
+                    old_rows,
+                    crate::scroll_region::RegionBlock { id: new_id, png },
+                    self.cell,
+                    self.max_image_pixels,
+                    region_bottom,
+                )
+                .map_err(|_| stream_error())?
+            } else {
+                let mut operations =
+                    vec![TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
+                        u32::try_from(old_id_value).map_err(|_| stream_error())?,
+                    ))];
+                operations.extend(
+                    crate::scroll_region::region_append_operations(
+                        crate::scroll_region::RegionBlock { id: new_id, png },
+                        self.cell,
+                        self.max_image_pixels,
+                        region_bottom,
+                    )
+                    .map_err(|_| stream_error())?,
+                );
+                operations
+            }
         } else {
-            // Phase 2 intentionally cannot re-anchor an interior block or a
-            // tail whose top row has entered scrollback. Delete only that image
-            // (leaving its old cells blank) and append the replacement at the
-            // bottom. In-place interior re-anchoring belongs to Phase 3 viewer
-            // work, where viewport and history state are explicit.
-            let mut operations = vec![TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
-                u32::try_from(old_id_value).map_err(|_| stream_error())?,
-            ))];
-            operations.extend(append_operations(
-                decoded.id,
-                rendered.width_px,
-                rendered.height_px,
-                &decoded.rgba,
-                decoded.cols,
-                decoded.rows,
-                true,
-            ));
-            operations
+            let top_is_reachable = is_current_tail
+                && self
+                    .terminal
+                    .cursor_position()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|(row, _)| row > old_rows);
+            if top_is_reachable {
+                tail_replace_operations(TailReplace {
+                    old_image_id: old_id_value,
+                    new_image_id: decoded.id,
+                    width_px: rendered.width_px,
+                    height_px: rendered.height_px,
+                    rgba: &decoded.rgba,
+                    cols: decoded.cols,
+                    old_rows,
+                    new_rows: decoded.rows,
+                })?
+            } else {
+                // Phase 2 intentionally cannot re-anchor an interior block or a
+                // tail whose top row has entered scrollback. Delete only that image
+                // (leaving its old cells blank) and append the replacement at the
+                // bottom. In-place interior re-anchoring belongs to Phase 3 viewer
+                // work, where viewport and history state are explicit.
+                let mut operations =
+                    vec![TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
+                        u32::try_from(old_id_value).map_err(|_| stream_error())?,
+                    ))];
+                operations.extend(append_operations(
+                    decoded.id,
+                    rendered.width_px,
+                    rendered.height_px,
+                    &decoded.rgba,
+                    decoded.cols,
+                    decoded.rows,
+                    true,
+                ));
+                operations
+            }
         };
         self.write_unless_suppressed(&operations)?;
         self.placed.remove(old_index);
@@ -996,6 +1086,7 @@ impl TerminalSink {
     pub(crate) fn sync_window(
         &mut self,
         visible: std::ops::Range<usize>,
+        skip_rows_in_first: u32,
     ) -> Result<(), RenderError> {
         let visible = visible.start.min(self.placed.len())..visible.end.min(self.placed.len());
         let content_row_offset = u32::from(self.status_bar.is_some());
@@ -1006,6 +1097,7 @@ impl TerminalSink {
             self.cell,
             self.max_image_pixels,
             content_row_offset,
+            skip_rows_in_first,
         )?;
         terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
         self.first_append_at_line_start = true;
@@ -1655,6 +1747,22 @@ fn clamp_fallback_new_tail(
 /// below them. `0` (plain stream/watch sessions, which never enable the
 /// status bar) reproduces the exact `\x1b[H`-at-row-1 behavior this
 /// function had before the reserved row existed.
+///
+/// `skip_rows_in_first` crops the FIRST drawn block's placeholder rows (see
+/// `tmath_core::placement::emit_placed_block_row_range_cursor`'s doc
+/// comment for why this is a protocol-native crop, not a re-render) to
+/// `skip_rows_in_first..rows` — the fix for the scroll-region viewer's
+/// reach-the-beginning defect (`viewer_viewport::VisibleRange::
+/// skip_rows_in_first`'s field doc has the full mechanism): without this,
+/// a block only partially scrolled into view at the window's top edge was
+/// always drawn in FULL, pushing its top rows above the pane's actual
+/// content area — visually indistinguishable from "scrolling stopped
+/// working" even though `Viewport::offset()` had genuinely reached `0`.
+/// Every OTHER drawn block in `visible` is unaffected (drawn in full, as
+/// before) — only the first one is ever partially visible at a window's top
+/// edge, by `Viewport::visible_blocks`' own construction. Clamped internally
+/// to the first block's own row count, so an out-of-range value (a caller
+/// bug) degrades to drawing that one block in full rather than panicking.
 fn sync_window_operations(
     placed: &[PlacedState],
     emitted_ids: &[u64],
@@ -1662,6 +1770,7 @@ fn sync_window_operations(
     cell: CellSize,
     max_image_pixels: u64,
     content_row_offset: u32,
+    skip_rows_in_first: u32,
 ) -> Result<Vec<TerminalOp>, RenderError> {
     let visible = visible.start.min(placed.len())..visible.end.min(placed.len());
     let visible_ids: Vec<u64> = placed[visible.clone()]
@@ -1686,7 +1795,7 @@ fn sync_window_operations(
         // form, so no per-block home-row arithmetic is needed to keep
         // window-relative rows correct.
         operations.push(TerminalOp::Local(home.clone().into_bytes()));
-        for entry in &placed[visible] {
+        for (index, entry) in placed[visible].iter().enumerate() {
             let (width, height, rgba) =
                 decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
             let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
@@ -1712,10 +1821,31 @@ fn sync_window_operations(
             // never touched: `home` already starts at
             // `content_row_offset + 1`, and every clear stays at or below
             // the cursor's current row from there.
-            operations.push(TerminalOp::Local(clear_rows(rows)));
-            operations.extend(append_operations(
-                image_id, width, height, &rgba, cols, rows, true,
-            ));
+            let skip = if index == 0 {
+                skip_rows_in_first.min(rows)
+            } else {
+                0
+            };
+            operations.push(TerminalOp::Local(clear_rows(rows.saturating_sub(skip))));
+            if skip == 0 {
+                operations.extend(append_operations(
+                    image_id, width, height, &rgba, cols, rows, true,
+                ));
+            } else {
+                operations.extend(emit_placed_block_row_range_cursor(
+                    tmath_core::placement::RowRangePlacement {
+                        image_id,
+                        width_px: width,
+                        height_px: height,
+                        rgba: &rgba,
+                        cols,
+                        rows,
+                    },
+                    skip..rows,
+                    true,
+                ));
+                operations.push(TerminalOp::Local(b"\r\n".to_vec()));
+            }
         }
         operations.push(TerminalOp::Local(b"\x1b[0J".to_vec()));
     } else if !emitted_ids.is_empty() {
@@ -1725,7 +1855,11 @@ fn sync_window_operations(
     Ok(operations)
 }
 
-fn clear_rows(rows: u32) -> Vec<u8> {
+/// `pub(crate)` so `scroll_region::region_tail_replace_operations` can reuse
+/// the exact same full-line clear this module's own
+/// `tail_replace_operations`/`divergence_rewrite_operations` use, rather
+/// than a second, independently-drifting implementation.
+pub(crate) fn clear_rows(rows: u32) -> Vec<u8> {
     let rows = rows.max(1);
     let mut bytes = Vec::new();
     for row in 0..rows {
@@ -1887,7 +2021,8 @@ mod tests {
             placed(3, 1, rgba8_png(1, 1)),
         ];
 
-        let operations = sync_window_operations(&placed, &[1, 2], 1..3, cell, u64::MAX, 0).unwrap();
+        let operations =
+            sync_window_operations(&placed, &[1, 2], 1..3, cell, u64::MAX, 0, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
 
@@ -1933,7 +2068,7 @@ mod tests {
         let emitted_ids = [99u64, 1];
 
         let operations =
-            sync_window_operations(&placed, &emitted_ids, 0..1, cell, u64::MAX, 0).unwrap();
+            sync_window_operations(&placed, &emitted_ids, 0..1, cell, u64::MAX, 0, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
 
@@ -1959,7 +2094,7 @@ mod tests {
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
 
-        let operations = sync_window_operations(&placed, &[1], 0..0, cell, u64::MAX, 0).unwrap();
+        let operations = sync_window_operations(&placed, &[1], 0..0, cell, u64::MAX, 0, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
 
@@ -1969,6 +2104,76 @@ mod tests {
             text.ends_with("\x1b[1;1H\x1b[0J"),
             "home (row 1, content_row_offset=0) and erase clear the stale rows when \
              nothing is re-emitted: {text:?}"
+        );
+    }
+
+    /// The reach-the-beginning fix: `skip_rows_in_first` crops the FIRST
+    /// visible block's placeholder rows, so a block only partially scrolled
+    /// into view at the window's top edge draws just its visible slice
+    /// rather than its full image (which used to push its top rows above
+    /// the pane's actual content area — indistinguishable from "scrolling
+    /// stopped working" even at a genuine offset of 0).
+    #[test]
+    fn sync_window_crops_the_first_visible_block_by_skip_rows_in_first() {
+        let cell = CellSize {
+            width: 10,
+            height: 10,
+        };
+        // Block 1: 4 rows tall, 2 cols wide (avoids row/col diacritic-0
+        // collision — see `placement.rs`'s row-range test for why). Block 2:
+        // a normal, fully-visible 1-row block after it.
+        let placed = vec![
+            placed(1, 4, rgba8_png(20, 40)),
+            placed(2, 1, rgba8_png(20, 10)),
+        ];
+        let operations = sync_window_operations(&placed, &[], 0..2, cell, u64::MAX, 0, 2).unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+
+        let placeholder_count = |id_marker: &str, s: &str| {
+            let start = s.find(id_marker).unwrap();
+            let rest = &s[start..];
+            let end = rest[1..]
+                .find("i=")
+                .map(|offset| offset + 1)
+                .unwrap_or(rest.len());
+            rest[..end]
+                .chars()
+                .filter(|&c| c == tmath_core::kitty::PLACEHOLDER)
+                .count()
+        };
+        assert_eq!(
+            placeholder_count("i=1,", &text),
+            4,
+            "block 1 draws only its 2 remaining rows (4 - skip 2) x 2 cols: {text:?}"
+        );
+        assert_eq!(
+            placeholder_count("i=2,", &text),
+            2,
+            "block 2 (not the first visible block) draws in full, 1 row x 2 cols: {text:?}"
+        );
+        // The placement command itself still keys the block's FULL row
+        // count (r=4) — only the placeholder grid is cropped, per
+        // `emit_placed_block_row_range_cursor`'s contract.
+        assert!(text.contains("i=1,U=1,c=2,r=4,q=2"), "{text:?}");
+    }
+
+    #[test]
+    fn sync_window_skip_rows_in_first_out_of_range_clamps_to_the_blocks_own_rows() {
+        let cell = CellSize {
+            width: 10,
+            height: 10,
+        };
+        let placed = vec![placed(1, 2, rgba8_png(10, 20))];
+        // skip_rows_in_first (10) exceeds the block's own 2 rows — must not
+        // panic, and must degrade to drawing nothing for that block rather
+        // than an out-of-range row-range.
+        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX, 0, 10).unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains(tmath_core::kitty::PLACEHOLDER),
+            "an out-of-range skip draws nothing rather than panicking: {text:?}"
         );
     }
 
@@ -2002,7 +2207,7 @@ mod tests {
             height: 1,
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
-        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX, 0).unwrap();
+        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX, 0, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
         assert!(!text.contains("a=d,d=I"), "nothing to delete");
@@ -2030,7 +2235,7 @@ mod tests {
             height: 1,
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
-        let operations = sync_window_operations(&placed, &[], 0..0, cell, u64::MAX, 0).unwrap();
+        let operations = sync_window_operations(&placed, &[], 0..0, cell, u64::MAX, 0, 0).unwrap();
         assert!(operations.is_empty());
     }
 
@@ -2041,7 +2246,7 @@ mod tests {
             height: 1,
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
-        let operations = sync_window_operations(&placed, &[1], 0..5, cell, u64::MAX, 0).unwrap();
+        let operations = sync_window_operations(&placed, &[1], 0..5, cell, u64::MAX, 0, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("i=1,U=1,c=1,r=2,q=2"));
@@ -2083,6 +2288,7 @@ mod tests {
                 cell,
                 u64::MAX,
                 0,
+                0,
             )
             .unwrap(),
         );
@@ -2093,6 +2299,7 @@ mod tests {
                 995..1000,
                 cell,
                 u64::MAX,
+                0,
                 0,
             )
             .unwrap(),
@@ -3531,7 +3738,7 @@ mod tests {
         synced_placed.extend(fallback_tail.clone());
         let visible = 0..synced_placed.len();
         let sync_ops =
-            sync_window_operations(&synced_placed, &[], visible, cell, u64::MAX, 1).unwrap();
+            sync_window_operations(&synced_placed, &[], visible, cell, u64::MAX, 1, 0).unwrap();
         let spans = placement_row_spans(&sync_ops);
         let tall_span = spans
             .iter()
@@ -3728,7 +3935,7 @@ mod tests {
             height: 1,
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
-        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX, 1).unwrap();
+        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX, 1, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
         assert!(

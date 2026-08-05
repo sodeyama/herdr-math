@@ -368,6 +368,60 @@ pub fn emit_placed_block_cursor(
     out
 }
 
+/// A block's image and grid data, bundled so
+/// [`emit_placed_block_row_range_cursor`] takes one struct instead of five
+/// separate parameters (mirrors `native_stream::TailReplace`'s reason for
+/// existing — keeping a builder under clippy's argument-count lint without
+/// losing any named field's self-documentation at call sites).
+pub struct RowRangePlacement<'a> {
+    pub image_id: u32,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub rgba: &'a [u8],
+    pub cols: u32,
+    pub rows: u32,
+}
+
+/// Builds the byte sequence that places only a ROW SUBSET of a block at the
+/// current cursor position, for a block partially scrolled into view at a
+/// scroll-region window edge (see
+/// [`placeholder_grid_row_range_at_cursor`]'s doc comment for why this is a
+/// genuine protocol-native crop rather than a re-render). The full image is
+/// still transmitted; only the placeholder grid — and therefore the terminal
+/// rows actually consumed — is limited to `visible_rows`. Consumed rows equal
+/// `visible_rows.len()`, never the block's full `rows`.
+pub fn emit_placed_block_row_range_cursor(
+    block: RowRangePlacement<'_>,
+    visible_rows: std::ops::Range<u32>,
+    already_at_line_start: bool,
+) -> Vec<TerminalOp> {
+    let mut out = Vec::new();
+    if !already_at_line_start {
+        out.push(TerminalOp::Local(b"\r\n".to_vec()));
+    }
+    out.extend(
+        kitty::kitty_transmit_placed_commands(
+            block.image_id,
+            block.width_px,
+            block.height_px,
+            block.rgba,
+            Placement::Cells {
+                cols: block.cols,
+                rows: block.rows,
+            },
+        )
+        .into_iter()
+        .map(TerminalOp::Graphics),
+    );
+    out.push(TerminalOp::Local(placeholder_grid_row_range_at_cursor(
+        block.image_id,
+        block.cols,
+        block.rows,
+        visible_rows,
+    )));
+    out
+}
+
 /// Builds the byte sequence that replaces a block: delete the stale image by id
 /// first, then place the new image at the same home row.
 pub fn emit_replaced_block(
@@ -395,8 +449,40 @@ pub fn emit_remove_block(image_id: u32) -> Vec<TerminalOp> {
 /// Writes a placeholder grid relative to the current cursor position instead of
 /// absolute rows, so a block can be placed anywhere in the main buffer.
 fn placeholder_grid_at_cursor(image_id: u32, cols: u32, rows: u32) -> Vec<u8> {
+    placeholder_grid_row_range_at_cursor(image_id, cols, rows, 0..rows)
+}
+
+/// Writes a placeholder grid for only a ROW SUBSET of a block's full image,
+/// so a block that is partially scrolled into view at a window edge draws
+/// just its visible slice instead of the whole image (the partial-block-edge
+/// crop stage 1 of the scroll-region viewer needs).
+///
+/// This is a genuine protocol-native crop, not a re-render: each placeholder
+/// cell's row diacritic (`kitty::ROW_COLUMN_DIACRITICS[row]`) selects which
+/// horizontal band of the SAME transmitted image displays in that cell (see
+/// the Kitty graphics protocol's Unicode placeholders section), so writing
+/// only the diacritics for `visible_rows` shows only that vertical slice —
+/// the underlying image is transmitted once, in full, exactly as
+/// `placeholder_grid_at_cursor` already does.
+///
+/// `visible_rows` indexes into the block's full `0..rows` row range; it is
+/// clamped to `0..rows` so an out-of-range request (a caller bug, not
+/// attacker-controlled input) degrades to drawing nothing rather than
+/// panicking or wrapping. An empty result after clamping writes nothing at
+/// all (no SGR wrapper either), matching `rows == 0`'s existing behavior
+/// with the unrestricted `placeholder_grid_at_cursor`.
+fn placeholder_grid_row_range_at_cursor(
+    image_id: u32,
+    cols: u32,
+    rows: u32,
+    visible_rows: std::ops::Range<u32>,
+) -> Vec<u8> {
     let cols = cols.min(MAX_PLACEHOLDER_CELLS) as usize;
-    let rows = rows.min(MAX_PLACEHOLDER_CELLS) as usize;
+    let rows = rows.min(MAX_PLACEHOLDER_CELLS);
+    let visible_rows = visible_rows.start.min(rows)..visible_rows.end.min(rows);
+    if visible_rows.is_empty() || cols == 0 {
+        return Vec::new();
+    }
     // Ids up to 255 use the 256-indexed foreground form: terminal relays that
     // re-render cells (observed with a session daemon between tmux and the
     // outer terminal) can drop 24-bit foreground colors, which destroys the
@@ -408,15 +494,16 @@ fn placeholder_grid_at_cursor(image_id: u32, cols: u32, rows: u32) -> Vec<u8> {
         let (r, g, b) = (image_id >> 16 & 0xff, image_id >> 8 & 0xff, image_id & 0xff);
         format!("\x1b[38;2;{r};{g};{b}m").into_bytes()
     };
-    for row in 0..rows {
-        let row_di = kitty::ROW_COLUMN_DIACRITICS[row];
+    let visible_row_count = visible_rows.end - visible_rows.start;
+    for (drawn, row) in visible_rows.enumerate() {
+        let row_di = kitty::ROW_COLUMN_DIACRITICS[row as usize];
         for col in 0..cols {
             let col_di = kitty::ROW_COLUMN_DIACRITICS[col];
             push_char(&mut out, kitty::PLACEHOLDER);
             push_char(&mut out, row_di);
             push_char(&mut out, col_di);
         }
-        if row + 1 < rows {
+        if drawn + 1 < visible_row_count as usize {
             out.extend_from_slice(b"\r\n");
         }
     }
@@ -545,10 +632,7 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.starts_with("\x1b[3;1H"), "home row move first");
         assert!(text.contains("i=7,U=1,c=1,r=1,q=2"));
-        assert!(
-            text.contains("\x1b[38;5;7m"),
-            "image id encoded as color"
-        );
+        assert!(text.contains("\x1b[38;5;7m"), "image id encoded as color");
         assert!(text.ends_with("\x1b[39m"), "color reset at the end");
     }
 
@@ -581,10 +665,7 @@ mod tests {
             text.contains("i=9,U=1,c=1,r=1,q=2"),
             "virtual placement keys"
         );
-        assert!(
-            text.contains("\x1b[38;5;9m"),
-            "image id encoded as color"
-        );
+        assert!(text.contains("\x1b[38;5;9m"), "image id encoded as color");
         assert!(text.ends_with("\x1b[39m"), "color reset at the end");
         assert!(
             !text.contains("[1;1H"),
@@ -608,6 +689,138 @@ mod tests {
         assert!(
             text.contains("i=9,U=1,c=1,r=1,q=2"),
             "virtual placement keys"
+        );
+    }
+
+    /// A full-range request (`0..rows`) must produce byte-identical output to
+    /// the unrestricted `emit_placed_block_cursor` — the row-range variant is
+    /// a strict generalization, not a different code path with its own
+    /// drift risk.
+    #[test]
+    fn row_range_covering_the_whole_block_matches_the_unrestricted_placement() {
+        let rgba = vec![0xab; 12 * 24 * 4];
+        let full = emit_placed_block_cursor(9, 12, 24, &rgba, 1, 2, false);
+        let ranged = emit_placed_block_row_range_cursor(
+            RowRangePlacement {
+                image_id: 9,
+                width_px: 12,
+                height_px: 24,
+                rgba: &rgba,
+                cols: 1,
+                rows: 2,
+            },
+            0..2,
+            false,
+        );
+        assert_eq!(direct_bytes(&full), direct_bytes(&ranged));
+    }
+
+    /// The core crop claim: requesting a row subset writes only that many
+    /// placeholder rows (fewer terminal rows consumed), while still keying
+    /// every written cell to the SAME row diacritics the full block would
+    /// use for that vertical position — i.e. it is a slice of the same
+    /// image, not a shifted or re-numbered one.
+    #[test]
+    fn row_range_draws_only_the_requested_rows_at_their_original_diacritics() {
+        let rgba = vec![0xab; 12 * 40 * 4];
+        // A 4-row-tall, 2-col-wide block; request only its middle two rows
+        // (1..3). 2 columns (not 1) so a cell's row/col diacritics never
+        // collide at column 0 (col diacritic index 0 vs. row diacritic
+        // index 0 are otherwise indistinguishable characters).
+        let out = emit_placed_block_row_range_cursor(
+            RowRangePlacement {
+                image_id: 9,
+                width_px: 12,
+                height_px: 40,
+                rgba: &rgba,
+                cols: 2,
+                rows: 4,
+            },
+            1..3,
+            true,
+        );
+        let bytes = direct_bytes(&out);
+        let text = String::from_utf8_lossy(&bytes);
+
+        let full_out = emit_placed_block_cursor(9, 12, 40, &rgba, 2, 4, true);
+        let full_bytes = direct_bytes(&full_out);
+        let full_text = String::from_utf8_lossy(&full_bytes);
+
+        // 4 placeholder cells (2 rows x 2 cols) in the cropped output, vs. 8
+        // in the full one (4 rows x 2 cols) — the row count actually shrinks.
+        let placeholder_count = |s: &str| s.chars().filter(|&c| c == kitty::PLACEHOLDER).count();
+        assert_eq!(placeholder_count(&text), 4);
+        assert_eq!(placeholder_count(&full_text), 8);
+
+        // Each written cell is `PLACEHOLDER + row_diacritic + col_diacritic`.
+        // The cropped output's cells must use row diacritics 1 and 2 (the
+        // ORIGINAL rows 1..3 requested), never row diacritics 0 or 3 — i.e.
+        // the crop addresses the original image's rows, not a re-numbered
+        // 0-based slice.
+        let cell = |row: usize, col: usize| {
+            format!(
+                "{}{}{}",
+                kitty::PLACEHOLDER,
+                kitty::ROW_COLUMN_DIACRITICS[row],
+                kitty::ROW_COLUMN_DIACRITICS[col]
+            )
+        };
+        assert!(text.contains(&cell(1, 0)));
+        assert!(text.contains(&cell(1, 1)));
+        assert!(text.contains(&cell(2, 0)));
+        assert!(text.contains(&cell(2, 1)));
+        assert!(!text.contains(&cell(0, 0)));
+        assert!(!text.contains(&cell(3, 0)));
+
+        // The image transmit itself (`Ga=T`/width/height keys) must be
+        // unchanged by the crop: the full image is still sent once.
+        assert!(text.contains("r=4"), "the placement grid keys the FULL row count, not the cropped one — the crop is placeholder-only");
+    }
+
+    #[test]
+    fn row_range_out_of_bounds_clamps_instead_of_panicking() {
+        let rgba = vec![0xab; 12 * 24 * 4];
+        let out = emit_placed_block_row_range_cursor(
+            RowRangePlacement {
+                image_id: 9,
+                width_px: 12,
+                height_px: 24,
+                rgba: &rgba,
+                cols: 1,
+                rows: 2,
+            },
+            5..9,
+            true,
+        );
+        let bytes = direct_bytes(&out);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains(kitty::PLACEHOLDER),
+            "a range entirely past the block's rows draws no placeholder cells: {text:?}"
+        );
+    }
+
+    #[test]
+    fn row_range_empty_range_writes_nothing() {
+        let rgba = vec![0xab; 12 * 24 * 4];
+        let out = emit_placed_block_row_range_cursor(
+            RowRangePlacement {
+                image_id: 9,
+                width_px: 12,
+                height_px: 24,
+                rgba: &rgba,
+                cols: 1,
+                rows: 4,
+            },
+            2..2,
+            true,
+        );
+        let bytes = direct_bytes(&out);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains(kitty::PLACEHOLDER));
+        assert!(
+            !text.contains("\x1b[38;5;9m"),
+            "an empty range skips the SGR wrapper entirely, matching a zero-row block"
         );
     }
 

@@ -490,6 +490,17 @@ pub(crate) const ROW_COLUMN_DIACRITICS: [char; 297] = [
 /// Upper bound on placeholder cells addressable by the diacritic alphabet.
 pub const MAX_PLACEHOLDER_CELLS: u32 = ROW_COLUMN_DIACRITICS.len() as u32;
 
+/// The row/column diacritic a placeholder cell at `index` uses (see
+/// [`ROW_COLUMN_DIACRITICS`]'s doc comment for the source table). Exposed as
+/// an accessor rather than the raw table so cross-crate callers (contract
+/// tests asserting a specific row/column was or was not drawn, e.g.
+/// `tmath`'s `scroll_region` module tests) can identify a specific
+/// placeholder cell's position without depending on the table's internal
+/// layout. Returns `None` for an out-of-range index rather than panicking.
+pub fn row_column_diacritic(index: u32) -> Option<char> {
+    ROW_COLUMN_DIACRITICS.get(index as usize).copied()
+}
+
 /// Builds the per-cell grid that keeps a virtual placement glued to real
 /// scrollback cells. Each cell holds the placeholder glyph plus two combining
 /// diacritics encoding the cell's row and column, and the image id is encoded

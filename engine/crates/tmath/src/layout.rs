@@ -56,6 +56,18 @@ const MIN_CONTENT_WIDTH_PT: f64 = 200.0;
 const MAX_CONTENT_WIDTH_PT: f64 = 4096.0;
 /// Columns reserved as a margin so the placed image's cell grid stays
 /// narrower than the pane and nothing overflows or wraps.
+///
+/// This is also the guarantee the scroll-region viewer's rightmost-column
+/// scrollbar (planned, see the `scroll_region` module doc) relies on to
+/// never collide with placeholder cells: `content_width_pt` below is
+/// computed from `pane_cols - PANE_MARGIN_COLS`, and every block's rendered
+/// PNG is trimmed to at most that width by `trim_transparent_right`
+/// (`tmath-render/src/prose.rs`), which only ever shrinks the image further
+/// — never grows it past the page width. Since `grid_for` rounds a pixel
+/// width UP to whole cells, the worst case still leaves at least
+/// `PANE_MARGIN_COLS` = 2 full columns free at the pane's right edge, so a
+/// 1-column scrollbar in the absolute last column is always clear of any
+/// placeholder grid, at any block width.
 const PANE_MARGIN_COLS: u32 = 2;
 /// Maps a terminal's measured cell height to a rendered font size. Live
 /// calibration on Ghostty 1.3.1 (Retina, a 15px logical cell) walked

@@ -563,7 +563,7 @@ fn sync_visible_window(viewer: &mut Viewer) -> Result<(), String> {
     restore_missing_pngs(viewer, range.clone());
     viewer
         .sink
-        .sync_window(range)
+        .sync_window(range, visible.skip_rows_in_first)
         .map_err(|error| format!("sync_failed ({:?})", error.safe_record().code))
 }
 

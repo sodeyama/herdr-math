@@ -165,22 +165,19 @@ pub struct VisibleRange {
     pub first: usize,
     pub last_exclusive: usize,
     /// Rows of the first visible block that are scrolled above the window
-    /// top (informational; full-window redraw does not crop mid-block).
-    ///
-    /// Currently computed but not read by any caller: `agent_viewer::
-    /// sync_visible_window` only uses `first`/`last_exclusive` to build the
-    /// range it hands to `TerminalSink::sync_window`, and
-    /// `sync_window_operations` always draws the first visible block's
-    /// FULL image (every one of its own rows), never starting partway
-    /// through it. In practice this means a block that is only partially
-    /// scrolled into view is drawn in its entirety — its top rows extend
-    /// above the pane's actual content area rather than being cropped at
-    /// `skip_rows_in_first`. This has not been confirmed as the cause of
-    /// any reported symptom; it is a known gap in partial-block scroll
-    /// precision, tracked here rather than implemented, since consuming
-    /// this field correctly requires a partial-image placement/crop
-    /// mechanism `sync_window_operations` does not have today. Future work
-    /// if partial-block scroll precision becomes a real requirement.
+    /// top. `agent_viewer::sync_visible_window` passes this straight through
+    /// to `TerminalSink::sync_window`, which crops the first drawn block's
+    /// placeholder rows to `skip_rows_in_first..rows`
+    /// (`native_stream::sync_window_operations`'s `skip_rows_in_first`
+    /// parameter) — a genuine protocol-native crop (see
+    /// `tmath_core::placement::emit_placed_block_row_range_cursor`'s doc
+    /// comment), not a re-render. This closes the scroll-region viewer's
+    /// reach-the-beginning defect: before this was wired up, a block only
+    /// partially scrolled into view was always drawn in FULL, pushing its
+    /// top rows above the pane's actual content area — indistinguishable
+    /// from "scrolling stopped working" even though `Viewport::offset()`
+    /// had genuinely reached `0`, since the visible content never actually
+    /// showed block 0's true top.
     pub skip_rows_in_first: Rows,
 }
 
