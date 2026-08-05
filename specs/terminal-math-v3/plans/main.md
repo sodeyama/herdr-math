@@ -271,6 +271,18 @@ Instead it maintains the block list with one Kitty placement per block:
 - History is bounded: blocks scrolled beyond a configured history budget have their
   placements deleted and their cache entries evictable; scrolling back re-renders
   on demand.
+- **Cross-answer accumulation (AT-3-604).** Multiple agent turns accumulate in
+  the viewer like a chat log rather than each new answer replacing the last: a
+  completed answer's blocks stay placed, and the next answer's blocks append
+  below them. The watcher, not the viewer, owns answer boundaries (a transcript
+  turn boundary, or the capture adapter's settle heuristics recognizing a
+  genuinely new answer); it tracks frozen history separately from the currently
+  streaming answer and sends only a bounded tail update while the current
+  answer grows. Trimming is the only operation allowed to drop old content:
+  when frozen history crosses a soft byte budget (well under the delta
+  protocol's document cap and the renderer's blocks-per-document cap), the
+  watcher drops the oldest complete answers from the head and resyncs with a
+  trimmed document — a new answer arriving never itself discards anything.
 
 ### D7. Limits are re-based for the block model and HiDPI
 

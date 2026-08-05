@@ -129,8 +129,14 @@
       verified at the reassembled-document level; I/O failures degrade to the
       capture adapter. Commit `b8f0a8f`. ReplaceTail emission is an unused
       seam until a transcript format rewrites tails in place.)
-- [ ] **T3-403** Rewire capture adapter through the incremental pipeline.
-      (AT-3-604)
+- [x] **T3-403** Rewire capture adapter through the incremental pipeline.
+      (AT-3-604 PASS at the wire level: answers accumulate in a bounded
+      watcher-side history — content-free AnswerBoundary deltas freeze
+      completed answers, the current answer streams as ReplaceTail from the
+      frozen offset on both transcript and capture paths, and only the 8 MiB
+      soft-budget head-trim may drop old content, via a Document resync.
+      Commits `ddf056e`+`6476995`; D6 gained the cross-answer accumulation
+      paragraph. Resolves T3-401's unused ReplaceTail seam note.)
 - [ ] **T3-404** Streaming end-to-end replay evidence. (AT-3-603)
 - [ ] **T3-405** Privacy scan extension to the transcript path. (AT-3-605)
 
