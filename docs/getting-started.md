@@ -17,19 +17,27 @@ The installer builds the release binary and places everything under your user da
 directory:
 
 - `tmath` binary: `~/.local/share/tmath/app/bin/tmath`
-- launcher script on `PATH`: `~/.local/bin/tmath` (written atomically at a fresh inode)
+- launcher script (written atomically at a fresh inode) into a user bin directory,
+  chosen from your environment in this order: `$XDG_BIN_HOME` if set; the directory of
+  an existing `tmath` launcher on `PATH` (so an upgrade never leaves a second, shadowed
+  copy); the first of `~/.local/bin`, `~/bin` that exists and is on `PATH`; otherwise
+  `~/.local/bin`. It never writes into other toolchains' bin directories or anywhere
+  outside `$HOME`, and it never edits `PATH` (it prints the command if needed).
 - optional Node renderer for the deprecated `--engine node` path:
   `~/.local/share/tmath/app/renderer`
 - the `tmath` agent skill linked into the Claude Code, Codex, Cursor, opencode, and pi
   skill directories
-- an opt-in shell integration in `~/.zshrc`/`~/.bashrc` (see
-  [Auto-watch](#auto-watch-opt-in-per-directory); it does nothing until you allowlist a
-  directory)
+- **only with `--with-shell-integration`** (or `TMATH_WITH_SHELL_INTEGRATION=1` for the
+  `curl | bash` form): a marker-delimited auto-watch snippet in
+  `~/.zshrc`/`~/.bashrc` (see [Auto-watch](#auto-watch-opt-in-per-directory); it does
+  nothing until you allowlist a directory). Without the flag, rc files are never
+  touched; an existing marked block from a previous opt-in keeps being updated so it
+  cannot go stale. Remove it by deleting the marked block.
 
-The installer finishes by running `tmath diagnose`. Add `~/.local/bin` to `PATH` if the
-installer says it is missing. Useful installer knobs: `--prefix <dir>` /
-`TMATH_INSTALL_ROOT` change the target, `TMATH_SKIP_TESTS=1` skips the post-install
-check, `TMATH_SKIP_SHELL_INTEGRATION=1` skips the rc-file edit entirely.
+The installer finishes by running `tmath diagnose`. Useful installer knobs:
+`TMATH_INSTALL_ROOT` changes the target, `TMATH_SKIP_TESTS=1` skips the post-install
+check, `TMATH_SKIP_SHELL_INTEGRATION=1` prevents any rc-file edit including updates to
+an existing block.
 
 To update later, re-run the same install command. Never copy a freshly built binary over
 `~/.local/bin/tmath` by hand — see [Diagnose](#diagnose) for why that breaks on macOS.
@@ -142,11 +150,13 @@ Per-agent notes (Claude Code, Codex, opencode, Cursor Agent, pi): see
 
 ## Auto-watch (opt-in, per directory)
 
-Starting `tmath agent` by hand requires finding the source pane id. The installer also
-installs an opt-in shell integration that wraps `claude`, `codex`, `opencode`,
-`cursor-agent`, and `pi` and starts the watcher automatically — but only inside
-directories you explicitly allowlist. Right after install the allowlist is empty, so
-nothing changes until you opt in:
+Starting `tmath agent` by hand requires finding the source pane id. The installer can
+also install a shell integration that wraps `claude`, `codex`, `opencode`,
+`cursor-agent`, and `pi` and starts the watcher automatically. It is doubly opt-in:
+the rc snippet is only installed when you run the installer with
+`--with-shell-integration`, and even then it only acts inside directories you
+explicitly allowlist. Right after install the allowlist is empty, so nothing changes
+until you opt in:
 
 ```sh
 tmath agent-enable      # allow auto-watch for the current directory (and subdirs)

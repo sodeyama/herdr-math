@@ -22,10 +22,13 @@ curl -fsSL https://raw.githubusercontent.com/sodeyama/terminal-math/main/scripts
 ```
 
 The installer builds and places everything under `~/.local/share/tmath`, puts a `tmath`
-launcher on `~/.local/bin`, and links the coding-agent skill into the skill directories of
-supported agents. Rendering runs fully in-process (embedded fonts, no network); Node.js is
-only needed for the deprecated `--engine node` path. Run `tmath diagnose` to verify the
-install. Details and troubleshooting: [Getting started](docs/getting-started.md).
+launcher into a user bin directory (an existing install location or a standard user bin
+already on `PATH`; `~/.local/bin` by default), and links the coding-agent skill into the
+skill directories of supported agents. It never edits `PATH`, and the optional auto-watch
+shell snippet is only added to `~/.zshrc`/`~/.bashrc` when you pass
+`--with-shell-integration`. Rendering runs fully in-process (embedded fonts, no network);
+Node.js is only needed for the deprecated `--engine node` path. Run `tmath diagnose` to
+verify the install. Details and troubleshooting: [Getting started](docs/getting-started.md).
 
 ## Usage
 
