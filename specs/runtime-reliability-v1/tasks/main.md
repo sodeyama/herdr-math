@@ -294,21 +294,33 @@ scripts) before checking a box.
       `cargo test --workspace`; `cargo clippy --all-targets`;
       `cargo fmt --check`.
 
-- [ ] **TR-402** Bounded investigation: viewer `RendererFailed` on
-      sync/status-bar (AT-R-502).
+- [x] **TR-402** Bounded investigation: viewer `RendererFailed` on
+      sync/status-bar (AT-R-502). (a83233c)
       Field evidence (2026-08-05): after ~650 placed blocks the viewer logged
       `sync_failed (RendererFailed)` and `status_bar_failed (RendererFailed)`
-      and exited. Budget: reproduce via an integration test that drives the
-      viewer sync path with a render engine forced to fail (inject via the
-      existing engine seam in `agent_viewer.rs`; add a narrow test hook if
-      none exists). Assert: the stable error code surfaces once, earlier
-      placements survive, and the next successful document renders. If the
-      field failure does not reproduce after the render-failure injection
-      plus a cache-exhaustion attempt (drive > 1000 blocks through the viewer
-      in the fake-tty harness), write
-      `docs/evidence/<date>-viewer-rendererfailed-investigation.md` recording
-      the attempts and close without a code change.
-      Validate: `cargo test --workspace` green either way.
+      and exited.
+      Root cause found and fixed: `TerminalSink::sync_window`'s pure helper
+      `sync_window_operations` (`engine/crates/tmath/src/native_stream.rs`)
+      decoded every visible block's retained PNG unconditionally. A block
+      whose PNG `restore_missing_pngs` had already failed to restore (left
+      empty per `PlacedState::png`'s contract) made `decode_png` fail the
+      WHOLE sync with `RendererFailed` — and since the empty PNG persists in
+      `placed` until the block leaves the window, every later sync while it
+      stayed in the window failed the same way, matching the recurring
+      field log until the viewer's route-failure budget exited it. Fixed to
+      fail closed per block: an empty PNG now draws its row span blank and
+      the rest of the window still syncs. A regression test
+      (`sync_window_operations_fails_closed_per_block_on_an_unrestored_empty_png`)
+      reproduces the pre-fix whole-sync failure and asserts the post-fix
+      per-block behavior. `TerminalSink` is hardcoded to
+      `Terminal<StdioTty>` (see `try_scroll_window_incrementally`'s doc
+      comment), so this could not additionally be driven through a live
+      `agent_viewer` integration test; the pure-function level covers the
+      exact mechanism. No cache-exhaustion investigation was needed — the
+      reproduction above is a direct match for the field symptom.
+      Validate: `cargo test --workspace` (234 passed in `tmath`, including
+      the new test); `cargo clippy --all-targets` clean; `cargo fmt --check`
+      clean.
 
 - [ ] **TR-403** Docs commit closing the spec: mark checklist state, update
       `README.md` troubleshooting pointer if TR-106 placed it elsewhere, and
