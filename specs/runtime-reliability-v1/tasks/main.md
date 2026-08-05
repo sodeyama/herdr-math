@@ -17,7 +17,8 @@ scripts) before checking a box.
 
 ## Phase R1 — Unbreak and detect
 
-- [ ] **TR-101** Atomic launcher install (AT-R-101).
+- [x] **TR-101** Atomic launcher install (AT-R-101).
+      (commit `d79ad88`, with TR-102; smoke PASS via TR-103)
       File: `scripts/install.sh` (the "Launcher on PATH" section).
       Replace the `cat > "$BIN_HOME/tmath"` heredoc with: write the same
       heredoc to `"$BIN_HOME/.tmath.launcher.$$"`, `chmod +x` it, then
@@ -27,7 +28,8 @@ scripts) before checking a box.
       it exists (write TR-103 first if working in spec order is inconvenient —
       the pair may land as two commits in either order).
 
-- [ ] **TR-102** Foreign-file warning before replacement (AT-R-102).
+- [x] **TR-102** Foreign-file warning before replacement (AT-R-102).
+      (commit `d79ad88`, with TR-101 — one cohesive edit of the same block)
       File: `scripts/install.sh` (same section, before the write).
       If `$BIN_HOME/tmath` exists and `head -c 2` of it is not `#!`, print
       `tmath: replacing non-launcher file at $BIN_HOME/tmath` to stderr.
@@ -35,7 +37,8 @@ scripts) before checking a box.
       normally (TR-101 already guarantees a fresh inode).
       Validate: covered by TR-103's smoke script.
 
-- [ ] **TR-103** Launcher install smoke test (AT-R-101, AT-R-102).
+- [x] **TR-103** Launcher install smoke test (AT-R-101, AT-R-102).
+      (commit `347bb62`; PASS twice, deterministic)
       New file: `scripts/smoke-install-launcher.sh` (mirror the extraction
       style of `scripts/smoke-install-shell-integration.sh`: pull the
       launcher-install block out of `install.sh` with `awk` so the test
@@ -51,7 +54,8 @@ scripts) before checking a box.
       `smoke:install-launcher` next to the existing smoke entries.
       Validate: `bash scripts/smoke-install-launcher.sh` prints `PASS`.
 
-- [ ] **TR-104** `tmath diagnose` PATH-launcher check (AT-R-103, AT-R-104).
+- [x] **TR-104** `tmath diagnose` PATH-launcher check (AT-R-103, AT-R-104).
+      (commit `8e6b3a5`; 3 unit tests, clippy clean, 221 crate tests green)
       Files: `engine/crates/tmath/src/main.rs` (diagnose section; if diagnose
       lives elsewhere, follow the `"diagnose"` match arm from `main.rs`).
       Add a function `path_launcher_report() -> (String, bool)` that:
@@ -80,7 +84,8 @@ scripts) before checking a box.
       Validate: `cargo test -p tmath`, `cargo clippy --all-targets`,
       manual run: `target/debug/tmath diagnose`.
 
-- [ ] **TR-105** Wrapper failure visibility (AT-R-201, AT-R-202).
+- [x] **TR-105** Wrapper failure visibility (AT-R-201, AT-R-202).
+      (commit `01ff271`; allowlist smoke extended, PASS)
       File: `scripts/shell/tmath-agent.sh`.
       In `__tmath_wrap_agent`, replace the single
       `tmath agent-allowed >/dev/null 2>&1 || { ...pass through... }` line
@@ -98,13 +103,13 @@ scripts) before checking a box.
       the exit status is the wrapped command's.
       Validate: `bash scripts/smoke-agent-allowlist.sh` prints `PASS`.
 
-- [ ] **TR-106** Docs commit for Phase R1.
-      Files: `docs/troubleshooting.md` (or the README troubleshooting
-      section if that file does not exist), `specs/runtime-reliability-v1/tasks/main.md`.
-      Document the symptom "tmath exits silently with code 137 on macOS"
+- [x] **TR-106** Docs commit for Phase R1.
+      Files: `docs/getting-started.md` (the Diagnose section README links as
+      troubleshooting), `specs/runtime-reliability-v1/tasks/main.md`.
+      Documented the symptom "tmath exits silently with code 137 on macOS"
       with the cause (in-place overwrite of the PATH entry) and the fix
       (re-run `scripts/install.sh`; never `cp` a binary over
-      `~/.local/bin/tmath`). Check off completed R1 tasks with commit hashes.
+      `~/.local/bin/tmath`). Checked off completed R1 tasks with hashes.
 
 ## Phase R2 — tmux gate correctness
 
