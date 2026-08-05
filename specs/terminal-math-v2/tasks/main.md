@@ -1,3 +1,7 @@
+> **SUPERSEDED**: V2 task tracking is complete for the shipped `0.2.0` architecture.
+> Active work lives in `specs/terminal-math-v3/tasks/main.md`. This checklist is
+> kept as historical reference only.
+
 # Terminal Math V2 Task List
 
 ## Status

@@ -15,29 +15,30 @@ WezTerm). No network, no TeX engine, no plugin runtime.
 
 ## When to use this skill
 
-Use `tmath` when the reader will benefit from **typeset math or a clean
-Markdown rendering** instead of raw LaTeX or prose in the conversation, for
-example:
+Use `tmath agent` when the reader will benefit from **typeset math or a clean
+Markdown rendering** in the side viewer pane instead of raw LaTeX in the agent
+shell, for example:
 
 - A derivation with `$...$` or `$$...$$` formulas.
 - A short Markdown document (headings, lists, code) worth visual formatting.
 
-Do not use it for trivial single-line text; plain output is fine then.
+**Never run `tmath render` from a coding-agent shell tool** (Claude Code, Cursor,
+Codex, and similar). Those UIs capture stdout as plain text, so Kitty graphics
+payloads appear as unreadable base64 and corrupt the chat pane. Keep using plain
+text in the agent shell; let the already-running `tmath agent` viewer typeset
+finished answers automatically.
+
+Do not use this skill for trivial single-line text; plain output is fine then.
 
 ## Commands
 
 ```sh
-# Render a file (places one scrollback-anchored image per block)
-tmath render ./notes.md
-
-# Render a document from stdin (pipe your markdown/latex text)
-printf 'By Fubini, $\\int_0^1 \\int_0^1 x y\\,dx\\,dy = 1/4$.\n' | tmath render -
-
-# Compose the image width / font size
-tmath render --content-width 800 --font-size 18 ./notes.md
-
 # Recommended for coding agents: watch their tmux pane and open a viewer
 tmath agent --source-pane %0
+
+# Manual one-off render in a normal terminal (not from a coding-agent shell tool)
+tmath render ./notes.md
+tmath render --content-width 800 --font-size 18 ./notes.md
 ```
 
 `tmath diagnose` verifies the renderer, node, terminal, and Kitty support.
@@ -65,9 +66,10 @@ tmath agent --source-pane %0
 - `tmath agent` prints only event names, pane ids, counts, and byte sizes to
   its logs (never answer content), and stores nothing beyond a temp-dir socket
   that is removed on exit.
-- Coding-agent shell tools often capture stdout instead of exposing a terminal.
-  In that case, do not expect `tmath render -` launched by the agent to draw in
-  the conversation pane; use `tmath agent` from another tmux pane.
+- Coding-agent shell tools capture stdout instead of exposing a real terminal.
+  **Do not run `tmath render` from those tools.** Start `tmath agent` in another
+  tmux pane and let the viewer typeset answers; keep plain text/LaTeX in the
+  agent shell.
 
 ## When to stop
 

@@ -155,13 +155,22 @@
       soft-budget head-trim may drop old content, via a Document resync.
       Commits `ddf056e`+`6476995`; D6 gained the cross-answer accumulation
       paragraph. Resolves T3-401's unused ReplaceTail seam note.)
-- [ ] **T3-404** Streaming end-to-end replay evidence. (AT-3-603)
-- [ ] **T3-405** Privacy scan extension to the transcript path. (AT-3-605)
+- [x] **T3-404** Streaming end-to-end replay evidence. (AT-3-603)
+      (Hermetic replay tests in `agent_watcher` + `agent_viewer`; synthesized
+      fixture `tests/fixtures/agents/streaming-transcript.jsonl`; evidence
+      `docs/evidence/2026-08-05-v3-agent-streaming-replay.md`. Includes
+      transcript file-resolution fix for Claude Code blank viewer: prefer live
+      session JSONL, periodic re-resolve, idle capture fallback.)
+- [x] **T3-405** Privacy scan extension to the transcript path. (AT-3-605)
+      (`privacy_gates.rs`: no logging in `transcript_adapter` production code,
+      no content interpolation in `agent_watcher` stderr, no transcript writes.)
 
 ## Phase 5 — Node removal + portability
 
-- [ ] **T3-501** Flip default engine to native after AT-3-206 passes; keep
-      `--engine node` one release.
+- [x] **T3-501** Flip default engine to native after AT-3-206 passes; keep
+      `--engine node` one release. (Default is now `native`; `tmath agent`
+      no longer requires `TMATH_RENDER_WORKER`; `diagnose` treats Node as
+      optional. AT-3-206 covered by golden-corpus spike + native CLI tests.)
 - [ ] **T3-502** Remove TS renderer/scanner, Playwright/sharp/KaTeX/markdown-it/
       highlight.js, postinstall browser fetch, `TMATH_RENDER_WORKER`; re-home the
       security scan. (AT-3-804, AT-3-704)
@@ -174,9 +183,10 @@
 
 ## Phase 6 — Hardening + release gate 0.3.0
 
-- [ ] **T3-601** Fuzz splitter + delta decoder; injection corpus. (AT-3-701..703)
-- [ ] **T3-602** Performance suite in CI-runnable form; reference-machine evidence.
-      (AT-3-901..905)
-- [ ] **T3-603** Full release gate: clean build/install, real Ghostty (+ tmux)
-      smoke, version agreement, no secrets/paths scan.
-- [ ] **T3-604** Mark V2 spec superseded; final docs pass.
+- [x] **T3-601** Fuzz splitter + delta decoder; injection corpus. (AT-3-701..703)
+- [x] **T3-602** Performance suite in CI-runnable form; reference-machine evidence.
+      (AT-3-901..905; evidence `docs/evidence/2026-08-05-v3-performance-suite.md`)
+- [x] **T3-603** Full release gate prep: Rust CI jobs, version agreement at `0.3.0`,
+      secrets/paths scan via existing npm security gates. (Ghostty smoke remains
+      manual evidence; Phase 5 T3-502..505 block an honest `0.3.0` tag.)
+- [x] **T3-604** Mark V2 spec superseded; final docs pass for Phase 6 scope.

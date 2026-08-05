@@ -2399,4 +2399,140 @@ mod tests {
             "repeated block content is served from the cache: {after_second:?}"
         );
     }
+
+    // --- AT-3-603: streaming transcript replay ---
+
+    use std::fs::{self, OpenOptions};
+    use std::io::Write as _;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use tmath_core::agent::{Message, DELTA_PROTOCOL_VERSION};
+
+    use crate::transcript_adapter::{TranscriptAdapter, TranscriptDelta, TranscriptOpenMode};
+
+    fn fixture_streaming_transcript_lines() -> Vec<String> {
+        include_str!("../../../../tests/fixtures/agents/streaming-transcript.jsonl")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn temp_replay_transcript() -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "tmath-stream-replay-{}-{sequence}.jsonl",
+            std::process::id()
+        ));
+        fs::write(&path, "").unwrap();
+        path
+    }
+
+    fn append_transcript_line(path: &PathBuf, line: &str) {
+        let mut file = OpenOptions::new().append(true).open(path).unwrap();
+        writeln!(file, "{line}").unwrap();
+    }
+
+    fn apply_transcript_delta(viewer: &mut Viewer, delta: TranscriptDelta, seq: &mut u64) {
+        match delta {
+            TranscriptDelta::Reset(text) => {
+                *seq = 0;
+                apply_incoming_message(viewer, &Message::Document { text }).unwrap();
+            }
+            TranscriptDelta::AnswerBoundary => {}
+            TranscriptDelta::Append(text) => {
+                *seq += 1;
+                let keep_bytes = viewer.delta.document().len();
+                apply_incoming_message(
+                    viewer,
+                    &Message::ReplaceTail {
+                        version: DELTA_PROTOCOL_VERSION,
+                        seq: *seq,
+                        keep_bytes,
+                        text,
+                    },
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    /// at a time places each new block before the next assistant line arrives.
+    #[test]
+    fn streaming_transcript_replay_places_blocks_incrementally() {
+        let path = temp_replay_transcript();
+        let lines = fixture_streaming_transcript_lines();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+        let mut viewer = test_viewer(24);
+        let mut seq = 0u64;
+        let mut max_blocks_seen = 0usize;
+        let mut growth_steps = 0usize;
+
+        for line in lines {
+            append_transcript_line(&path, &line);
+            let deltas = adapter.poll().unwrap();
+            for delta in deltas {
+                let blocks_before = viewer.planner.blocks().len();
+                apply_transcript_delta(&mut viewer, delta, &mut seq);
+                let blocks_after = viewer.planner.blocks().len();
+                if blocks_after > blocks_before {
+                    growth_steps += 1;
+                    max_blocks_seen = blocks_after;
+                }
+            }
+        }
+
+        assert!(
+            max_blocks_seen >= 3,
+            "the streaming fixture must produce multiple placed blocks, got {max_blocks_seen}"
+        );
+        assert!(
+            growth_steps >= 2,
+            "blocks must grow across multiple append steps, not one monolithic placement"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    /// Optional release-only spot check for the G2 append ceiling; debug builds
+    /// include a cold Typst/RaTeX start that would false-fail the 150 ms gate.
+    #[test]
+    #[ignore = "run with `cargo test -p tmath --release streaming_transcript_replay_meets_g2 -- --ignored` for AT-3-603 latency evidence"]
+    fn streaming_transcript_replay_meets_g2_on_release_builds() {
+        use std::time::Duration;
+
+        let path = temp_replay_transcript();
+        let lines = fixture_streaming_transcript_lines();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+        let mut viewer = test_viewer(24);
+        let mut seq = 0u64;
+        // Warm the native engine so subsequent append steps measure steady-state G2.
+        render_and_place(&mut viewer, "Warmup block.\n\n").unwrap();
+        let mut append_latencies = Vec::new();
+
+        for line in lines {
+            append_transcript_line(&path, &line);
+            let started = Instant::now();
+            let deltas = adapter.poll().unwrap();
+            for delta in deltas {
+                let blocks_before = viewer.planner.blocks().len();
+                apply_transcript_delta(&mut viewer, delta, &mut seq);
+                if viewer.planner.blocks().len() > blocks_before {
+                    append_latencies.push(started.elapsed());
+                }
+            }
+        }
+
+        let max = append_latencies
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(Duration::ZERO);
+        assert!(
+            max <= Duration::from_millis(150),
+            "G2 p95-style ceiling for a warmed append step: max={max:?}"
+        );
+        let _ = fs::remove_file(path);
+    }
 }

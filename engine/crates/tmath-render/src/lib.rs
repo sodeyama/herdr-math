@@ -338,4 +338,70 @@ mod render_tests {
             }
         }
     }
+
+    #[test]
+    fn pathological_inputs_hit_finite_limits_without_panicking() {
+        // AT-3-703: oversized and adversarial shapes must fail closed within
+        // finite limits instead of hanging or exhausting memory.
+        use crate::{Block, BlockKind, ErrorCode, SafeLimitKind};
+
+        let nested = (0..64)
+            .map(|depth| format!("{}- item {depth}\n", "  ".repeat(depth)))
+            .collect::<String>();
+        let nested_blocks = parse_blocks_limited(&nested, &Limits::default()).unwrap();
+        assert!(!nested_blocks.is_empty());
+
+        let mut table = String::from("| A | B |\n| - | - |\n");
+        for row in 0..8192 {
+            table.push_str(&format!("| row {row} | value |\n"));
+        }
+        let table_error = parse_blocks_limited(&table, &Limits::default()).unwrap_err();
+        assert_eq!(
+            table_error.safe_record().code,
+            ErrorCode::RendererInputLimit
+        );
+
+        let mut bomb = r"\frac{a}{".to_string();
+        for _ in 0..48 {
+            bomb.push_str(r"\frac{b}{");
+        }
+        bomb.push('c');
+        for _ in 0..49 {
+            bomb.push('}');
+        }
+        match render_formula(&bomb, true, &RenderOptions::default()) {
+            Ok(image) => assert!(!image.svg.is_empty()),
+            Err(error) => assert!(
+                matches!(
+                    error.safe_record().code,
+                    ErrorCode::InvalidLatex
+                        | ErrorCode::RendererTimeout
+                        | ErrorCode::ImageTooLarge
+                        | ErrorCode::RendererFailed
+                ),
+                "unexpected formula-bomb code: {:?}",
+                error.safe_record().code
+            ),
+        }
+
+        let ten_mb = "x".repeat(10 * 1024 * 1024);
+        let huge_error = parse_blocks_limited(&ten_mb, &Limits::default()).unwrap_err();
+        assert_eq!(huge_error.safe_record().code, ErrorCode::RendererInputLimit);
+        assert_eq!(
+            huge_error
+                .safe_record()
+                .details
+                .as_ref()
+                .unwrap()
+                .limit_kind,
+            Some(SafeLimitKind::ResponseDocumentBytes)
+        );
+
+        let block = Block {
+            index: 0,
+            kind: BlockKind::Paragraph,
+            source: "Still valid after earlier rejections.\n".to_owned(),
+        };
+        assert!(render_block(&block, &RenderOptions::default()).is_ok());
+    }
 }

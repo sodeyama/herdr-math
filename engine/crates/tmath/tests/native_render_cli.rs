@@ -46,8 +46,14 @@ impl Drop for Sandbox {
 
 fn run_render(engine: &str, sandbox: &Sandbox) -> Output {
     let mut command = Command::new(&sandbox.binary);
+    let mut args = vec!["render"];
+    if engine != "native" {
+        args.push("--engine");
+        args.push(engine);
+    }
+    args.push("-");
     command
-        .args(["render", "--engine", engine, "-"])
+        .args(args)
         .env("PATH", &sandbox.empty_path)
         .env_remove("TMATH_RENDER_WORKER")
         .stdin(Stdio::piped())
@@ -61,6 +67,17 @@ fn run_render(engine: &str, sandbox: &Sandbox) -> Output {
         .write_all(DOCUMENT.as_bytes())
         .unwrap();
     child.wait_with_output().unwrap()
+}
+
+#[test]
+fn default_render_engine_is_native_without_node_or_worker() {
+    let sandbox = Sandbox::new("default-native", false);
+    let output = run_render("native", &sandbox);
+    assert!(
+        output.status.success(),
+        "default native render failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

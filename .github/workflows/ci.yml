@@ -62,3 +62,24 @@ jobs:
 
       - name: Validate package contents
         run: npm pack --dry-run --json
+
+  rust-gates:
+    name: Rust unit and integration gates
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify runner architecture
+        run: test "$(uname -m)" = arm64
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --all --check

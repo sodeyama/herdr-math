@@ -20,9 +20,8 @@ use tmath_core::agent::{
 use tmath_core::input::InputDecoder;
 use tmath_core::scroll_driver::is_exit_signal;
 
-use crate::render::renderer_worker_path;
 use crate::transcript_adapter::{
-    newest_transcript_file, project_transcript_dir, TranscriptAdapter, TranscriptDelta,
+    project_transcript_dir, resolve_transcript_file, TranscriptAdapter, TranscriptDelta,
 };
 
 /// Inactivity (ms) an answer must hold before it is emitted.
@@ -36,6 +35,11 @@ const DEFAULT_POLL_MS: u64 = 250;
 const DEFAULT_HISTORY: u32 = 500;
 /// Default viewer split width percent.
 const DEFAULT_PERCENT: u32 = 35;
+/// Re-check which Claude Code transcript file is live every N poll ticks.
+const TRANSCRIPT_RERESOLVE_POLLS: u64 = 4;
+/// Fall back to tmux capture when the transcript adapter stays idle this
+/// many poll ticks without ever sending a document to the viewer.
+const TRANSCRIPT_IDLE_FALLBACK_POLLS: u64 = 40;
 /// Safety cap on a single captured snapshot.
 const SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// Separator inserted between two accumulated answers (and between a
@@ -69,7 +73,6 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         return Ok(0);
     }
     let parsed = parse_agent_args(args)?;
-    let _ = renderer_worker_path()?;
     let source = parsed
         .source
         .clone()
@@ -87,12 +90,8 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     listener.set_nonblocking(true).ok();
 
     let exe = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
-    let worker = renderer_worker_path()?;
-    // tmux starts the viewer pane with the server's environment, so the
-    // renderer worker path must be passed explicitly on the command line.
     let viewer_cmd = viewer_command(
         &exe,
-        &worker,
         &socket_path,
         env::var("TMATH_TMUX_TRANSPORT").ok().as_deref(),
         env::var("TMATH_DPR").ok().as_deref(),
@@ -111,7 +110,11 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     // existing tmux capture-pane path below" — the two never run at once,
     // and there is no separate error state to recover from: `None` itself
     // is the fallback.
-    let transcript = open_transcript_for(&source);
+    let watcher_started = std::time::SystemTime::now();
+    let transcript_project_dir = transcript_project_dir_for(&source);
+    let transcript = transcript_project_dir
+        .as_deref()
+        .and_then(|dir| open_transcript_in(dir, watcher_started));
     eprintln!(
         "tmath agent: source={}",
         if transcript.is_some() {
@@ -121,6 +124,9 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         }
     );
     let mut transcript = transcript;
+    let mut transcript_idle_polls = 0u64;
+    let mut transcript_sent_any = false;
+    let mut poll_tick = 0u64;
     // AT-3-604: one history model, shared across whichever source is
     // active this session — the transcript path grows it incrementally
     // (`Append`/`AnswerBoundary`), the capture path replaces `current`
@@ -154,8 +160,14 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
             }
             match adapter.poll() {
                 Ok(deltas) => {
+                    if !deltas.is_empty() {
+                        transcript_idle_polls = 0;
+                    } else {
+                        transcript_idle_polls += 1;
+                    }
                     for delta in deltas {
                         emit_transcript_delta(&mut peer, &mut history, delta);
+                        transcript_sent_any = true;
                     }
                 }
                 Err(_) => {
@@ -168,8 +180,23 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
                 }
             }
             if transcript.is_some() {
-                std::thread::sleep(Duration::from_millis(parsed.poll_ms));
-                continue;
+                poll_tick += 1;
+                if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) {
+                    if let Some(dir) = transcript_project_dir.as_deref() {
+                        try_reresolve_transcript(
+                            dir,
+                            watcher_started,
+                            transcript.as_mut().unwrap(),
+                        );
+                    }
+                }
+                if !transcript_sent_any && transcript_idle_polls >= TRANSCRIPT_IDLE_FALLBACK_POLLS {
+                    eprintln!("tmath agent: source=capture (transcript_idle)");
+                    transcript = None;
+                } else {
+                    std::thread::sleep(Duration::from_millis(parsed.poll_ms));
+                    continue;
+                }
             }
         }
 
@@ -321,6 +348,16 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         }
 
         std::thread::sleep(Duration::from_millis(parsed.poll_ms));
+        poll_tick += 1;
+        if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) && transcript.is_none() {
+            if let Some(dir) = transcript_project_dir.as_deref() {
+                transcript = open_transcript_in(dir, watcher_started);
+                if transcript.is_some() {
+                    eprintln!("tmath agent: source=transcript");
+                    transcript_idle_polls = 0;
+                }
+            }
+        }
     }
 }
 
@@ -408,45 +445,32 @@ fn spawn_viewer_pane(
 }
 
 /// Builds the shell command that runs the viewer in a fresh tmux pane,
-/// injecting the renderer worker path because tmux panes inherit the server
+/// forwarding tmux/DPR/log overrides because tmux panes inherit the server's
 /// environment rather than the watcher's.
 fn viewer_command(
     exe: &std::path::Path,
-    worker: &std::path::Path,
     socket: &std::path::Path,
     transport: Option<&str>,
     dpr: Option<&str>,
     viewer_log: Option<&str>,
 ) -> String {
-    let transport = transport
-        .map(|value| format!(" TMATH_TMUX_TRANSPORT={}", shell_quote(value)))
-        .unwrap_or_default();
-    // tmux `split-window` starts the new pane with the *server's*
-    // environment, not the watcher process's — same reason
-    // `TMATH_TMUX_TRANSPORT` and `TMATH_RENDER_WORKER` are forwarded here
-    // explicitly rather than relying on inheritance. Without this, a
-    // `TMATH_DPR` set in the user's shell before running `tmath agent` would
-    // never reach the viewer pane that actually needs it.
-    let dpr = dpr
-        .map(|value| format!(" TMATH_DPR={}", shell_quote(value)))
-        .unwrap_or_default();
-    // Same reasoning: the viewer's diagnostic `eprintln!`s are off by
-    // default (see `agent_viewer::viewer_log_enabled`'s doc comment), so an
-    // evidence run that sets `TMATH_VIEWER_LOG` in the shell it runs `tmath
-    // agent` from needs it forwarded here to reach the viewer pane at all.
-    let viewer_log = viewer_log
-        .map(|value| format!(" TMATH_VIEWER_LOG={}", shell_quote(value)))
-        .unwrap_or_default();
-    format!(
-        "env TMATH_RENDER_WORKER={}{}{}{} {} {} {}",
-        shell_quote(&worker.display().to_string()),
-        transport,
-        dpr,
-        viewer_log,
-        shell_quote(&exe.display().to_string()),
-        "agent-viewer",
-        shell_quote(&socket.display().to_string())
-    )
+    let mut env_pairs = Vec::new();
+    if let Some(value) = transport {
+        env_pairs.push(format!("TMATH_TMUX_TRANSPORT={}", shell_quote(value)));
+    }
+    if let Some(value) = dpr {
+        env_pairs.push(format!("TMATH_DPR={}", shell_quote(value)));
+    }
+    if let Some(value) = viewer_log {
+        env_pairs.push(format!("TMATH_VIEWER_LOG={}", shell_quote(value)));
+    }
+    let exe = shell_quote(&exe.display().to_string());
+    let socket = shell_quote(&socket.display().to_string());
+    if env_pairs.is_empty() {
+        format!("{exe} agent-viewer {socket}")
+    } else {
+        format!("env {} {exe} agent-viewer {socket}", env_pairs.join(" "))
+    }
 }
 
 fn capture_source(pane: &PaneId, history: u32) -> Result<String, String> {
@@ -524,25 +548,47 @@ fn stdin_has_input() -> bool {
         .unwrap_or(false)
 }
 
-/// Writes a document message to the viewer, tolerating a not-yet-connected or
-/// disconnected viewer.
-/// Locates and opens a Claude Code transcript for the watched pane's current
-/// working directory, or `None` when there is no usable transcript — the
-/// caller's fallback is simply "keep using the capture adapter", not a
-/// retry loop here. Resolution: `tmux display-message`'s
-/// `#{pane_current_path}` for the pane's cwd, `$HOME` joined with the
-/// Claude Code project-slug rule (D5) for the transcript directory, then
-/// the most recently modified `*.jsonl` file in it.
-fn open_transcript_for(source: &PaneId) -> Option<TranscriptAdapter> {
+/// Resolves the Claude Code transcript directory for the watched pane's
+/// current working directory, or `None` when unavailable.
+fn transcript_project_dir_for(source: &PaneId) -> Option<std::path::PathBuf> {
     let home = env::var_os("HOME")?;
     let cwd = tmux_output(&pane_current_path(source)).ok()?;
     let cwd = cwd.trim();
     if cwd.is_empty() {
         return None;
     }
-    let dir = project_transcript_dir(std::path::Path::new(&home), std::path::Path::new(cwd))?;
-    let file = newest_transcript_file(&dir)?;
-    TranscriptAdapter::open(&file).ok()
+    project_transcript_dir(std::path::Path::new(&home), std::path::Path::new(cwd))
+}
+
+/// Locates and opens a Claude Code transcript for the watched pane, or
+/// `None` when there is no live session file yet — the caller's fallback is
+/// simply "keep using the capture adapter", not a retry loop here.
+fn open_transcript_in(
+    dir: &std::path::Path,
+    watcher_started: std::time::SystemTime,
+) -> Option<TranscriptAdapter> {
+    let (file, mode) = resolve_transcript_file(dir, watcher_started)?;
+    TranscriptAdapter::open(&file, mode).ok()
+}
+
+/// Switches to a newer live transcript file when one appears after watcher
+/// startup — for example when auto-watch opened a stale JSONL at EOF while
+/// Claude Code created a fresh session file for the current run.
+fn try_reresolve_transcript(
+    dir: &std::path::Path,
+    watcher_started: std::time::SystemTime,
+    adapter: &mut TranscriptAdapter,
+) {
+    let Some((file, mode)) = resolve_transcript_file(dir, watcher_started) else {
+        return;
+    };
+    if file == adapter.path() {
+        return;
+    }
+    if let Ok(reopened) = TranscriptAdapter::open(&file, mode) {
+        *adapter = reopened;
+        eprintln!("tmath agent: transcript_reresolved");
+    }
 }
 
 /// AT-3-604's accumulation model: answers pile up like a chat log rather
@@ -822,6 +868,7 @@ fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcript_adapter::{TranscriptAdapter, TranscriptOpenMode};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -908,10 +955,9 @@ mod tests {
     }
 
     #[test]
-    fn viewer_command_injects_the_worker_path() {
+    fn viewer_command_runs_the_viewer_without_optional_env_overrides() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             None,
@@ -919,7 +965,7 @@ mod tests {
         );
         assert_eq!(
             cmd,
-            "env TMATH_RENDER_WORKER='/opt/site/dist/renderer/subprocess.js' '/opt/tools/tmath' agent-viewer '/tmp/tmath-agent-1.sock'"
+            "'/opt/tools/tmath' agent-viewer '/tmp/tmath-agent-1.sock'"
         );
     }
 
@@ -927,23 +973,21 @@ mod tests {
     fn viewer_command_quotes_paths_with_spaces() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/my tools/tmath"),
-            std::path::Path::new("/opt/my site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath agent-1.sock"),
             None,
             None,
             None,
         );
-        assert!(
-            cmd.starts_with("env TMATH_RENDER_WORKER='/opt/my site/dist/renderer/subprocess.js'")
+        assert_eq!(
+            cmd,
+            "'/opt/my tools/tmath' agent-viewer '/tmp/tmath agent-1.sock'"
         );
-        assert!(cmd.contains("'/opt/my tools/tmath' agent-viewer"));
     }
 
     #[test]
     fn viewer_command_forwards_an_explicit_tmux_transport() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             None,
@@ -953,14 +997,13 @@ mod tests {
     }
 
     /// tmux `split-window` panes start with the server's environment, not
-    /// the watcher process's, so `TMATH_DPR` (like `TMATH_TMUX_TRANSPORT`
-    /// and `TMATH_RENDER_WORKER`) must be forwarded explicitly on the
-    /// spawn command line or the viewer pane never sees it.
+    /// the watcher process's, so `TMATH_DPR` (like `TMATH_TMUX_TRANSPORT`)
+    /// must be forwarded explicitly on the spawn command line or the viewer
+    /// pane never sees it.
     #[test]
     fn viewer_command_forwards_an_explicit_dpr_override() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             Some("2"),
@@ -973,7 +1016,6 @@ mod tests {
     fn viewer_command_forwards_both_transport_and_dpr_together() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             Some("3"),
@@ -987,7 +1029,6 @@ mod tests {
     fn viewer_command_with_neither_override_omits_both_variables() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             None,
@@ -996,6 +1037,7 @@ mod tests {
         assert!(!cmd.contains("TMATH_TMUX_TRANSPORT"));
         assert!(!cmd.contains("TMATH_DPR"));
         assert!(!cmd.contains("TMATH_VIEWER_LOG"));
+        assert!(!cmd.contains("TMATH_RENDER_WORKER"));
     }
 
     /// Same forwarding requirement as `TMATH_DPR`/`TMATH_TMUX_TRANSPORT`:
@@ -1007,7 +1049,6 @@ mod tests {
     fn viewer_command_forwards_an_explicit_viewer_log_flag() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             None,
@@ -1020,7 +1061,6 @@ mod tests {
     fn viewer_command_forwards_all_three_overrides_together() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
-            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             Some("3"),
@@ -1446,5 +1486,90 @@ mod tests {
             history.document(),
             "First answer.\n\nUnrelated second answer."
         );
+    }
+
+    /// AT-3-603 wire-level: a synthesized streaming JSONL fixture replayed
+    /// through the transcript adapter and watcher emission path grows the
+    /// decoded document incrementally with ReplaceTail frames after the
+    /// initial Document resync.
+    #[test]
+    fn streaming_transcript_fixture_replay_emits_document_then_replace_tails() {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write as _;
+
+        fn append_line(path: &std::path::Path, line: &str) {
+            let mut file = OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(file, "{line}").unwrap();
+        }
+
+        let lines: Vec<String> =
+            include_str!("../../../../tests/fixtures/agents/streaming-transcript.jsonl")
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(str::to_string)
+                .collect();
+
+        let path = std::env::temp_dir().join(format!(
+            "tmath-watcher-replay-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, "").unwrap();
+
+        let (mut tx, mut rx) = UnixStream::pair().unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut peer = Some(tx.try_clone().unwrap());
+        let mut history = AnswerHistory::new();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+
+        for line in &lines {
+            append_line(&path, line);
+            for delta in adapter.poll().unwrap() {
+                emit_transcript_delta(&mut peer, &mut history, delta);
+            }
+        }
+        tx.flush().unwrap();
+        drop(tx);
+        drop(peer);
+
+        let mut bytes = Vec::new();
+        rx.read_to_end(&mut bytes).unwrap();
+        let mut decoder = tmath_core::agent::Decoder::new();
+        decoder.push(&bytes);
+        let mut messages = Vec::new();
+        while let Some(message) = decoder.next_message() {
+            messages.push(message.unwrap());
+        }
+        let mut state = tmath_core::agent::DeltaState::new(usize::MAX);
+        for message in &messages {
+            state.apply(message).unwrap();
+        }
+
+        assert!(
+            matches!(
+                messages.first(),
+                Some(tmath_core::agent::Message::Document { .. })
+            ),
+            "first frame must be a Document resync: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .skip(1)
+                .any(|message| matches!(message, tmath_core::agent::Message::ReplaceTail { .. })),
+            "streaming growth must use ReplaceTail after the first Document: {messages:?}"
+        );
+        assert!(
+            state.document().contains("Linear regression"),
+            "reassembled document must contain fixture prose"
+        );
+        assert!(
+            state.document().contains("Gauss–Markov"),
+            "reassembled document must contain later streamed paragraphs"
+        );
+        let _ = fs::remove_file(path);
     }
 }

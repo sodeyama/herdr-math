@@ -103,6 +103,24 @@ impl From<io::Error> for TranscriptError {
     }
 }
 
+/// Where to begin reading when a transcript file is first opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranscriptOpenMode {
+    /// Only bytes appended after open (never re-scan prior session history).
+    Tail,
+    /// Read from byte 0 — for a session file that appeared while the watcher
+    /// is already running, so the viewer can show the live session without
+    /// waiting for new appends.
+    FromStart,
+}
+
+/// One `*.jsonl` transcript candidate under a Claude Code project directory.
+#[derive(Debug, Clone)]
+pub(crate) struct TranscriptCandidate {
+    pub path: PathBuf,
+    pub modified: std::time::SystemTime,
+}
+
 /// Tails one transcript file, read-only, and extracts assistant Markdown
 /// deltas from newly appended lines. Bounded per poll and resilient to
 /// rotation (inode or size regression) and truncation (mid-line EOF).
@@ -127,20 +145,27 @@ pub(crate) struct TranscriptAdapter {
 }
 
 impl TranscriptAdapter {
-    /// Opens `path` at its current end (only newly appended bytes are ever
-    /// read — the adapter never loads or re-scans history already on
-    /// disk).
-    pub(crate) fn open(path: &Path) -> Result<Self, TranscriptError> {
+    /// Opens `path` at the position selected by [`TranscriptOpenMode`].
+    pub(crate) fn open(path: &Path, mode: TranscriptOpenMode) -> Result<Self, TranscriptError> {
         let file = File::open(path)?;
         let metadata = file.metadata()?;
+        let offset = match mode {
+            TranscriptOpenMode::Tail => metadata.len(),
+            TranscriptOpenMode::FromStart => 0,
+        };
         Ok(Self {
             path: path.to_path_buf(),
             inode: metadata.ino(),
-            offset: metadata.len(),
+            offset,
             file,
             carry: Vec::new(),
             awaiting_new_answer: true,
         })
+    }
+
+    /// The transcript file this adapter is tailing.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Reads up to `TRANSCRIPT_READ_BYTES_PER_POLL` new bytes, parses every
@@ -289,17 +314,21 @@ pub(crate) fn project_transcript_dir(home: &Path, cwd: &Path) -> Option<PathBuf>
     Some(home.join(".claude").join("projects").join(slug))
 }
 
-/// Picks the most recently modified `*.jsonl` file directly inside `dir`,
-/// or `None` when the directory does not exist or has no transcript files.
-/// This is a best-effort heuristic for "the session currently running in
-/// the watched pane" — multiple sessions can share a project directory, and
-/// the newest-modified file is the one most likely still being appended
-/// to. A wrong pick degrades gracefully: `TranscriptAdapter` only ever
-/// tails forward from the moment it opens the file, and the watcher falls
-/// back to the capture adapter if the chosen file goes quiet or errors.
-pub(crate) fn newest_transcript_file(dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+/// How long a transcript file can go without modification and still be
+/// treated as the live session currently being appended to.
+const ACTIVE_TRANSCRIPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Slack before the watcher's start time when deciding a transcript file
+/// belongs to the session that began alongside the watcher.
+const WATCHER_START_SLACK: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Lists every `*.jsonl` file directly inside `dir`.
+pub(crate) fn list_transcript_files(dir: &Path) -> Vec<TranscriptCandidate> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut files = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
@@ -311,11 +340,74 @@ pub(crate) fn newest_transcript_file(dir: &Path) -> Option<PathBuf> {
         let Ok(modified) = metadata.modified() else {
             continue;
         };
-        if newest.as_ref().is_none_or(|(when, _)| modified > *when) {
-            newest = Some((modified, path));
-        }
+        files.push(TranscriptCandidate { path, modified });
     }
-    newest.map(|(_, path)| path)
+    files
+}
+
+/// Picks the most recently modified `*.jsonl` file directly inside `dir`,
+/// or `None` when the directory does not exist or has no transcript files.
+/// Prefer [`resolve_transcript_file`] for watcher startup — this helper
+/// remains for tests and callers that explicitly want the raw mtime pick.
+#[cfg(test)]
+pub(crate) fn newest_transcript_file(dir: &Path) -> Option<PathBuf> {
+    list_transcript_files(dir)
+        .into_iter()
+        .max_by_key(|candidate| candidate.modified)
+        .map(|candidate| candidate.path)
+}
+
+/// Resolves the transcript file for the session the watcher should follow.
+///
+/// Multiple Claude Code sessions share one project directory. Picking the
+/// globally newest file at watcher startup often tails a *previous* session
+/// at EOF while the live session writes to a brand-new JSONL — the viewer
+/// then stays at "0 blocks" forever because capture is disabled once any
+/// transcript opens successfully. This resolver therefore prefers:
+///
+/// 1. files modified within [`ACTIVE_TRANSCRIPT_WINDOW`] (actively appended), and
+/// 2. files touched since the watcher started (minus [`WATCHER_START_SLACK`]),
+///
+/// and returns `None` when only stale files exist so the capture adapter can
+/// run until a live session file appears.
+pub(crate) fn resolve_transcript_file(
+    dir: &Path,
+    watcher_started: std::time::SystemTime,
+) -> Option<(PathBuf, TranscriptOpenMode)> {
+    let files = list_transcript_files(dir);
+    if files.is_empty() {
+        return None;
+    }
+    let now = std::time::SystemTime::now();
+    let active_cutoff = now
+        .checked_sub(ACTIVE_TRANSCRIPT_WINDOW)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let session_cutoff = watcher_started
+        .checked_sub(WATCHER_START_SLACK)
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    if let Some(best) = files
+        .iter()
+        .filter(|candidate| candidate.modified >= active_cutoff)
+        .max_by_key(|candidate| candidate.modified)
+    {
+        let mode = if best.modified >= session_cutoff {
+            TranscriptOpenMode::FromStart
+        } else {
+            TranscriptOpenMode::Tail
+        };
+        return Some((best.path.clone(), mode));
+    }
+
+    if let Some(best) = files
+        .iter()
+        .filter(|candidate| candidate.modified >= session_cutoff)
+        .max_by_key(|candidate| candidate.modified)
+    {
+        return Some((best.path.clone(), TranscriptOpenMode::FromStart));
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -420,7 +512,7 @@ mod tests {
     fn open_starts_at_eof_and_never_re_scans_history_already_on_disk() {
         let path = temp_path("t.jsonl");
         write_jsonl(&path, &[&assistant_text_line("Already on disk.")]);
-        let mut adapter = TranscriptAdapter::open(&path).unwrap();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::Tail).unwrap();
         assert_eq!(
             adapter.poll().unwrap(),
             Vec::new(),
@@ -462,7 +554,7 @@ mod tests {
     fn the_first_text_block_after_open_is_a_reset_even_with_a_user_turn_first() {
         let path = temp_path("t.jsonl");
         write_jsonl(&path, &[&assistant_text_line("Old answer.")]);
-        let mut adapter = TranscriptAdapter::open(&path).unwrap();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::Tail).unwrap();
         assert_eq!(adapter.poll().unwrap(), Vec::new());
 
         append_jsonl(
@@ -653,7 +745,7 @@ mod tests {
                 r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
             ],
         );
-        let mut adapter = TranscriptAdapter::open(&path).unwrap();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::Tail).unwrap();
         drop(adapter);
         adapter = reopen_from_start(&path);
         assert_eq!(adapter.poll().unwrap(), Vec::new());
@@ -798,7 +890,7 @@ mod tests {
     #[test]
     fn an_absent_file_reports_an_error_rather_than_panicking() {
         let path = temp_path("does-not-exist.jsonl");
-        assert!(TranscriptAdapter::open(&path).is_err());
+        assert!(TranscriptAdapter::open(&path, TranscriptOpenMode::Tail).is_err());
     }
 
     #[test]
@@ -826,6 +918,53 @@ mod tests {
         let home = Path::new("/opt/example");
         let cwd = Path::new("relative/path");
         assert!(project_transcript_dir(home, cwd).is_none());
+    }
+
+    #[test]
+    fn resolve_transcript_file_prefers_an_active_file_over_a_stale_one() {
+        let dir = temp_path("resolve-active");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join("stale.jsonl");
+        let active = dir.join("active.jsonl");
+        File::create(&stale).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        File::create(&active).unwrap();
+
+        let watcher_started = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(3600))
+            .unwrap();
+        let resolved = resolve_transcript_file(&dir, watcher_started).unwrap();
+        assert_eq!(resolved.0, active);
+        assert_eq!(resolved.1, TranscriptOpenMode::FromStart);
+    }
+
+    #[test]
+    fn resolve_transcript_file_returns_none_when_only_stale_files_exist() {
+        let dir = temp_path("resolve-stale-only");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join("stale.jsonl");
+        File::create(&stale).unwrap();
+        std::process::Command::new("touch")
+            .args(["-t", "202001010000"])
+            .arg(&stale)
+            .status()
+            .expect("touch stale mtime");
+
+        let watcher_started = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(7200))
+            .unwrap();
+        assert_eq!(resolve_transcript_file(&dir, watcher_started), None);
+    }
+
+    #[test]
+    fn open_from_start_reads_fixture_content_written_before_the_adapter_existed() {
+        let path = temp_path("from-start.jsonl");
+        write_jsonl(&path, &[&assistant_text_line("Already on disk.")]);
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+        assert_eq!(
+            adapter.poll().unwrap(),
+            vec![TranscriptDelta::Reset("Already on disk.".to_string())]
+        );
     }
 
     #[test]
