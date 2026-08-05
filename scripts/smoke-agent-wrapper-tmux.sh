@@ -159,6 +159,13 @@ PATH="$SHIM_DIR:/usr/bin:/bin" TMATH_TMUX_TRANSPORT=passthrough bash -x -c "
   source '$WRAPPER'
   quoted=\$(__tmath_shell_quote_args /bin/sleep 30)
   tmux new-session -d -s '$NESTED_SESSION' \"\$quoted\"
+  # The split pane's command resolves against the TMUX SERVER's PATH, not
+  # this restricted subshell's. Where no tmath is installed (CI), the pane
+  # command dies instantly and tmux reaps the pane before the assertion
+  # below can read its start command — keep dead panes so the assertion is
+  # about command CONSTRUCTION on every machine, never about whether a
+  # locally installed tmath happened to keep the pane alive.
+  tmux set-option -t '$NESTED_SESSION' -w remain-on-exit on
   agent_pane=\$(tmux list-panes -t '$NESTED_SESSION' -F '#{pane_id}' | head -1)
   env_prefix=\$(__tmath_env_prefix)
   tmux split-window -h -p 35 -t '$NESTED_SESSION' \"\${env_prefix}tmath agent --source-pane \$agent_pane\"
