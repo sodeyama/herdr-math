@@ -1994,6 +1994,30 @@ fn sync_window_operations(
         // window-relative rows correct.
         operations.push(TerminalOp::Local(home.clone().into_bytes()));
         for (index, entry) in placed[visible].iter().enumerate() {
+            // A block whose retained PNG is still empty here means
+            // `restore_missing_pngs` (the caller's job, see its doc
+            // comment) already tried and failed to re-render it — fail
+            // closed PER BLOCK, not for the whole sync: draw its row span
+            // blank (matching AT-3-504's "leaves it showing nothing")
+            // rather than erroring the entire window out, which would
+            // otherwise turn one unrestorable block into a permanent
+            // `RendererFailed` on every subsequent sync as long as that
+            // block stays in the window (the 2026-08-05 field failure's
+            // mechanism).
+            if entry.png.is_empty() {
+                let skip = if index == 0 {
+                    skip_rows_in_first.min(entry.rows)
+                } else {
+                    0
+                };
+                operations.push(TerminalOp::Local(clear_rows(
+                    entry.rows.saturating_sub(skip),
+                )));
+                if skip != 0 {
+                    operations.push(TerminalOp::Local(b"\r\n".to_vec()));
+                }
+                continue;
+            }
             let (width, height, rgba) =
                 decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
             let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
@@ -2246,6 +2270,45 @@ mod tests {
             text.ends_with("\x1b[0J"),
             "erase-below follows the redrawn blocks: {text:?}"
         );
+    }
+
+    /// TR-402 (AT-R-502): the 2026-08-05 field failure's root cause. An
+    /// evicted PNG that `restore_missing_pngs` failed to restore (e.g. a
+    /// render error) is left as an empty byte vector (see
+    /// `PlacedState::png`'s doc comment). Before this fix,
+    /// `sync_window_operations` unconditionally decoded every visible
+    /// block's PNG, so this one empty entry failed the WHOLE sync with
+    /// `RendererFailed` — and since the block stays in `placed` and stays
+    /// empty, every LATER sync while it remains in the window failed the
+    /// same way, matching the field-observed `sync_failed (RendererFailed)`
+    /// recurring until the viewer gave up. The fix fails closed PER BLOCK
+    /// instead: an empty PNG draws its row span blank and the sync
+    /// otherwise succeeds.
+    #[test]
+    fn sync_window_operations_fails_closed_per_block_on_an_unrestored_empty_png() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![
+            placed(1, 2, rgba8_png(1, 2)),
+            // id=2's PNG was evicted and never restored — this is what
+            // `restore_missing_pngs` leaves behind on a render failure.
+            placed(2, 3, Vec::new()),
+            placed(3, 1, rgba8_png(1, 1)),
+        ];
+
+        let operations = sync_window_operations(&placed, &[1, 2, 3], 0..3, cell, u64::MAX, 0, 0)
+            .expect("one unrestorable block must not fail the whole sync");
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+
+        // id=1 and id=3 (both have a real PNG) are still placed normally.
+        assert!(text.contains("i=1,U=1,c=1,r=2,q=2"));
+        assert!(text.contains("i=3,U=1,c=1,r=1,q=2"));
+        // id=2 (the empty PNG) is never placed — its slot is left blank,
+        // not drawn with a stale or garbage image.
+        assert!(!text.contains("i=2,U=1,c=1"));
     }
 
     /// FIX 2 regression: `emitted_ids` may contain an id that a suppressed
