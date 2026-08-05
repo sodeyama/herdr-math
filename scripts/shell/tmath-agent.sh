@@ -12,7 +12,15 @@ __tmath_wrap_agent() {
   # tmath itself missing, or the directory is not allowlisted: pure
   # passthrough, never block or alter the wrapped command.
   command -v tmath >/dev/null 2>&1 || { command "$cmd" "$@"; return $?; }
-  tmath agent-allowed >/dev/null 2>&1 || { command "$cmd" "$@"; return $?; }
+  tmath agent-allowed >/dev/null 2>&1
+  local allowed_status=$?
+  case "$allowed_status" in
+    0) ;;
+    1) command "$cmd" "$@"; return $? ;;
+    *)
+      echo "tmath: agent-allowed failed (exit $allowed_status); run 'tmath diagnose'" >&2
+      command "$cmd" "$@"; return $? ;;
+  esac
 
   if [ -n "${TMUX:-}" ]; then
     __tmath_start_watcher_for_pane "${TMUX_PANE:-}"
