@@ -62,9 +62,10 @@ skips this). It wraps `claude`, `codex`, `opencode`, `cursor-agent`, and `pi`:
   second watcher for a pane that already has one; a lock left behind by a
   watcher that died is reclaimed automatically.
 - **Allowlisted, outside tmux, interactive terminal**: a new tmux session is
-  created with the agent command in one pane and the watcher in a second pane
-  (an explicit two-pane session, since a plain `tmux new-session <cmd>` never
-  sources shell rc files), and the session is attached.
+  created running the agent command, the watcher starts in the background
+  (the session is built explicitly because a plain `tmux new-session <cmd>`
+  never sources shell rc files), and the session is attached. The watcher
+  adds only its viewer pane; there is no separate watcher-log pane.
 - **Allowlisted, outside tmux, non-interactive** (piped or redirected):
   passes through untouched, same as not being allowlisted.
 
