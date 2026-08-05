@@ -2,8 +2,9 @@
 
 ## Status
 
-- Checklist state: **In progress — Phases R1 and R2 implemented; Phase R3 in
-  progress (TR-301, TR-302 done)**
+- Checklist state: **Implemented — Phases R1 through R4 complete. The one
+  remaining external gate is TR-303's CI-green confirmation on the PR (the
+  job is committed and the same four smokes pass locally).**
 - Plan: `../plans/main.md`
 - Acceptance contract: `../tests/main.md`
 - Rules: one logical change per commit; a task is complete only when its listed
@@ -271,12 +272,11 @@ scripts) before checking a box.
       The workflow has no summary-gating pattern to join, so the job
       participates via the default required-status-checks surface.
       Validate: local run confirmed `scripts/smoke-agent-allowlist.sh` and
-      `scripts/smoke-install-launcher.sh` pass end-to-end; the two tmux-driving
-      scripts (`smoke-agent-tmux.sh`, `smoke-agent-wrapper-tmux.sh`) were
-      checked with `bash -n` only, since this session's sandbox denies direct
-      tmux operations — their full pass/fail run happens on CI. CI green on
-      the PR is still outstanding and must be confirmed before treating this
-      task as fully closed.
+      `scripts/smoke-install-launcher.sh` pass end-to-end; the two
+      tmux-driving scripts were later also run locally by the supervising
+      session (both `PASS`, default tmux server session list unchanged, see
+      TR-403). CI green on the PR is still outstanding and must be confirmed
+      before treating this task as fully closed.
 
 ## Phase R4 — Hygiene and bounded investigation
 
@@ -322,6 +322,36 @@ scripts) before checking a box.
       the new test); `cargo clippy --all-targets` clean; `cargo fmt --check`
       clean.
 
-- [ ] **TR-403** Docs commit closing the spec: mark checklist state, update
+- [x] **TR-403** Docs commit closing the spec: mark checklist state, update
       `README.md` troubleshooting pointer if TR-106 placed it elsewhere, and
       record final evidence links.
+      `README.md` already points at `docs/getting-started.md` (TR-106's
+      location) — no README change needed.
+      Final validation surface (2026-08-05, local): `cargo test --workspace`
+      all 12 suites ok (including the new TR-402 regression test),
+      `cargo clippy --all-targets` zero warnings, `cargo fmt --all --check`
+      clean, and all four smoke scripts `PASS` with the default tmux server's
+      session list unchanged before/after.
+      Additional runtime-quality fixes landed during the live scroll-lab
+      validation session that closed this spec:
+      - `67d079b` — status bar now updates on the same momentum tick that
+        disengages follow (wheel-up while following previously left row 1 on
+        "following" until the next unrelated redraw).
+      - `15d73c2` — rendered text brightness parity with terminal fonts
+        (near-white theme color plus alpha-gamma edge lift; measured peak
+        luminance 246 vs 222 for plain shell text in the same frame).
+      - `14ff3f0` — removed the wrapper smoke's machine-wide
+        `pkill -f "tmath agent --source-pane"`, which killed unrelated live
+        watchers outside the test's private tmux server.
+      - `ca402ac` — scroll-lab observer captures the terminal window by
+        CGWindowID (occlusion-immune) with an optional crop, so future
+        self-observation evidence cannot be polluted by whatever app happens
+        to be frontmost.
+      Live-terminal evidence for the viewer surface (Ghostty + tmux,
+      release build): follow mode pins to the tail during streaming;
+      wheel-up flips the status word to "scrolled" on the same tick and
+      shows the track/thumb scrollbar in the last column; new blocks
+      arriving while scrolled back do not move the viewport; wheel-down to
+      the tail and `End` both re-engage "following"; the scrollbar
+      auto-hides about a second after motion stops and the image content
+      under its column is restored.
