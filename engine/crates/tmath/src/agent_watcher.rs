@@ -190,9 +190,7 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
                         );
                     }
                 }
-                if !transcript_sent_any
-                    && transcript_idle_polls >= TRANSCRIPT_IDLE_FALLBACK_POLLS
-                {
+                if !transcript_sent_any && transcript_idle_polls >= TRANSCRIPT_IDLE_FALLBACK_POLLS {
                     eprintln!("tmath agent: source=capture (transcript_idle)");
                     transcript = None;
                 } else {
@@ -471,10 +469,7 @@ fn viewer_command(
     if env_pairs.is_empty() {
         format!("{exe} agent-viewer {socket}")
     } else {
-        format!(
-            "env {} {exe} agent-viewer {socket}",
-            env_pairs.join(" ")
-        )
+        format!("env {} {exe} agent-viewer {socket}", env_pairs.join(" "))
     }
 }
 
@@ -1507,11 +1502,12 @@ mod tests {
             writeln!(file, "{line}").unwrap();
         }
 
-        let lines: Vec<String> = include_str!("../../../../tests/fixtures/agents/streaming-transcript.jsonl")
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(str::to_string)
-            .collect();
+        let lines: Vec<String> =
+            include_str!("../../../../tests/fixtures/agents/streaming-transcript.jsonl")
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(str::to_string)
+                .collect();
 
         let path = std::env::temp_dir().join(format!(
             "tmath-watcher-replay-{}-{}.jsonl",
@@ -1527,8 +1523,7 @@ mod tests {
         rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut peer = Some(tx.try_clone().unwrap());
         let mut history = AnswerHistory::new();
-        let mut adapter =
-            TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
 
         for line in &lines {
             append_line(&path, line);
@@ -1554,7 +1549,10 @@ mod tests {
         }
 
         assert!(
-            matches!(messages.first(), Some(tmath_core::agent::Message::Document { .. })),
+            matches!(
+                messages.first(),
+                Some(tmath_core::agent::Message::Document { .. })
+            ),
             "first frame must be a Document resync: {messages:?}"
         );
         assert!(

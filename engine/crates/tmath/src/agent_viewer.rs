@@ -2409,9 +2409,7 @@ mod tests {
 
     use tmath_core::agent::{Message, DELTA_PROTOCOL_VERSION};
 
-    use crate::transcript_adapter::{
-        TranscriptAdapter, TranscriptDelta, TranscriptOpenMode,
-    };
+    use crate::transcript_adapter::{TranscriptAdapter, TranscriptDelta, TranscriptOpenMode};
 
     fn fixture_streaming_transcript_lines() -> Vec<String> {
         include_str!("../../../../tests/fixtures/agents/streaming-transcript.jsonl")
@@ -2466,8 +2464,7 @@ mod tests {
     fn streaming_transcript_replay_places_blocks_incrementally() {
         let path = temp_replay_transcript();
         let lines = fixture_streaming_transcript_lines();
-        let mut adapter =
-            TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
         let mut viewer = test_viewer(24);
         let mut seq = 0u64;
         let mut max_blocks_seen = 0usize;
@@ -2507,8 +2504,7 @@ mod tests {
 
         let path = temp_replay_transcript();
         let lines = fixture_streaming_transcript_lines();
-        let mut adapter =
-            TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
         let mut viewer = test_viewer(24);
         let mut seq = 0u64;
         // Warm the native engine so subsequent append steps measure steady-state G2.

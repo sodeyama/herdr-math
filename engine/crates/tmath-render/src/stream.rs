@@ -518,8 +518,24 @@ mod tests {
         // either match the one-shot parser or fail closed with the same limit.
         let mut seed = 0x57EA_0001_u64;
         let tokens = [
-            "# ", "## ", "- ", "1. ", "> ", "| A | B |\n| - | - |\n| 1 | 2 |\n", "```\n",
-            "\n```\n", "$", "$$", "\n\n", " ", "x", "🦀", "a+b", "\\(", "\\)", "plain",
+            "# ",
+            "## ",
+            "- ",
+            "1. ",
+            "> ",
+            "| A | B |\n| - | - |\n| 1 | 2 |\n",
+            "```\n",
+            "\n```\n",
+            "$",
+            "$$",
+            "\n\n",
+            " ",
+            "x",
+            "🦀",
+            "a+b",
+            "\\(",
+            "\\)",
+            "plain",
         ];
 
         for iteration in 0..256u64 {

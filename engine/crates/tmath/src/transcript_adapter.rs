@@ -960,8 +960,7 @@ mod tests {
     fn open_from_start_reads_fixture_content_written_before_the_adapter_existed() {
         let path = temp_path("from-start.jsonl");
         write_jsonl(&path, &[&assistant_text_line("Already on disk.")]);
-        let mut adapter =
-            TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+        let mut adapter = TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
         assert_eq!(
             adapter.poll().unwrap(),
             vec![TranscriptDelta::Reset("Already on disk.".to_string())]

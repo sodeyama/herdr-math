@@ -356,7 +356,10 @@ mod render_tests {
             table.push_str(&format!("| row {row} | value |\n"));
         }
         let table_error = parse_blocks_limited(&table, &Limits::default()).unwrap_err();
-        assert_eq!(table_error.safe_record().code, ErrorCode::RendererInputLimit);
+        assert_eq!(
+            table_error.safe_record().code,
+            ErrorCode::RendererInputLimit
+        );
 
         let mut bomb = r"\frac{a}{".to_string();
         for _ in 0..48 {
@@ -385,7 +388,12 @@ mod render_tests {
         let huge_error = parse_blocks_limited(&ten_mb, &Limits::default()).unwrap_err();
         assert_eq!(huge_error.safe_record().code, ErrorCode::RendererInputLimit);
         assert_eq!(
-            huge_error.safe_record().details.as_ref().unwrap().limit_kind,
+            huge_error
+                .safe_record()
+                .details
+                .as_ref()
+                .unwrap()
+                .limit_kind,
             Some(SafeLimitKind::ResponseDocumentBytes)
         );
 
