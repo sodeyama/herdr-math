@@ -93,11 +93,18 @@ pub(crate) fn render_display_math_block(
     // `math.rs` and `typst_doc.rs::push_math_image`).
     let name = format!("math-{block_index}-0.svg");
     let total_height = image.height_pt + image.depth_pt;
+    // Same D-LINE inter-block margin every other block page gets (see
+    // `typst_doc::INTER_BLOCK_MARGIN_EM`), so a standalone display-math
+    // block stacks against neighboring prose blocks with the same gap as
+    // any other block pair, not zero.
+    let block_margin_pt = crate::typst_doc::INTER_BLOCK_MARGIN_EM * options.font_size_pt;
     let source = format!(
-        "#set page(width: {width}pt, height: auto, margin: 0pt, fill: none)\n\
+        "#set page(width: {width}pt, height: auto, \
+         margin: (top: {block_margin}pt, bottom: {block_margin}pt, x: 0pt), fill: none)\n\
          #align(center)[#image(\"{name}\", width: {image_width}pt, \
          height: {image_height}pt, fit: \"stretch\")]\n",
         width = options.content_width_pt,
+        block_margin = block_margin_pt,
         image_width = image.width_pt,
         image_height = total_height,
     );
@@ -931,6 +938,145 @@ mod tests {
             heading_plain.height_px, heading_bold.height_px,
             "a heading followed by a bold-mixed paragraph must render the same \
              height as the same heading followed by a plain paragraph"
+        );
+    }
+
+    /// D-LINE uniform inter-block spacing (the re-routed "bold breaks the
+    /// line spacing" symptom): each block renders as its own zero-*outer*-
+    /// gap Typst page, and the viewer/stream emitter stacks block images
+    /// with zero gap between them — so before `INTER_BLOCK_MARGIN_EM`
+    /// existed, the visual gap BETWEEN two stacked blocks was always
+    /// exactly 0px, regardless of the 1.6em (`TARGET_LINE_ADVANCE_EM`)
+    /// rhythm applied *within* one block between its own lines. Headings
+    /// and bold-led lines are disproportionately followed by a new
+    /// Markdown block (a paragraph), so that block-adjacency gap of 0 is
+    /// what a live-run bug report actually perceived as bold-specific line
+    /// spacing — `bold_spans_do_not_change_the_per_line_advance` above
+    /// already disproved a true bold/weight effect at the render layer.
+    ///
+    /// This proves the fix hermetically: two single-line blocks stacked
+    /// (as the viewer does, at zero gap) must equal one two-line block's
+    /// height, i.e. `2 * INTER_BLOCK_MARGIN_EM` (top of block B + bottom of
+    /// block A) reproduces exactly the same ink-to-ink gap Typst's own
+    /// `par.leading` inserts between two lines in one block.
+    #[test]
+    fn stacked_single_line_blocks_match_one_two_line_block_height() {
+        let one_line = render_prose_block(
+            &block(BlockKind::Paragraph, "Line A of prose text."),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        let two_line = render_prose_block(
+            &block(
+                BlockKind::Paragraph,
+                "Line A of prose text.\\\nLine B of prose text.",
+            ),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+
+        let stacked_two_single_line_blocks = 2 * one_line.height_px;
+        assert_eq!(
+            stacked_two_single_line_blocks, two_line.height_px,
+            "two single-line blocks stacked at the viewer's zero gap \
+             (2 * {}px = {stacked_two_single_line_blocks}px) must match one \
+             two-line block's height ({}px) — the designed inter-block \
+             margin should make block adjacency indistinguishable from \
+             line adjacency within a block",
+            one_line.height_px, two_line.height_px
+        );
+    }
+
+    /// A heading block and a paragraph block must emit the EXACT same
+    /// `#set page(margin: ...)` values — proven directly from the composed
+    /// Typst source (via `compose_block`, not an empirical height
+    /// measurement), since `block_margin_pt` is computed once from the
+    /// outer `options.font_size_pt` and written into `#set page(...)`
+    /// before any body content — including a heading's own `#text(size:
+    /// ...em, weight: "bold")` override — is ever emitted. This is the
+    /// most hermetic possible proof that the margin is a page property
+    /// independent of `BlockKind` and of a heading's larger inner font
+    /// size: reading the literal generated margin values, not inferring
+    /// them from rendered pixel heights.
+    #[test]
+    fn heading_and_paragraph_blocks_emit_the_identical_page_margin() {
+        let options = RenderOptions::default();
+        let paragraph_source =
+            compose_block(&block(BlockKind::Paragraph, "Paragraph text."), &options).unwrap();
+        let heading_source =
+            compose_block(&block(BlockKind::Heading, "# Heading text"), &options).unwrap();
+
+        let paragraph_margin = extract_page_margin(&paragraph_source.source);
+        let heading_margin = extract_page_margin(&heading_source.source);
+        assert_eq!(
+            paragraph_margin, heading_margin,
+            "a heading and a paragraph must emit the identical #set page(margin: ...) clause"
+        );
+
+        let expected_margin_pt = crate::typst_doc::INTER_BLOCK_MARGIN_EM * options.font_size_pt;
+        assert!(
+            paragraph_margin.contains(&format!("top: {expected_margin_pt}pt"))
+                && paragraph_margin.contains(&format!("bottom: {expected_margin_pt}pt")),
+            "margin clause {paragraph_margin:?} did not contain the expected \
+             {expected_margin_pt}pt top/bottom derived from INTER_BLOCK_MARGIN_EM"
+        );
+        assert!(
+            paragraph_margin.contains("x: 0pt"),
+            "horizontal margin must stay 0pt: {paragraph_margin:?}"
+        );
+    }
+
+    /// Pulls the `margin: (...)` clause out of a composed block's `#set
+    /// page(...)` line, for exact source-level comparison.
+    fn extract_page_margin(source: &str) -> String {
+        let start = source
+            .find("margin: (")
+            .expect("margin clause must be present");
+        let rest = &source[start..];
+        let end = rest.find(')').expect("margin clause must be closed");
+        rest[..=end].to_owned()
+    }
+
+    /// The re-route's explicit requirement: display-math blocks
+    /// (`render_display_math_block`, a SEPARATE Typst page from
+    /// `compose_block_with_deadline`'s prose pages) must get the identical
+    /// derived margin, so a standalone `$$...$$` block stacks against
+    /// neighboring text blocks with the same designed gap in both
+    /// directions (math→text and text→math), not flush.
+    #[test]
+    fn display_math_blocks_get_the_same_inter_block_margin_as_text_blocks() {
+        let options = RenderOptions::new(480.0, 12.0, 1).unwrap();
+        let expected_margin_pt = crate::typst_doc::INTER_BLOCK_MARGIN_EM * options.font_size_pt;
+        assert!(
+            expected_margin_pt > 0.0,
+            "the derived inter-block margin must be a positive, non-zero pt value"
+        );
+
+        // The display-math page has exactly one content element (the
+        // formula image, placed via `#align(center)[#image(..., width:
+        // image.width_pt, height: image.height_pt + image.depth_pt, fit:
+        // "stretch")]`) and no other variable-height content — no line-box
+        // padding, no leading. So the rendered block's height at DPR 1 (1pt
+        // ~= 1px) must equal the formula's own exact content height plus
+        // `2 * expected_margin_pt`, with nothing else contributing. This is
+        // an exact equality, not a statistical estimate.
+        let image =
+            crate::math::render_formula(r"\frac{a}{b}", true, &options).expect("must render");
+        let formula_content_height_pt = image.height_pt + image.depth_pt;
+        let limits = Limits::default();
+        let deadline = RenderDeadline::new(limits.render_duration_ms);
+        let math_block = render_display_math_block(0, image, &options, &limits, &deadline).unwrap();
+
+        let expected_total_height_px =
+            (formula_content_height_pt + 2.0 * expected_margin_pt).round() as u32;
+        assert_eq!(
+            math_block.height_px,
+            expected_total_height_px,
+            "a display-math block's rendered height must equal its formula's own \
+             content height ({formula_content_height_pt:.3}pt) plus exactly \
+             2*INTER_BLOCK_MARGIN_EM*font_size_pt ({:.3}pt) of margin — the same \
+             derived margin every text block gets",
+            2.0 * expected_margin_pt
         );
     }
 }

@@ -54,6 +54,37 @@ const TEXT_BOTTOM_EDGE_EM: f64 = -0.3;
 /// exactly `TARGET_LINE_ADVANCE_EM`.
 const PAR_LEADING_EM: f64 = TARGET_LINE_ADVANCE_EM - TEXT_TOP_EDGE_EM + TEXT_BOTTOM_EDGE_EM;
 
+/// Inter-block vertical margin (D-LINE, uniform inter-block spacing): each
+/// semantic block (heading, paragraph, list, standalone display-math, ...)
+/// renders as its own `#set page(margin: 0pt, height: auto, ...)` Typst
+/// document, and the viewer/stream emitter then stacks those independently
+/// rendered block images with zero gap between them. Before this constant
+/// existed, that meant the visual gap BETWEEN two blocks was always exactly
+/// zero — regardless of `TARGET_LINE_ADVANCE_EM`/`PAR_LEADING_EM` — while the
+/// gap BETWEEN two lines *within* one block (a `#linebreak()` or wrapped
+/// line) got the full designed `PAR_LEADING_EM` line-box-to-line-box gap.
+/// That inconsistency, not weight/bold at all, is what a live-run bug
+/// report perceived as "bold breaks the line spacing": headings and
+/// bold-led lines are disproportionately followed by paragraph *blocks*
+/// (new Markdown block boundaries), so the report's true confound was block
+/// adjacency, not bold — see `prose.rs`'s
+/// `bold_spans_do_not_change_the_per_line_advance` test, which already
+/// disproved a bold-specific line-metric effect at the render layer.
+///
+/// The fix applies this margin, split evenly top and bottom, to every block
+/// page: stacking block A (bottom margin `INTER_BLOCK_MARGIN_EM`) directly
+/// against block B (top margin `INTER_BLOCK_MARGIN_EM`) at the viewer's
+/// existing zero gap yields a combined `2 * INTER_BLOCK_MARGIN_EM =
+/// PAR_LEADING_EM` gap between their ink — the same line-box-to-line-box
+/// gap Typst's own `par.leading` inserts between two lines in one block.
+/// Horizontal margin stays 0 (unrelated to vertical rhythm, and changing it
+/// would shift `content_width_pt` semantics for every consumer).
+///
+/// Derived from the existing line-metric constants above, not a new magic
+/// number, so a future retune of `TARGET_LINE_ADVANCE_EM`/edges
+/// automatically keeps inter-block and intra-block rhythm consistent.
+pub(crate) const INTER_BLOCK_MARGIN_EM: f64 = PAR_LEADING_EM / 2.0;
+
 /// A complete, self-contained Typst source document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypstSource {
@@ -104,14 +135,24 @@ pub(crate) fn compose_block_with_deadline(
         body.push_str("#text(\"\")");
     }
 
+    // `#set page(margin: ...)` is evaluated before `#set text(size: ...)` in
+    // the source below, so an em-unit margin there would resolve against
+    // Typst's default text size, not `options.font_size_pt`. Compute the
+    // margin as an absolute pt value in Rust instead, exactly like every
+    // other size in this module (`image.width_pt`, etc.), so it always
+    // tracks the block's actual font size unambiguously.
+    let block_margin_pt = INTER_BLOCK_MARGIN_EM * options.font_size_pt;
+
     Ok(TypstSource {
         source: format!(
-            "#set page(width: {width}pt, height: auto, margin: 0pt, fill: none)\n\
+            "#set page(width: {width}pt, height: auto, \
+             margin: (top: {block_margin}pt, bottom: {block_margin}pt, x: 0pt), fill: none)\n\
              #set text(font: (\"NewCM10\", \"M PLUS 2\"), size: {font_size}pt, \
              fill: rgb(\"{color}\"), top-edge: {top_edge}em, bottom-edge: {bottom_edge}em)\n\
              #set par(leading: {leading}em)\n\
              {body}\n",
             width = options.content_width_pt,
+            block_margin = block_margin_pt,
             font_size = options.font_size_pt,
             color = DARK_THEME_TEXT_COLOR,
             top_edge = TEXT_TOP_EDGE_EM,
