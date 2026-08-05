@@ -42,7 +42,9 @@ Test id scheme: `AT-3-<group><nn>` — groups: 0 feasibility, 1 fidelity, 2 engi
 - **AT-3-103** Invalid LaTeX in one formula fails closed per formula: the block
   renders with a bounded error badge for that formula, sibling formulas and all
   other blocks render normally, and the error record carries only allowlisted
-  fields.
+  fields. For a standalone display-math block, which has no sibling content of
+  its own, the whole block renders as the badge; deadline and limit failures
+  keep their run-level granularity.
 - **AT-3-104** Transparency + dpr: output PNGs have a transparent background at
   dpr 1–4; glyph raster density matches the requested dpr (probe: stroke width in
   device pixels scales with dpr).
