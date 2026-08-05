@@ -1,0 +1,6 @@
+{"type":"user","message":{"content":[{"type":"text","text":"Explain linear regression."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"# Linear regression\n\nThe model is $y = X\\beta + \\epsilon$.\n\n"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Assuming i.i.d. noise $\\epsilon_i \\sim \\mathcal{N}(0, \\sigma^2)$, the least-squares estimator is\n\n$$\\hat{\\beta} = (X^\\top X)^{-1} X^\\top y.$$\n\n"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Under the Gauss–Markov assumptions, $\\hat{\\beta}$ is BLUE.\n\n"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"Show a small numeric example."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"For $X = \\begin{bmatrix}1 & 1\\\\ 1 & 2\\end{bmatrix}$ and $y = \\begin{bmatrix}1\\\\ 2\\end{bmatrix}$,\n\n$$\\hat{\\beta} = \\begin{bmatrix}0\\\\ 1\\end{bmatrix}.$$\n\n"}]}}

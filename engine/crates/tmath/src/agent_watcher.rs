@@ -22,7 +22,7 @@ use tmath_core::scroll_driver::is_exit_signal;
 
 use crate::render::renderer_worker_path;
 use crate::transcript_adapter::{
-    newest_transcript_file, project_transcript_dir, TranscriptAdapter, TranscriptDelta,
+    project_transcript_dir, resolve_transcript_file, TranscriptAdapter, TranscriptDelta,
 };
 
 /// Inactivity (ms) an answer must hold before it is emitted.
@@ -36,6 +36,11 @@ const DEFAULT_POLL_MS: u64 = 250;
 const DEFAULT_HISTORY: u32 = 500;
 /// Default viewer split width percent.
 const DEFAULT_PERCENT: u32 = 35;
+/// Re-check which Claude Code transcript file is live every N poll ticks.
+const TRANSCRIPT_RERESOLVE_POLLS: u64 = 4;
+/// Fall back to tmux capture when the transcript adapter stays idle this
+/// many poll ticks without ever sending a document to the viewer.
+const TRANSCRIPT_IDLE_FALLBACK_POLLS: u64 = 40;
 /// Safety cap on a single captured snapshot.
 const SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// Separator inserted between two accumulated answers (and between a
@@ -111,7 +116,11 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     // existing tmux capture-pane path below" — the two never run at once,
     // and there is no separate error state to recover from: `None` itself
     // is the fallback.
-    let transcript = open_transcript_for(&source);
+    let watcher_started = std::time::SystemTime::now();
+    let transcript_project_dir = transcript_project_dir_for(&source);
+    let transcript = transcript_project_dir
+        .as_deref()
+        .and_then(|dir| open_transcript_in(dir, watcher_started));
     eprintln!(
         "tmath agent: source={}",
         if transcript.is_some() {
@@ -121,6 +130,9 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         }
     );
     let mut transcript = transcript;
+    let mut transcript_idle_polls = 0u64;
+    let mut transcript_sent_any = false;
+    let mut poll_tick = 0u64;
     // AT-3-604: one history model, shared across whichever source is
     // active this session — the transcript path grows it incrementally
     // (`Append`/`AnswerBoundary`), the capture path replaces `current`
@@ -154,8 +166,14 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
             }
             match adapter.poll() {
                 Ok(deltas) => {
+                    if !deltas.is_empty() {
+                        transcript_idle_polls = 0;
+                    } else {
+                        transcript_idle_polls += 1;
+                    }
                     for delta in deltas {
                         emit_transcript_delta(&mut peer, &mut history, delta);
+                        transcript_sent_any = true;
                     }
                 }
                 Err(_) => {
@@ -168,8 +186,25 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
                 }
             }
             if transcript.is_some() {
-                std::thread::sleep(Duration::from_millis(parsed.poll_ms));
-                continue;
+                poll_tick += 1;
+                if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) {
+                    if let Some(dir) = transcript_project_dir.as_deref() {
+                        try_reresolve_transcript(
+                            dir,
+                            watcher_started,
+                            transcript.as_mut().unwrap(),
+                        );
+                    }
+                }
+                if !transcript_sent_any
+                    && transcript_idle_polls >= TRANSCRIPT_IDLE_FALLBACK_POLLS
+                {
+                    eprintln!("tmath agent: source=capture (transcript_idle)");
+                    transcript = None;
+                } else {
+                    std::thread::sleep(Duration::from_millis(parsed.poll_ms));
+                    continue;
+                }
             }
         }
 
@@ -321,6 +356,18 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         }
 
         std::thread::sleep(Duration::from_millis(parsed.poll_ms));
+        poll_tick += 1;
+        if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) {
+            if transcript.is_none() {
+                if let Some(dir) = transcript_project_dir.as_deref() {
+                    transcript = open_transcript_in(dir, watcher_started);
+                    if transcript.is_some() {
+                        eprintln!("tmath agent: source=transcript");
+                        transcript_idle_polls = 0;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -524,25 +571,47 @@ fn stdin_has_input() -> bool {
         .unwrap_or(false)
 }
 
-/// Writes a document message to the viewer, tolerating a not-yet-connected or
-/// disconnected viewer.
-/// Locates and opens a Claude Code transcript for the watched pane's current
-/// working directory, or `None` when there is no usable transcript — the
-/// caller's fallback is simply "keep using the capture adapter", not a
-/// retry loop here. Resolution: `tmux display-message`'s
-/// `#{pane_current_path}` for the pane's cwd, `$HOME` joined with the
-/// Claude Code project-slug rule (D5) for the transcript directory, then
-/// the most recently modified `*.jsonl` file in it.
-fn open_transcript_for(source: &PaneId) -> Option<TranscriptAdapter> {
+/// Resolves the Claude Code transcript directory for the watched pane's
+/// current working directory, or `None` when unavailable.
+fn transcript_project_dir_for(source: &PaneId) -> Option<std::path::PathBuf> {
     let home = env::var_os("HOME")?;
     let cwd = tmux_output(&pane_current_path(source)).ok()?;
     let cwd = cwd.trim();
     if cwd.is_empty() {
         return None;
     }
-    let dir = project_transcript_dir(std::path::Path::new(&home), std::path::Path::new(cwd))?;
-    let file = newest_transcript_file(&dir)?;
-    TranscriptAdapter::open(&file).ok()
+    project_transcript_dir(std::path::Path::new(&home), std::path::Path::new(cwd))
+}
+
+/// Locates and opens a Claude Code transcript for the watched pane, or
+/// `None` when there is no live session file yet — the caller's fallback is
+/// simply "keep using the capture adapter", not a retry loop here.
+fn open_transcript_in(
+    dir: &std::path::Path,
+    watcher_started: std::time::SystemTime,
+) -> Option<TranscriptAdapter> {
+    let (file, mode) = resolve_transcript_file(dir, watcher_started)?;
+    TranscriptAdapter::open(&file, mode).ok()
+}
+
+/// Switches to a newer live transcript file when one appears after watcher
+/// startup — for example when auto-watch opened a stale JSONL at EOF while
+/// Claude Code created a fresh session file for the current run.
+fn try_reresolve_transcript(
+    dir: &std::path::Path,
+    watcher_started: std::time::SystemTime,
+    adapter: &mut TranscriptAdapter,
+) {
+    let Some((file, mode)) = resolve_transcript_file(dir, watcher_started) else {
+        return;
+    };
+    if file == adapter.path() {
+        return;
+    }
+    if let Ok(reopened) = TranscriptAdapter::open(&file, mode) {
+        *adapter = reopened;
+        eprintln!("tmath agent: transcript_reresolved");
+    }
 }
 
 /// AT-3-604's accumulation model: answers pile up like a chat log rather
@@ -822,6 +891,7 @@ fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcript_adapter::{TranscriptAdapter, TranscriptOpenMode};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -1446,5 +1516,87 @@ mod tests {
             history.document(),
             "First answer.\n\nUnrelated second answer."
         );
+    }
+
+    /// AT-3-603 wire-level: a synthesized streaming JSONL fixture replayed
+    /// through the transcript adapter and watcher emission path grows the
+    /// decoded document incrementally with ReplaceTail frames after the
+    /// initial Document resync.
+    #[test]
+    fn streaming_transcript_fixture_replay_emits_document_then_replace_tails() {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write as _;
+
+        fn append_line(path: &std::path::Path, line: &str) {
+            let mut file = OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(file, "{line}").unwrap();
+        }
+
+        let lines: Vec<String> = include_str!("../../../../tests/fixtures/agents/streaming-transcript.jsonl")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+
+        let path = std::env::temp_dir().join(format!(
+            "tmath-watcher-replay-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, "").unwrap();
+
+        let (mut tx, mut rx) = UnixStream::pair().unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut peer = Some(tx.try_clone().unwrap());
+        let mut history = AnswerHistory::new();
+        let mut adapter =
+            TranscriptAdapter::open(&path, TranscriptOpenMode::FromStart).unwrap();
+
+        for line in &lines {
+            append_line(&path, line);
+            for delta in adapter.poll().unwrap() {
+                emit_transcript_delta(&mut peer, &mut history, delta);
+            }
+        }
+        tx.flush().unwrap();
+        drop(tx);
+        drop(peer);
+
+        let mut bytes = Vec::new();
+        rx.read_to_end(&mut bytes).unwrap();
+        let mut decoder = tmath_core::agent::Decoder::new();
+        decoder.push(&bytes);
+        let mut messages = Vec::new();
+        while let Some(message) = decoder.next_message() {
+            messages.push(message.unwrap());
+        }
+        let mut state = tmath_core::agent::DeltaState::new(usize::MAX);
+        for message in &messages {
+            state.apply(message).unwrap();
+        }
+
+        assert!(
+            matches!(messages.first(), Some(tmath_core::agent::Message::Document { .. })),
+            "first frame must be a Document resync: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .skip(1)
+                .any(|message| matches!(message, tmath_core::agent::Message::ReplaceTail { .. })),
+            "streaming growth must use ReplaceTail after the first Document: {messages:?}"
+        );
+        assert!(
+            state.document().contains("Linear regression"),
+            "reassembled document must contain fixture prose"
+        );
+        assert!(
+            state.document().contains("Gauss–Markov"),
+            "reassembled document must contain later streamed paragraphs"
+        );
+        let _ = fs::remove_file(path);
     }
 }
