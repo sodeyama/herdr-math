@@ -293,9 +293,9 @@ only inside directories the user has explicitly allowlisted.
         │    no  → exec the real command untouched
         │    yes → in tmux: lock pane id, start `tmath agent --source-pane`
         │          in background, then exec the real command in place
-        │       → outside tmux, interactive TTY: build an explicit 2-pane
-        │          tmux session (agent pane + `tmath agent --source-pane`
-        │          pane) and attach
+        │       → outside tmux, interactive TTY: build a single-pane tmux
+        │          session running the command, start `tmath agent
+        │          --source-pane` in the background, then attach
         │       → outside tmux, non-interactive (pipes/redirects): exec the
         │          real command untouched, tmath never runs
 ```
@@ -317,7 +317,10 @@ Key behaviors:
   agent` itself stays free for advanced manual multi-watcher use.
 - Outside tmux, a plain `tmux new-session <cmd>` never sources shell rc files,
   so the wrapper cannot re-fire inside the new session; the wrapper instead
-  builds the two panes explicitly and starts the watcher pane directly.
+  creates the session itself and starts the watcher as a background process
+  of the launching shell (the same shape as the in-tmux path), so the only
+  extra pane the user sees is the watcher's own viewer split, never a
+  dedicated watcher pane.
 - Non-interactive invocations (stdin/stdout not both a TTY) always pass
   through untouched, so scripted or piped use of these commands never
   changes behavior.
