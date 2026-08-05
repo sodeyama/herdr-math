@@ -63,33 +63,25 @@ __tmath_start_watcher_for_pane() {
   disown 2>/dev/null || true
 }
 
-# Outside tmux: build an explicit two-pane session (agent pane + watcher
-# pane) rather than relying on the wrapper re-firing inside the new session —
-# a plain `tmux new-session <cmd>` runs the command directly, never sources
-# shell rc files, so the wrapper would not fire there.
+# Outside tmux: build a single-pane session running the wrapped command and
+# start the watcher as a background process of this shell, the same shape as
+# the in-tmux path. Building the session ourselves is required because a
+# plain `tmux new-session <cmd>` runs the command directly, never sources
+# shell rc files, so the wrapper would not fire there. Keeping the watcher
+# out of any pane leaves the session to the wrapped command plus the
+# watcher's own viewer split (no watcher-log pane), and transport env
+# (TMATH_TMUX_TRANSPORT, TMATH_DPR, TMATH_DEBUG_LOG) reaches the watcher by
+# ordinary inheritance instead of a constructed `env` prefix.
 __tmath_start_in_new_tmux_session() {
   local cmd="$1"; shift
   local session="tmath-$$"
   local quoted
   quoted="$(__tmath_shell_quote_args "$cmd" "$@")"
   tmux new-session -d -s "$session" "$quoted"
-  local agent_pane env_prefix
+  local agent_pane
   agent_pane="$(tmux list-panes -t "$session" -F '#{pane_id}' | head -1)"
-  env_prefix="$(__tmath_env_prefix)"
-  tmux split-window -h -p 35 -t "$session" \
-    "${env_prefix}tmath agent --source-pane $agent_pane"
+  __tmath_start_watcher_for_pane "$agent_pane"
   tmux attach -t "$session"
-}
-
-__tmath_env_prefix() {
-  local pairs="" name value
-  for name in TMATH_TMUX_TRANSPORT TMATH_DPR TMATH_DEBUG_LOG; do
-    value="$(printenv "$name" 2>/dev/null || true)"
-    [ -n "$value" ] || continue
-    pairs="$pairs $name=$(printf '%q' "$value")"
-  done
-  [ -n "$pairs" ] || return 0
-  printf 'env%s ' "$pairs"
 }
 
 __tmath_shell_quote_args() {
