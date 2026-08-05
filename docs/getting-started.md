@@ -1,194 +1,220 @@
 # Getting Started
 
-Terminal Math 0.2.0 is under development. This document describes the planned standalone
-workflow. Nothing below is a release claim until the release-gate tasks complete and real
-Ghostty evidence is recorded.
+This guide covers installing Terminal Math 0.3.0, rendering documents, and running the
+live typeset viewer for coding agents. The verified platform is macOS with Ghostty and
+tmux; see [Compatibility](compatibility.md) for the full matrix.
 
 ## Install (one command)
 
-From a checkout, or anywhere (the script clones the repository on first use):
+From anywhere (the script clones the repository on first use), or from a checkout:
 
 ```sh
-bash scripts/install.sh
-# equivalent: npm run install:local
-# one-liner, like terminal-browser:
-# curl -fsSL https://raw.githubusercontent.com/sodeyama/terminal-math/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sodeyama/terminal-math/main/scripts/install.sh | bash
+# from a checkout: bash scripts/install.sh   (equivalent: npm run install:local)
 ```
 
-The installer builds and places everything under your user data directory and
-puts a `tmath` launcher on `~/.local/bin`:
+The installer builds the release binary and places everything under your user data
+directory:
 
 - `tmath` binary: `~/.local/share/tmath/app/bin/tmath`
-- renderer (Node + local Chromium): `~/.local/share/tmath/app/renderer`
-- the `tmath` agent skill linked into Claude Code, Codex, Cursor, opencode,
-  and pi skills directories.
+- launcher script on `PATH`: `~/.local/bin/tmath` (written atomically at a fresh inode)
+- optional Node renderer for the deprecated `--engine node` path:
+  `~/.local/share/tmath/app/renderer`
+- the `tmath` agent skill linked into the Claude Code, Codex, Cursor, opencode, and pi
+  skill directories
+- an opt-in shell integration in `~/.zshrc`/`~/.bashrc` (see
+  [Auto-watch](#auto-watch-opt-in-per-directory); it does nothing until you allowlist a
+  directory)
 
-After install the binary locates its renderer automatically — no
-`TMATH_RENDER_WORKER` setup is needed. `tmath diagnose` verifies everything
-(`--prefix <dir>` / `TMATH_INSTALL_ROOT` change the target; `TMATH_SKIP_TESTS=1`
-skips the post-install check). Add `~/.local/bin` to `PATH` if the installer
-detects it is missing.
+The installer finishes by running `tmath diagnose`. Add `~/.local/bin` to `PATH` if the
+installer says it is missing. Useful installer knobs: `--prefix <dir>` /
+`TMATH_INSTALL_ROOT` change the target, `TMATH_SKIP_TESTS=1` skips the post-install
+check, `TMATH_SKIP_SHELL_INTEGRATION=1` skips the rc-file edit entirely.
+
+To update later, re-run the same install command. Never copy a freshly built binary over
+`~/.local/bin/tmath` by hand — see [Diagnose](#diagnose) for why that breaks on macOS.
 
 ## Requirements
 
 - macOS arm64 (the primary target)
-- A Rust toolchain for the terminal frontend
-- Node.js 22 or later and npm for the render subprocess
-- A Kitty-graphics-capable terminal: Ghostty 1.3.1 (verified target), kitty or WezTerm (P1)
+- A Rust toolchain (the installer builds from source)
+- A Kitty-graphics-capable terminal: Ghostty (verified), kitty or WezTerm (expected,
+  unverified)
+- For the viewer inside tmux: tmux 3.3+ with `allow-passthrough on` (the default
+  graphics route; `tmath diagnose` checks it)
+- Node.js 22+ and npm — **optional**, only for the deprecated `--engine node` render
+  path
 
-Terminal Math does not call Ghostty APIs and does not require Glowing Bear, a plugin runtime, or
-a browser window.
-
-## Build
-
-Clone the repository and enter the checkout:
-
-```sh
-npm ci
-npm run audit:browser
-npm run build
-cargo build
-```
-
-`npm ci` installs the locked dependencies and the local Chromium headless shell; `npm run
-install:browser` repairs only the locked browser artifacts, and `npm run audit:browser` verifies
-them. `cargo build` produces the `tmath` binary in `target/debug/tmath`.
+Rendering is fully local and in-process: RaTeX for math, Typst as a library for the
+Markdown subset, fonts embedded in the binary. No network access, no browser, no TeX
+installation.
 
 ## Render a document
 
 ```sh
 # Render a Markdown/LaTeX file and place it in the terminal
-./target/debug/tmath render ./notes.md
+tmath render ./notes.md
 
 # Read the document from stdin
-cat notes.md | ./target/debug/tmath render -
+cat notes.md | tmath render -
 
 # Composition options
-./target/debug/tmath render --content-width 800 --font-size 18 ./notes.md
+tmath render --content-width 800 --font-size 18 ./notes.md
 ```
 
-Terminal Math renders `$...$` and `$$...$$` equations and the strict allowlisted Markdown subset
-(headings, emphasis, lists, quotes, tables, code blocks, inert links). The image is placed into
-the main terminal buffer so it scrolls with the shell scrollback.
+Terminal Math renders `$...$` and `$$...$$` equations (plus `\(...\)` / `\[...\]`) and
+the strict allowlisted Markdown subset (headings, emphasis, lists, quotes, tables, code
+blocks, inert links). Images are transparent PNGs placed into the main terminal buffer,
+so they scroll with the shell scrollback like ordinary output.
 
-- With a file argument in a terminal, the document stays interactive: mouse wheel and keyboard
-  scroll it, and `q` or Ctrl-C returns to the shell.
-- With a piped document (`tmath render -`), the image is placed and the command returns right
-  away, since the pipeline cannot receive key input; scroll the image with the normal terminal
-  scrollback (or use `tmath agent` for an interactive viewer pane).
+- With a file argument in a terminal, the document stays interactive: mouse wheel and
+  keyboard scroll it, and `q` or Ctrl-C returns to the shell.
+- With a piped document (`tmath render -`), the image is placed and the command returns
+  right away; scroll with the normal terminal scrollback.
+- The deprecated Node/KaTeX engine remains available as `tmath render --engine node`
+  (requires the optional renderer install and Node.js).
 
-If the built render subprocess is located elsewhere, set `TMATH_RENDER_WORKER` to its path.
+## Show a coding agent's answers in a viewer pane
 
-## Show a coding agent's answers in a viewer pane (experimental)
-
-`tmath agent` watches a tmux pane running a coding agent (Claude Code, Codex,
-opencode, Cursor, pi, and similar) and shows each finished answer as rendered
-Markdown + math in a right-hand viewer pane. This is a P1/experimental
-feature; the `0.2.0` release does not depend on it.
+`tmath agent` watches a tmux pane running a coding agent (Claude Code, Codex, opencode,
+Cursor Agent, pi, and similar) and shows each finished answer as rendered Markdown +
+math in a separate viewer pane. For Claude Code it reads the session transcript
+directly, so answers stream into the viewer as they are written; for other agents it
+falls back to watching the pane content.
 
 ```sh
-# Optional, only when forcing TMATH_TMUX_TRANSPORT=passthrough:
-tmux set-option -t <window> -w allow-passthrough on
+# One-time tmux setup (usually already on; `tmath diagnose` verifies it):
+tmux set-option -g allow-passthrough on
 
-# Pane 1: run your coding agent.
-# Pane 2: watch pane 1 (use its pane id, e.g. %0):
+# Pane A: run your coding agent.
+# Any other pane: watch pane A by its pane id (tmux display-message -p '#{pane_id}'):
 tmath agent --source-pane %0
 ```
 
-The watcher creates the viewer pane, prints `tmath agent: watching ...` once,
-and then logs only bounded status to stderr. It passes the renderer worker
-path to the viewer automatically. `q`/Ctrl-C stops the watcher. Inside the
-viewer pane, the wheel and arrow keys scroll the current answer and `q`/
-Ctrl-C closes it.
+The watcher creates the viewer pane, prints `tmath agent: watching %A → %B` once, and
+then logs only bounded status lines. `q`/Ctrl-C in the watcher stops it, and the viewer
+pane closes with it.
 
-Inside tmux, query replies are not reliable, so the viewer uses a
-graphics-only route to the attached client's tty by default. Cursor movement,
-terminal modes, and Unicode placeholder cells continue through tmux normally,
-which preserves pane clipping and redraw. This route is verified with Ghostty
-1.3.1 and cmux 0.64.12 on tmux 3.5a. Set
-`TMATH_TMUX_TRANSPORT=passthrough` to force the standards-based route; each
-Kitty APC is independently ESC-doubled and requires tmux 3.3+ with
-`allow-passthrough on`. Unknown outer terminals fail closed before placeholder
-output. Outside tmux, `tmath render` probes normally.
+### Inside the viewer
+
+- **Follow mode** (default): the view stays pinned to the newest answer as content
+  streams in. The status bar's last word reads `following`.
+- **Scroll back**: mouse wheel (with momentum), arrow keys, `PageUp`/`PageDown`,
+  `Home`/`End`, or `j`/`k`/`g`/`G`. The first wheel notch away from the bottom
+  disengages follow — the status bar flips to `scrolled` and a transient scrollbar
+  appears in the last column (it auto-hides about a second after motion stops). New
+  answers arriving while you are scrolled back do **not** move your view.
+- **Re-engage follow**: press `End` or `F`, or simply scroll back down to the bottom.
+- **Quit**: `q` or Ctrl-C in the viewer pane.
+- The status bar (row 1) shows the block count, font size, and follow state.
+
+### Watcher options
+
+- `--percent <n>` — viewer pane width as a percentage of the window (default 40).
+- `--wait-ms <ms>` (default 600) — how long text must settle before an answer is
+  emitted; lower for snappier updates, raise if answers arrive in fragments.
+- `--poll-ms <ms>` — pane polling interval.
+- `--history <lines>` (default 500) — scrollback captured per answer, for answers
+  taller than one screen.
+
+### Graphics transport inside tmux
+
+Inside tmux, the viewer sends image data through **tmux passthrough** by default: each
+Kitty graphics command is DCS-wrapped and flows through tmux's own output queue, so it
+is serialized against everything else tmux writes. This requires
+`allow-passthrough on` (tmux 3.3+); when the option is off, the viewer refuses with an
+actionable message instead of silently showing nothing.
+
+`TMATH_TMUX_TRANSPORT=client-tty` selects the alternative route that writes graphics
+directly to the attached client's tty. It exists for terminals whose passthrough relay
+is broken, but its writes are not serialized against tmux's own output — under heavy
+concurrent streaming a write can tear an escape sequence and corrupt the display — so
+only set it when passthrough does not work in your terminal.
+
+The outer-terminal gate fails closed: with no attached client, or an outer terminal
+that does not advertise a Kitty-capable termname, the viewer refuses (the message names
+the reason) rather than emitting graphics that would appear as garbage. Setting
+`TMATH_TMUX_TRANSPORT` explicitly overrides the gate — that is your assertion that the
+outer terminal renders Kitty graphics.
 
 Per-agent notes (Claude Code, Codex, opencode, Cursor Agent, pi): see
 [Coding agents](coding-agents.md).
 
-### Auto-watch (opt-in, per directory)
+## Auto-watch (opt-in, per directory)
 
-Starting `tmath agent` by hand still requires finding the source pane id.
-`scripts/install.sh` also installs an opt-in shell integration that wraps
-`claude`, `codex`, `opencode`, `cursor-agent`, and `pi` and starts the watcher
-automatically — but only inside directories you explicitly allowlist. Right
-after install, the allowlist is empty, so nothing changes until you opt in:
+Starting `tmath agent` by hand requires finding the source pane id. The installer also
+installs an opt-in shell integration that wraps `claude`, `codex`, `opencode`,
+`cursor-agent`, and `pi` and starts the watcher automatically — but only inside
+directories you explicitly allowlist. Right after install the allowlist is empty, so
+nothing changes until you opt in:
 
 ```sh
-# Allow auto-watch for the current directory (and its subdirectories):
-tmath agent-enable
-
-# Remove it again:
-tmath agent-disable
-
-# Check whether the current directory is allowlisted (silent, exit code only):
-tmath agent-allowed
+tmath agent-enable      # allow auto-watch for the current directory (and subdirs)
+tmath agent-disable     # remove it again
+tmath agent-allowed     # check (silent; exit code only)
 ```
 
-Once a directory is allowlisted, running `claude` (or another wrapped
-command) there starts a `tmath agent` watcher in the background for that
-pane — inside tmux, in the current pane; outside tmux with an interactive
-terminal, in a new two-pane tmux session (agent pane + watcher pane) that
-gets attached automatically. Non-interactive invocations (pipes, redirects)
-always pass through untouched.
-
-Set `TMATH_SKIP_SHELL_INTEGRATION=1` before running the installer to skip the
-`~/.zshrc`/`~/.bashrc` edit entirely.
+Once a directory is allowlisted, running `claude` (or another wrapped command) there
+starts a watcher in the background for that pane — inside tmux, in the current pane;
+outside tmux with an interactive terminal, in a new two-pane tmux session (agent pane +
+watcher pane) that gets attached automatically. Non-interactive invocations (pipes,
+redirects) always pass through untouched, and a broken `tmath` on `PATH` produces one
+warning line (`agent-allowed failed (exit N)`) and passes through rather than blocking
+your agent.
 
 ## Diagnose
 
 ```sh
-tmath diagnose        # installed binary
-./target/debug/tmath diagnose   # from a build checkout
+tmath diagnose
 ```
 
-Diagnostics report only allowlisted versions, capabilities, statuses, counts, and stable error
-codes. They do not print document text, equations, environment contents, or local paths.
+Diagnostics report only allowlisted versions, capabilities, statuses, counts, and
+stable error codes — never document text, environment contents, or local paths. Inside
+tmux it also prints the graphics-gate inputs: attached client count, the outer
+terminal's termname, the `allow-passthrough` value, the transport env, and the selected
+route (or the full refusal reason).
 
 Common results:
 
-- `renderer subprocess: not found`: the binary could not find its renderer; set
-  `TMATH_RENDER_WORKER` or re-run `scripts/install.sh`.
-- `node: missing`: install Node.js 22 or later.
-- `stdout: not a terminal`: image transport needs a real terminal (piping output only prints a
-  text summary).
-- `kitty graphics: unsupported`: the attached terminal does not support the Kitty graphics
-  protocol.
-- `path launcher: broken (exit <code>)`: the `tmath` found on `PATH` cannot run. On macOS,
-  `exit 137` (SIGKILL with no output) usually means the file was overwritten in place — for
-  example by copying a freshly built binary over `~/.local/bin/tmath` — which invalidates the
-  kernel's code-signature cache for that inode. Never `cp` a binary over the launcher; re-run
-  `scripts/install.sh`, which replaces it atomically at a fresh inode.
-- `path launcher: version skew (...)`: the `tmath` on `PATH` is a different version than the
-  binary you are running; re-run `scripts/install.sh` to update the install.
+- `path launcher: broken (exit <code>)`: the `tmath` found on `PATH` cannot run. On
+  macOS, `exit 137` (SIGKILL with no output) usually means the file was overwritten in
+  place — for example by copying a freshly built binary over `~/.local/bin/tmath` —
+  which poisons the kernel's code-signature cache for that inode. Never `cp` a binary
+  over the launcher; re-run `scripts/install.sh`, which replaces it atomically at a
+  fresh inode.
+- `path launcher: version skew (...)`: the `tmath` on `PATH` is a different version
+  than the binary you are running; re-run `scripts/install.sh`.
+- `tmux graphics route: unavailable (...)`: the outer-terminal gate refused; the
+  message names the cause (no attached client, unverified termname, or
+  `allow-passthrough` off) and the override.
+- `stdout: not a terminal`: image transport needs a real terminal (piping output only
+  prints a text summary).
+- `kitty graphics: unsupported`: the attached terminal does not support the Kitty
+  graphics protocol.
+- `renderer subprocess: unavailable`: only relevant for `--engine node`; the native
+  default does not need it.
 
-## Help and version
+## Build from a checkout (development)
 
 ```sh
-./target/debug/tmath --help
-./target/debug/tmath --version
+cargo build            # tmath binary in target/debug/tmath
+cargo test --workspace
+npm ci && npm run build   # deprecated node engine + TS tooling
 ```
 
 ## Known limits
 
-- Only `$...$`, `$$...$$`, `\(...\)`, and `\[...\]` math delimiters are parsed, and only the
-  allowlisted Markdown subset is rendered by a local parser. Raw HTML, images, scripts, custom
-  CSS, and color directives are not supported.
-- Formulas in code spans, fenced code, prices, shell variables, and ambiguous delimiter runs are
-  rejected.
-- Strict formula count, source length, image dimension, byte, placement, and time limits apply.
-- Earlier placements remain on invalid input, limits, timeout, or graphics failure.
+- Only `$...$`, `$$...$$`, `\(...\)`, and `\[...\]` math delimiters are parsed, and only
+  the allowlisted Markdown subset is rendered by a local parser. Raw HTML, images,
+  scripts, custom CSS, and color directives are not supported.
+- Formulas in code spans, fenced code, prices, shell variables, and ambiguous delimiter
+  runs are rejected.
+- Strict formula count, source length, image dimension, byte, placement, and time
+  limits apply; on any failure, earlier placements remain intact.
 - Document text and LaTeX source are never written to durable state or logs.
-- macOS arm64 with Ghostty is the only currently verified terminal combination; kitty and WezTerm
-  are P1; Linux and Windows are not yet supported.
+- macOS arm64 with Ghostty is the only verified terminal combination; kitty and WezTerm
+  are expected but unverified; Linux and Windows are not yet supported.
 
 See [Compatibility](compatibility.md), [Architecture](architecture.md), and the official
-[Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) for more detail.
+[Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) for more
+detail.

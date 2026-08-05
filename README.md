@@ -1,79 +1,85 @@
 # terminal-math
 
-Render LaTeX and Markdown as scrollable images in your terminal.
+Render Markdown and LaTeX as scrollable terminal images.
 
-terminal-math is a standalone terminal renderer (no plugin runtime required). It renders
-`$...$` and `$$...$$` equations and a strict allowlisted Markdown subset to transparent images,
-transmits them into the terminal with the Kitty graphics protocol, and anchors them to terminal
-cells so they scroll with the shell's scrollback. Mouse wheel and keyboard both scroll the
-rendered document.
+Terminal Math (`tmath`) is a standalone terminal renderer — no plugin runtime, no browser
+window, no daemon. It renders `$...$` and `$$...$$` equations plus a strict allowlisted
+Markdown subset to transparent images, transmits them with the Kitty graphics protocol, and
+anchors them to terminal cells so they scroll with the shell scrollback. Its second face is a
+**live typeset viewer for coding agents**: point `tmath agent` at a tmux pane running Claude
+Code, Codex, opencode, Cursor Agent, or pi, and every finished answer appears typeset — math,
+tables, Japanese text — in a side pane that follows the conversation.
 
-It runs in any Kitty-graphics-capable terminal such as Ghostty, kitty, or WezTerm.
-
-> **Status: in development.** This repository is transitioning from the Herdr Math plugin
-> (v0.1.0) to the standalone terminal-math renderer. The refactor plan is in
-> [specs/terminal-math-v2/plans/main.md](specs/terminal-math-v2/plans/main.md). Core
-> implementation is complete through Phase 5; release-gate evidence (real Ghostty run,
-> install, and tagged release) is still outstanding. A P1/experimental agent
-> integration (`tmath agent`, tmux viewer) is in Phase 8; see
-> [getting-started.md](docs/getting-started.md).
+Current release: **v0.3.0** ([release notes](https://github.com/sodeyama/terminal-math/releases/tag/v0.3.0)).
+Verified on macOS with Ghostty + tmux; kitty and WezTerm are expected to work (they speak the
+same protocol) but are not yet part of the verified matrix.
 
 ## Install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sodeyama/terminal-math/main/scripts/install.sh | bash
-# from a checkout: bash scripts/install.sh  (or npm run install:local)
+# from a checkout: bash scripts/install.sh
 ```
 
-Installs the `tmath` binary, its local renderer, and the coding-agent skill
-under `~/.local/share/tmath` with a launcher on `~/.local/bin`. No
-`TMATH_RENDER_WORKER` setup is needed.
+The installer builds and places everything under `~/.local/share/tmath`, puts a `tmath`
+launcher on `~/.local/bin`, and links the coding-agent skill into the skill directories of
+supported agents. Rendering runs fully in-process (embedded fonts, no network); Node.js is
+only needed for the deprecated `--engine node` path. Run `tmath diagnose` to verify the
+install. Details and troubleshooting: [Getting started](docs/getting-started.md).
 
-## Planned use
+## Usage
 
 ```sh
-# Render a Markdown/LaTeX document and anchor the images in the terminal
-terminal-math render ./notes.md
-terminal-math render -          # read from stdin
+# Render a Markdown/LaTeX document as scrollable images in the terminal
+tmath render ./notes.md
+cat notes.md | tmath render -
 
-# Show a coding agent's finished answers (with rendered math) in a viewer pane
-tmath agent --source-pane %0    # inside tmux, watching pane %0 (experimental)
+# Watch a coding agent's pane and show each finished answer typeset (inside tmux)
+tmath agent --source-pane %0
 
-# Or opt a directory into starting that watcher automatically for claude/codex/
-# opencode/cursor-agent/pi (installed by scripts/install.sh, disabled by default)
+# Or allowlist a directory once, and the watcher auto-starts whenever you run
+# claude / codex / opencode / cursor-agent / pi there
 tmath agent-enable
 ```
 
+In the viewer pane: the mouse wheel and arrow keys scroll with momentum, `End` or `F`
+re-engages follow mode (pin to the newest answer), a transient scrollbar shows your position
+while scrolled back, and `q` or Ctrl-C closes the viewer. The status bar shows block count,
+font size, and whether the viewer is `following` or `scrolled`.
+
+Full walkthroughs, options, and per-agent notes: [Getting started](docs/getting-started.md)
+and [Coding agents](docs/coding-agents.md).
+
 ## Product boundaries
 
-- Renders `$...$` and `$$...$$` math plus a strict, allowlisted Markdown subset. No raw HTML,
-  remote resources, user CSS/color directives, or scripts.
-- Renders locally with KaTeX. It never executes TeX binaries, shell input, user JavaScript, or
-  remote resources.
+- Renders `$...$` / `$$...$$` (and `\(...\)` / `\[...\]`) math plus a strict, allowlisted
+  Markdown subset (headings, emphasis, lists, quotes, tables, code blocks, inert links). No
+  raw HTML, remote resources, user CSS/color directives, or scripts.
+- Renders locally and in-process (RaTeX for math, Typst as a library for prose, embedded
+  fonts). It never executes TeX binaries, shell input, user JavaScript, or remote resources.
 - Never uploads document content, equations, images, logs, or telemetry to a network service.
-- Images are transparent PNGs placed into the main terminal buffer so they scroll with the
-  shell. No viewer pane, no plugin runtime required.
+  Logs contain only event names, counts, sizes, and stable error codes.
+- Bounded, enforced limits on formula count, input size, image dimensions, payload bytes, and
+  render time; invalid input fails closed and earlier placements stay intact.
 
 ## Documentation
 
+- [Getting started, install, and troubleshooting](docs/getting-started.md)
+- [Coding agents (Claude Code, Codex, opencode, Cursor, pi)](docs/coding-agents.md)
 - [Concept and product boundaries](docs/concept.md)
 - [Architecture](docs/architecture.md)
 - [Compatibility](docs/compatibility.md)
-- [Coding agents (Claude Code, Codex, opencode, Cursor, pi)](docs/coding-agents.md)
-- [Getting started and troubleshooting](docs/getting-started.md)
 - [Release checklist](docs/RELEASE.md)
 - [Post-V2 backlog](docs/backlog.md)
-- [Privacy](PRIVACY.md)
-- [Security](SECURITY.md)
-- [Support](SUPPORT.md)
-- [Contributing](CONTRIBUTING.md)
-- [Changelog](CHANGELOG.md)
+- [Privacy](PRIVACY.md) · [Security](SECURITY.md) · [Support](SUPPORT.md)
+- [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
 ## Development
 
 ```sh
-cargo build       # Rust terminal frontend (Kitty graphics, mouse/scroll)
-npm ci            # TypeScript renderer dependencies
+cargo build       # Rust terminal frontend + native renderer
+cargo test --workspace
+npm ci            # TypeScript renderer (deprecated node engine) and tooling
 npm run check
 npm test
 ```
