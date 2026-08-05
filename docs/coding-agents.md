@@ -114,6 +114,16 @@ General guidance:
   setting it once in the shell you run `tmath agent` from is enough. Values
   outside `1`-`4`, or set outside tmux, are ignored and the automatic
   estimate is used instead.
+- **Viewer diagnostic output**: `tmath agent-viewer`'s ongoing status/
+  diagnostic lines (connection status, fitted cell/dpr, the resolved font
+  size, per-answer placement counts) are off by default — the viewer pane
+  shows rendered content only. A startup failure (no graphics support, a
+  bad socket) still prints and exits non-zero regardless of this setting.
+  Set `TMATH_VIEWER_LOG=1` in the shell you run `tmath agent` from to turn
+  the diagnostics back on for an evidence run; `tmath agent` forwards it to
+  the viewer pane it spawns, the same way it forwards `TMATH_DPR` and
+  `TMATH_TMUX_TRANSPORT`. The watcher's own logs are unaffected — they
+  always go to the watcher's own pane/log, which is where operators look.
 - **Captured tool stdout**: a coding agent's shell tool may capture stdout, so
   an agent-launched `tmath render -` is not guaranteed to reach the visible
   terminal. The watcher + viewer pane is the standard agent workflow.

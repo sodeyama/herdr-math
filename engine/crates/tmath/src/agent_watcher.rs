@@ -83,6 +83,7 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         &socket_path,
         env::var("TMATH_TMUX_TRANSPORT").ok().as_deref(),
         env::var("TMATH_DPR").ok().as_deref(),
+        env::var("TMATH_VIEWER_LOG").ok().as_deref(),
     );
     let viewer_pane = spawn_viewer_pane(&parsed, &source, &viewer_cmd)?;
     let route = crate::terminal_output::selected_route()?;
@@ -386,6 +387,7 @@ fn viewer_command(
     socket: &std::path::Path,
     transport: Option<&str>,
     dpr: Option<&str>,
+    viewer_log: Option<&str>,
 ) -> String {
     let transport = transport
         .map(|value| format!(" TMATH_TMUX_TRANSPORT={}", shell_quote(value)))
@@ -399,11 +401,19 @@ fn viewer_command(
     let dpr = dpr
         .map(|value| format!(" TMATH_DPR={}", shell_quote(value)))
         .unwrap_or_default();
+    // Same reasoning: the viewer's diagnostic `eprintln!`s are off by
+    // default (see `agent_viewer::viewer_log_enabled`'s doc comment), so an
+    // evidence run that sets `TMATH_VIEWER_LOG` in the shell it runs `tmath
+    // agent` from needs it forwarded here to reach the viewer pane at all.
+    let viewer_log = viewer_log
+        .map(|value| format!(" TMATH_VIEWER_LOG={}", shell_quote(value)))
+        .unwrap_or_default();
     format!(
-        "env TMATH_RENDER_WORKER={}{}{} {} {} {}",
+        "env TMATH_RENDER_WORKER={}{}{}{} {} {} {}",
         shell_quote(&worker.display().to_string()),
         transport,
         dpr,
+        viewer_log,
         shell_quote(&exe.display().to_string()),
         "agent-viewer",
         shell_quote(&socket.display().to_string())
@@ -681,6 +691,7 @@ mod tests {
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             None,
+            None,
         );
         assert_eq!(
             cmd,
@@ -694,6 +705,7 @@ mod tests {
             std::path::Path::new("/opt/my tools/tmath"),
             std::path::Path::new("/opt/my site/dist/renderer/subprocess.js"),
             std::path::Path::new("/tmp/tmath agent-1.sock"),
+            None,
             None,
             None,
         );
@@ -711,6 +723,7 @@ mod tests {
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             None,
+            None,
         );
         assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
     }
@@ -727,6 +740,7 @@ mod tests {
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             Some("2"),
+            None,
         );
         assert!(cmd.contains("TMATH_DPR='2'"));
     }
@@ -739,6 +753,7 @@ mod tests {
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             Some("3"),
+            None,
         );
         assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
         assert!(cmd.contains("TMATH_DPR='3'"));
@@ -752,9 +767,44 @@ mod tests {
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             None,
             None,
+            None,
         );
         assert!(!cmd.contains("TMATH_TMUX_TRANSPORT"));
         assert!(!cmd.contains("TMATH_DPR"));
+        assert!(!cmd.contains("TMATH_VIEWER_LOG"));
+    }
+
+    /// Same forwarding requirement as `TMATH_DPR`/`TMATH_TMUX_TRANSPORT`:
+    /// the viewer's diagnostics are off by default (see
+    /// `agent_viewer::viewer_log_enabled`), so an evidence run that sets
+    /// `TMATH_VIEWER_LOG` before running `tmath agent` needs it on the
+    /// viewer pane's spawn command line to reach the viewer process at all.
+    #[test]
+    fn viewer_command_forwards_an_explicit_viewer_log_flag() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/tools/tmath"),
+            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
+            std::path::Path::new("/tmp/tmath-agent-1.sock"),
+            None,
+            None,
+            Some("1"),
+        );
+        assert!(cmd.contains("TMATH_VIEWER_LOG='1'"));
+    }
+
+    #[test]
+    fn viewer_command_forwards_all_three_overrides_together() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/tools/tmath"),
+            std::path::Path::new("/opt/site/dist/renderer/subprocess.js"),
+            std::path::Path::new("/tmp/tmath-agent-1.sock"),
+            Some("passthrough"),
+            Some("3"),
+            Some("1"),
+        );
+        assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
+        assert!(cmd.contains("TMATH_DPR='3'"));
+        assert!(cmd.contains("TMATH_VIEWER_LOG='1'"));
     }
 
     // AT-3-602 supervisor fix 1: reassembling a two-message answer must not

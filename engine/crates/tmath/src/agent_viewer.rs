@@ -85,6 +85,31 @@ const CONNECT_RETRIES: u32 = 50;
 const CONNECT_RETRY_MS: u64 = 100;
 const POLL_TIMEOUT: Duration = Duration::from_millis(40);
 
+/// Environment variable that re-enables the viewer's ongoing status/
+/// diagnostic `eprintln!` output (off by default per the user's live
+/// verdict: the viewer pane should show rendered content only). `tmath
+/// agent` (the watcher) forwards this into the viewer pane's spawn command
+/// the same way it already forwards `TMATH_DPR`/`TMATH_TMUX_TRANSPORT`, so
+/// an evidence run can turn viewer logs back on without editing the
+/// watcher's own environment.
+const VIEWER_LOG_ENV_VAR: &str = "TMATH_VIEWER_LOG";
+
+/// Resolves [`VIEWER_LOG_ENV_VAR`] once at startup: any non-empty value
+/// enables logging (matching the simple truthy convention `TMATH_VIEWER_LOG=1`
+/// documents), an unset or empty value keeps the default (silent). Never
+/// errors — an unusual value just falls through to the default, the same
+/// "never block startup on a malformed toggle" spirit as `TMATH_DPR`.
+fn viewer_log_enabled() -> bool {
+    parse_viewer_log_enabled(std::env::var(VIEWER_LOG_ENV_VAR).ok().as_deref())
+}
+
+/// The parsing rule behind [`viewer_log_enabled`], factored out so it is
+/// testable without mutating the process environment (which would race
+/// other tests running in the same binary).
+fn parse_viewer_log_enabled(raw: Option<&str>) -> bool {
+    raw.is_some_and(|value| !value.is_empty())
+}
+
 struct Viewer {
     stream: UnixStream,
     input: InputDecoder,
@@ -97,6 +122,13 @@ struct Viewer {
     options: RenderOptions,
     sink: StreamSink,
     blocks_placed: usize,
+    /// Resolved once at startup from `TMATH_VIEWER_LOG` (see
+    /// [`viewer_log_enabled`]): gates every ongoing status/diagnostic
+    /// `eprintln!` in this module so the viewer pane shows rendered content
+    /// only by default. A startup abort (no graphics support, a bad socket)
+    /// is unaffected — those surface as an `Err` from `run_agent_viewer`
+    /// that `main()` always prints, regardless of this flag.
+    log_enabled: bool,
     /// Measured terminal cell size, used to convert the planner's per-block
     /// pixel dimensions into the row heights the viewport tracks. Computing
     /// heights from `planner.blocks()` (rather than reading them back out of
@@ -131,6 +163,7 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         println!("usage: tmath agent-viewer <socket-path>");
         return Ok(0);
     }
+    let log_enabled = viewer_log_enabled();
     let socket = args.first().ok_or("agent-viewer requires a socket path")?;
 
     let stream = connect_with_retry(socket)?;
@@ -144,10 +177,12 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
     let tmux_passthrough = tmath_core::kitty::inside_tmux();
     if tmux_passthrough {
         let route = crate::terminal_output::selected_route()?;
-        eprintln!(
-            "agent-viewer: graphics route {}; require a visible Kitty-capable tmux client",
-            route.label()
-        );
+        if log_enabled {
+            eprintln!(
+                "agent-viewer: graphics route {}; require a visible Kitty-capable tmux client",
+                route.label()
+            );
+        }
     } else if !terminal
         .probe_graphics_support()
         .map_err(|error| format!("probe graphics: {error}"))?
@@ -182,7 +217,7 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
     let tmath_dpr_env = std::env::var("TMATH_DPR").ok();
     let dpr_override =
         crate::layout::resolve_dpr_override(tmath_dpr_env.as_deref(), tmux_passthrough);
-    if tmux_passthrough && tmath_dpr_env.is_some() && dpr_override.is_none() {
+    if log_enabled && tmux_passthrough && tmath_dpr_env.is_some() && dpr_override.is_none() {
         // Never log the raw value: it is a stable, small piece of config,
         // but keeping the log purely event-shaped (per AGENTS.md) avoids any
         // habit of echoing user-controlled strings here.
@@ -205,15 +240,17 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         width: fitted.effective_cell_px.0,
         height: fitted.effective_cell_px.1,
     };
-    eprintln!(
-        "agent-viewer: fitted cell_w_px={} cell_h_px={} dpr={} dpr_override={} content_width_pt={:.1} pane_cols={}",
-        cell.width,
-        cell.height,
-        fitted.device_pixel_ratio,
-        dpr_override.is_some(),
-        fitted.content_width_pt,
-        pane_size.cols
-    );
+    if log_enabled {
+        eprintln!(
+            "agent-viewer: fitted cell_w_px={} cell_h_px={} dpr={} dpr_override={} content_width_pt={:.1} pane_cols={}",
+            cell.width,
+            cell.height,
+            fitted.device_pixel_ratio,
+            dpr_override.is_some(),
+            fitted.content_width_pt,
+            pane_size.cols
+        );
+    }
     // The agent-viewer has no CLI flag of its own (it is spawned by `tmath
     // agent`, not run directly), so its font size precedence is env > config
     // > auto-fit > default — reads the config file directly at startup, per
@@ -223,10 +260,12 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         .unwrap_or_default();
     let (font_size_pt, font_size_source) =
         crate::config::resolve_font_size_pt_with_source(None, &font_config, Some(fitted));
-    eprintln!(
-        "agent-viewer: font_size source={} value={font_size_pt}",
-        font_size_source.label()
-    );
+    if log_enabled {
+        eprintln!(
+            "agent-viewer: font_size source={} value={font_size_pt}",
+            font_size_source.label()
+        );
+    }
     let options = RenderOptions::new(
         fitted.content_width_pt,
         font_size_pt,
@@ -262,12 +301,15 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         options,
         sink,
         blocks_placed: 0,
+        log_enabled,
         cell,
         block_sources: Vec::new(),
         delta: DeltaState::new(IPC_MAX_REQUEST_BYTES),
     };
     let _ = viewer.stream.set_nonblocking(true);
-    eprintln!("agent-viewer: connected; q/Ctrl-C closes");
+    if log_enabled {
+        eprintln!("agent-viewer: connected; q/Ctrl-C closes");
+    }
 
     let loop_result = run_viewer_loop(&mut viewer);
     let _ = viewer.sink.finish();
@@ -301,7 +343,9 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
             let mut chunk = [0u8; 4096];
             match viewer.stream.read(&mut chunk) {
                 Ok(0) => {
-                    eprintln!("agent-viewer: watcher closed; finishing");
+                    if viewer.log_enabled {
+                        eprintln!("agent-viewer: watcher closed; finishing");
+                    }
                     return Ok(0);
                 }
                 Ok(n) => {
@@ -311,7 +355,11 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
                             Ok(Message::Quit) => return Ok(0),
                             Ok(message) => apply_incoming_message(viewer, &message)?,
                             Err(error) => {
-                                eprintln!("agent-viewer: malformed_message dropped ({error:?})")
+                                if viewer.log_enabled {
+                                    eprintln!(
+                                        "agent-viewer: malformed_message dropped ({error:?})"
+                                    );
+                                }
                             }
                         }
                     }
@@ -382,7 +430,7 @@ fn handle_scroll_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
         },
     };
 
-    if viewer.viewport.following() != following_before {
+    if viewer.log_enabled && viewer.viewport.following() != following_before {
         eprintln!("agent-viewer: follow={}", viewer.viewport.following());
     }
     // Render/limit failures elsewhere in this module are fail-closed (log and
@@ -390,7 +438,9 @@ fn handle_scroll_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
     // contract rather than tearing down the viewer process over a scroll step.
     if moved {
         if let Err(error) = sync_visible_window(viewer) {
-            eprintln!("agent-viewer: {error}");
+            if viewer.log_enabled {
+                eprintln!("agent-viewer: {error}");
+            }
         }
     }
 }
@@ -438,7 +488,9 @@ fn apply_incoming_message(viewer: &mut Viewer, message: &Message) -> Result<(), 
         }
         Ok(None) => Ok(()),
         Err(error) => {
-            eprintln!("agent-viewer: delta_rejected ({error:?})");
+            if viewer.log_enabled {
+                eprintln!("agent-viewer: delta_rejected ({error:?})");
+            }
             Ok(())
         }
     }
@@ -490,10 +542,12 @@ fn restore_missing_pngs(viewer: &mut Viewer, range: std::ops::Range<usize>) {
             continue;
         };
         if let Err(error) = viewer.sink.refresh_png(id, png) {
-            eprintln!(
-                "agent-viewer: restore_failed ({:?}) id={id}",
-                error.safe_record().code
-            );
+            if viewer.log_enabled {
+                eprintln!(
+                    "agent-viewer: restore_failed ({:?}) id={id}",
+                    error.safe_record().code
+                );
+            }
         }
     }
 }
@@ -514,16 +568,20 @@ fn restore_png_for_id(viewer: &mut Viewer, id: u64) -> Option<Vec<u8>> {
         .iter()
         .position(|block| block.id == id)?;
     let Some(source) = viewer.block_sources.get(index) else {
-        eprintln!("agent-viewer: restore_failed (missing_source) id={id}");
+        if viewer.log_enabled {
+            eprintln!("agent-viewer: restore_failed (missing_source) id={id}");
+        }
         return None;
     };
     let rendered = match viewer.cache.render(source, &viewer.options) {
         Ok(rendered) => rendered,
         Err(error) => {
-            eprintln!(
-                "agent-viewer: restore_failed ({:?}) id={id}",
-                error.safe_record().code
-            );
+            if viewer.log_enabled {
+                eprintln!(
+                    "agent-viewer: restore_failed ({:?}) id={id}",
+                    error.safe_record().code
+                );
+            }
             return None;
         }
     };
@@ -534,10 +592,12 @@ fn restore_png_for_id(viewer: &mut Viewer, id: u64) -> Option<Vec<u8>> {
     match crate::native_render::canonical_block_png(&rendered, scaled_image_pixels) {
         Ok(png) => Some(png),
         Err(error) => {
-            eprintln!(
-                "agent-viewer: restore_failed ({:?}) id={id}",
-                error.safe_record().code
-            );
+            if viewer.log_enabled {
+                eprintln!(
+                    "agent-viewer: restore_failed ({:?}) id={id}",
+                    error.safe_record().code
+                );
+            }
             None
         }
     }
@@ -564,10 +624,12 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     let revision = match revision {
         Ok(revision) => revision,
         Err(error) => {
-            eprintln!(
-                "agent-viewer: renderer_rejected ({:?})",
-                error.safe_record().code
-            );
+            if viewer.log_enabled {
+                eprintln!(
+                    "agent-viewer: renderer_rejected ({:?})",
+                    error.safe_record().code
+                );
+            }
             return Ok(());
         }
     };
@@ -595,10 +657,12 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         &mut viewer.sink,
     ) {
         viewer.sink.set_suppress_writes(false);
-        eprintln!(
-            "agent-viewer: render_failed ({:?})",
-            error.safe_record().code
-        );
+        if viewer.log_enabled {
+            eprintln!(
+                "agent-viewer: render_failed ({:?})",
+                error.safe_record().code
+            );
+        }
         return Ok(());
     }
     viewer.sink.set_suppress_writes(false);
@@ -630,24 +694,45 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         .evict_outside_window(visible.first..visible.last_exclusive);
     if !viewer.viewport.following() {
         if let Err(error) = sync_visible_window(viewer) {
-            eprintln!("agent-viewer: {error}");
+            if viewer.log_enabled {
+                eprintln!("agent-viewer: {error}");
+            }
         }
     }
     viewer.blocks_placed = viewer.planner.blocks().len();
-    let stats = viewer.cache.stats();
-    eprintln!(
-        "agent-viewer: placed blocks={} formula_errors={} cache_hits={} cache_misses={}",
-        viewer.blocks_placed,
-        viewer.formula_errors.iter().sum::<usize>(),
-        stats.hits,
-        stats.misses
-    );
+    if viewer.log_enabled {
+        let stats = viewer.cache.stats();
+        eprintln!(
+            "agent-viewer: placed blocks={} formula_errors={} cache_hits={} cache_misses={}",
+            viewer.blocks_placed,
+            viewer.formula_errors.iter().sum::<usize>(),
+            stats.hits,
+            stats.misses
+        );
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewer_log_disabled_by_default() {
+        assert!(!parse_viewer_log_enabled(None), "unset stays silent");
+        assert!(!parse_viewer_log_enabled(Some("")), "empty stays silent");
+    }
+
+    #[test]
+    fn viewer_log_enabled_by_any_non_empty_value() {
+        assert!(parse_viewer_log_enabled(Some("1")));
+        assert!(parse_viewer_log_enabled(Some("true")));
+        assert!(
+            parse_viewer_log_enabled(Some("0")),
+            "any non-empty value enables it, including a literal '0' \
+             (this is a simple on/off toggle, not a boolean parse)"
+        );
+    }
 
     #[test]
     fn follow_disengages_on_scroll_and_reengages_on_end_or_shift_f() {
@@ -1057,6 +1142,10 @@ mod tests {
             options,
             sink: StreamSink::new(None, limits.image_pixels),
             blocks_placed: 0,
+            // Tests never want the ongoing eprintln! diagnostics on stderr;
+            // `viewer_log_enabled_tests` below covers the env-parsing
+            // function itself.
+            log_enabled: false,
             cell: CellSize {
                 width: 1,
                 height: 1,
