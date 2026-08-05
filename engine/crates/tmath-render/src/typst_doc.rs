@@ -672,7 +672,11 @@ fn render_node(
             push_raw_call(output, text, true, language.as_deref());
         }
         Node::Group(children) => render_nodes(children, output, context)?,
-        Node::Rule => output.push_str("#block(width: 100%, height: 1pt, fill: rgb(\"#e6edf3\"))"),
+        Node::Rule => {
+            output.push_str("#block(width: 100%, height: 1pt, fill: rgb(\"");
+            output.push_str(DARK_THEME_TEXT_COLOR);
+            output.push_str("\"))");
+        }
     }
     Ok(())
 }

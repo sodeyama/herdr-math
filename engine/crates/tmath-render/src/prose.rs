@@ -197,7 +197,8 @@ fn render_typst_source(
         .output
         .map_err(|_| renderer_error("Typst compilation failed"))?;
     deadline.checkpoint()?;
-    let pixmap = typst_render::render_merged(&document, f32::from(dpr), Abs::zero(), None);
+    let mut pixmap = typst_render::render_merged(&document, f32::from(dpr), Abs::zero(), None);
+    boost_edge_alpha(pixmap.data_mut());
     deadline.checkpoint()?;
     let raster_width_px = pixmap.width();
     let height_px = pixmap.height();
@@ -225,6 +226,49 @@ fn render_typst_source(
         formula_errors,
         duration_ms: 0,
     })
+}
+
+/// Gamma applied to the alpha channel of antialiased edge pixels before PNG
+/// encoding (`boost_edge_alpha`). Terminals composite the transparent PNG
+/// over the cell background in sRGB space, which visually thins
+/// light-on-dark antialiased edges (the classic gamma-blending artifact);
+/// the terminal's own font rasterizer compensates with platform font
+/// smoothing, so at equal nominal weight the rendered glyphs read "faded"
+/// next to real terminal text (a live scroll-lab observation, reported by
+/// the user as weaker "glow"). A sub-1.0 exponent lifts partial coverage —
+/// `a' = 255 * (a/255)^γ` — restoring perceived stem weight without
+/// touching fully-opaque ink or fully-transparent background.
+const EDGE_ALPHA_GAMMA: f64 = 0.72;
+
+/// Applies [`EDGE_ALPHA_GAMMA`] to every antialiased edge pixel of a
+/// premultiplied RGBA8 buffer (tiny-skia `Pixmap::data_mut` layout), scaling
+/// the premultiplied color channels by the same factor so the pixel's
+/// straight color is unchanged — only its coverage grows. Fully opaque
+/// (`a == 255`) and fully transparent (`a == 0`) pixels pass through
+/// untouched, so ink color and background stay exactly as rendered.
+fn boost_edge_alpha(premultiplied_rgba: &mut [u8]) {
+    // 256-entry LUT: pow per distinct alpha value, not per pixel.
+    let mut boosted = [0u8; 256];
+    for (alpha, out) in boosted.iter_mut().enumerate() {
+        let normalized = alpha as f64 / 255.0;
+        *out = (255.0 * normalized.powf(EDGE_ALPHA_GAMMA)).round() as u8;
+    }
+    for pixel in premultiplied_rgba.chunks_exact_mut(4) {
+        let alpha = pixel[3];
+        if alpha == 0 || alpha == 255 {
+            continue;
+        }
+        let new_alpha = boosted[alpha as usize];
+        // Rescale premultiplied channels to keep the straight color stable;
+        // clamp to the new alpha to preserve the premultiplied invariant
+        // (channel <= alpha) against rounding.
+        let scale = f64::from(new_alpha) / f64::from(alpha);
+        for channel in &mut pixel[..3] {
+            let scaled = (f64::from(*channel) * scale).round() as u16;
+            *channel = scaled.min(u16::from(new_alpha)) as u8;
+        }
+        pixel[3] = new_alpha;
+    }
 }
 
 /// Crops trailing transparent columns off the right edge, but stops
@@ -350,6 +394,57 @@ mod tests {
             index: 0,
             kind,
             source: source.into(),
+        }
+    }
+
+    /// `boost_edge_alpha` must leave fully-opaque ink and fully-transparent
+    /// background untouched, lift every partial-coverage alpha, and keep the
+    /// premultiplied invariant (`channel <= alpha`) and the straight color
+    /// (channel/alpha ratio) stable on the lifted pixels.
+    #[test]
+    fn edge_alpha_boost_lifts_only_partial_coverage() {
+        // Premultiplied pixels: opaque white ink, transparent background,
+        // and a half-coverage edge of the same white ink (128/255 ≈ 0.5).
+        let mut data = vec![
+            255, 255, 255, 255, // opaque
+            0, 0, 0, 0, // transparent
+            128, 128, 128, 128, // half-coverage white
+            64, 32, 16, 128, // half-coverage tinted
+        ];
+        let original = data.clone();
+        boost_edge_alpha(&mut data);
+
+        assert_eq!(&data[0..8], &original[0..8], "opaque/transparent changed");
+        let lifted = data[11];
+        assert!(
+            lifted > 128,
+            "half-coverage alpha must be lifted, got {lifted}"
+        );
+        assert_eq!(data[8], lifted, "white edge stays white (premultiplied)");
+        for pixel in data.chunks_exact(4) {
+            for channel in &pixel[..3] {
+                assert!(*channel <= pixel[3], "premultiplied invariant broken");
+            }
+        }
+        // Straight color of the tinted pixel is preserved within rounding:
+        // original ratio 64/128 = 0.5 for red.
+        let ratio = f64::from(data[12]) / f64::from(data[15]);
+        assert!(
+            (ratio - 0.5).abs() < 0.02,
+            "straight color drifted: {ratio}"
+        );
+    }
+
+    /// The boost is monotonic in alpha — heavier coverage never ends up
+    /// lighter than lighter coverage after the lift (no banding inversions).
+    #[test]
+    fn edge_alpha_boost_is_monotonic() {
+        let mut previous = 0u8;
+        for alpha in 0u8..=255 {
+            let mut data = vec![0, 0, 0, alpha];
+            boost_edge_alpha(&mut data);
+            assert!(data[3] >= previous, "alpha lift not monotonic at {alpha}");
+            previous = data[3];
         }
     }
 

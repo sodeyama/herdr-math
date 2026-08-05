@@ -2,12 +2,19 @@ use std::error::Error;
 use std::fmt;
 
 /// Fixed text color for the V3 dark theme.
-pub const DARK_THEME_TEXT_COLOR: &str = "#e6edf3";
+///
+/// Brighter than GitHub Dark's foreground (`#e6edf3`, the original choice):
+/// a live scroll-lab comparison against real terminal text measured the
+/// rendered glyphs' peak luminance at 233 vs the terminal's own 255, and the
+/// user perceived the viewer text as "faded" next to the terminal font.
+/// Near-white restores parity while staying just short of pure `#ffffff`
+/// (which reads harsh over dark backgrounds at body-text sizes).
+pub const DARK_THEME_TEXT_COLOR: &str = "#f5f9fd";
 
 /// Table border stroke color: a mid-luminance gray derived from
 /// [`DARK_THEME_TEXT_COLOR`], mixed 57.5% toward a representative dark
 /// terminal background (`#0d1117`, GitHub Dark's background — the natural
-/// pairing for a text color that is itself GitHub Dark's foreground) so a
+/// pairing for a foreground in that palette's family) so a
 /// stroke reads clearly on real dark terminal backgrounds without being as
 /// bright as body text. Rendered PNGs have a transparent background (`#set
 /// page(fill: none)`), so this is a fixed design choice, not a color read
@@ -15,9 +22,9 @@ pub const DARK_THEME_TEXT_COLOR: &str = "#e6edf3";
 /// backgrounds real terminals plausibly use, not be theme-accurate.
 ///
 /// Derivation (`round(text + (bg - text) * 0.575)` per channel):
-/// `e6edf3` → `(230, 237, 243)`, `0d1117` → `(13, 17, 23)`,
-/// mixed → `(105, 111, 117)` = `#696f75`.
-pub const TABLE_STROKE_COLOR: &str = "#696f75";
+/// `f5f9fd` → `(245, 249, 253)`, `0d1117` → `(13, 17, 23)`,
+/// mixed → `(112, 116, 121)` = `#707479`.
+pub const TABLE_STROKE_COLOR: &str = "#707479";
 
 /// One of the CJK fonts embedded in the binary (D-CONFIG phase 2). Shaped as
 /// an enum (rather than a bare `String`) so the valid set is closed and
@@ -146,7 +153,7 @@ mod tests {
         assert_eq!(options.content_width_pt, 480.0);
         assert_eq!(options.font_size_pt, 12.0);
         assert_eq!(options.device_pixel_ratio, 1);
-        assert_eq!(DARK_THEME_TEXT_COLOR, "#e6edf3");
+        assert_eq!(DARK_THEME_TEXT_COLOR, "#f5f9fd");
     }
 
     #[test]
