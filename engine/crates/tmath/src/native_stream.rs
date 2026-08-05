@@ -1589,9 +1589,29 @@ fn clamp_fallback_new_tail(
 /// `visible` range's ids, moves the cursor home, re-emits every block in
 /// `visible` (clamped to `placed`'s bounds) at its window-relative row
 /// (immediately after the previous one, cursor-relative) from its retained
-/// PNG, and erases any residual rows below what was just drawn. Pure and
-/// independent of any live terminal, the same way `tail_replace_operations`
-/// is.
+/// PNG — clearing each block's rows (`clear_rows`, `\x1b[2K` per row) right
+/// before drawing it — and erases any residual rows below what was just
+/// drawn. Pure and independent of any live terminal, the same way
+/// `tail_replace_operations` is.
+///
+/// The per-row clear before each block is required, not cosmetic:
+/// `emitted_ids` reflects only what a PRIOR `sync_window` call drew, and
+/// says nothing about content that reached the screen through the
+/// per-op flowing-append path (`TerminalSink::append`/`replace`, taken
+/// whenever a plan has no interior divergence — see `TerminalSink::emit`'s
+/// gate), which never touches `emitted_ids`. The first `sync_window` call
+/// after a stretch of pure flowing appends therefore sees an
+/// empty/stale `emitted_ids` even though the physical screen already has
+/// real content at these rows. Without an unconditional clear, a
+/// placeholder grid only overwrites exactly `cols` columns
+/// (`placeholder_grid_at_cursor`), so any prior content wider than the new
+/// block's placeholder grid would leave stale glyphs past column `cols` —
+/// this was the mechanism behind a live "stale line pieces at the right
+/// edge" scroll-correctness bug. Clearing every visible row unconditionally,
+/// independent of `emitted_ids`, kills the whole class regardless of what
+/// history bookkeeping does or does not know about a given span, at a
+/// constant few bytes per row — this keeps the transmitted-byte bound
+/// proportional to `visible`'s size (AT-3-503), not to history length.
 ///
 /// Deleting by id rather than by a previous index range is deliberate: an id
 /// in `emitted_ids` may no longer exist in `placed` at all (a suppressed
@@ -1671,6 +1691,28 @@ fn sync_window_operations(
                 decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
             let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
             let image_id = u32::try_from(entry.id).map_err(|_| stream_error())?;
+            // Clear every row this block is about to occupy BEFORE drawing
+            // it (`clear_rows` leaves the cursor back where it started, so
+            // this never disturbs the placeholder write that follows). This
+            // is required, not cosmetic: `emitted_ids` only reflects what a
+            // PRIOR `sync_window` call drew, and the first `sync_window` of
+            // a session that streamed via flowing appends (see
+            // `TerminalSink::append`/`replace`'s per-op path, which never
+            // touches `emitted_ids`) sees an empty/stale `emitted_ids` even
+            // though the physical screen already has real content at these
+            // rows. A placeholder grid only overwrites exactly `cols`
+            // columns (`placeholder_grid_at_cursor`), so any prior content
+            // wider than the new block leaves stale glyphs past column
+            // `cols` if the row is never cleared first — this is the
+            // "stale line pieces at the right edge" scroll-correctness
+            // symptom. Clearing unconditionally, independent of
+            // `emitted_ids`, kills the whole class regardless of what
+            // history bookkeeping does or does not know about this span.
+            // Row 1 (the status bar, when `content_row_offset > 0`) is
+            // never touched: `home` already starts at
+            // `content_row_offset + 1`, and every clear stays at or below
+            // the cursor's current row from there.
+            operations.push(TerminalOp::Local(clear_rows(rows)));
             operations.extend(append_operations(
                 image_id, width, height, &rgba, cols, rows, true,
             ));
@@ -1932,9 +1974,29 @@ mod tests {
 
     /// A fresh sync (`emitted_ids` starts empty, as it does for the first
     /// `sync_window` call after construction) emits the visible range with
-    /// no deletes, since nothing was on screen to remove.
+    /// no DELETES, since no id needs removing — but still CLEARS every row
+    /// it draws into before drawing, unconditionally.
+    ///
+    /// This unconditional clear is what closes a real gap `emitted_ids ==
+    /// []` used to paper over: `emitted_ids` reflects only what a PRIOR
+    /// `sync_window` call drew, and says nothing about content that reached
+    /// the screen through the per-op flowing-append path
+    /// (`TerminalSink::append`/`replace`, taken whenever a plan has no
+    /// interior divergence — see `TerminalSink::emit`'s gate), which never
+    /// touches `emitted_ids`. The FIRST `sync_window` call after a stretch
+    /// of pure flowing appends therefore used to see an empty `emitted_ids`
+    /// and skip clearing entirely, even though the physical screen already
+    /// had real content at these rows from that flowing history — a
+    /// placeholder grid only overwrites exactly `cols` columns
+    /// (`placeholder_grid_at_cursor`), so any prior content wider than the
+    /// new block's placeholder grid left stale glyphs past column `cols`
+    /// ("stale line pieces at the right edge", a live scroll-correctness
+    /// bug). Clearing unconditionally — the same test setup as before, a
+    /// "fresh" `emitted_ids == []` — no longer depends on distinguishing a
+    /// genuinely blank screen from a screen already painted by flowing
+    /// history; both get the same safe per-row clear before the draw.
     #[test]
-    fn sync_window_from_empty_emitted_only_adds() {
+    fn sync_window_from_empty_emitted_clears_before_it_adds() {
         let cell = CellSize {
             width: 1,
             height: 1,
@@ -1944,7 +2006,19 @@ mod tests {
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
         assert!(!text.contains("a=d,d=I"), "nothing to delete");
+        assert!(
+            text.contains("\x1b[2K"),
+            "every row the block draws into must be cleared first, even when \
+             emitted_ids is empty: {text:?}"
+        );
         assert!(text.contains("i=1,U=1,c=1,r=2,q=2"));
+        // The clear must happen BEFORE the placement command, not after.
+        let clear_pos = text.find("\x1b[2K").expect("clear present");
+        let place_pos = text.find("i=1,U=1,c=1,r=2,q=2").expect("placement present");
+        assert!(
+            clear_pos < place_pos,
+            "clear must precede the placement it protects: {text:?}"
+        );
     }
 
     /// An empty sync (nothing was on screen, and the new window is also
@@ -2584,6 +2658,24 @@ mod tests {
         end: i64,
     }
 
+    /// Recognizes a `Local` op that is EXACTLY one absolute cursor-position
+    /// sequence (`\x1b[{row};{col}H`, e.g. `sync_window_operations`'s
+    /// `home`) and returns the target row (0-based, i.e. `row - 1`).
+    /// Returns `None` for anything else, including ops that mix an
+    /// absolute home with other bytes — `local_op_row_delta` still panics
+    /// on those, which is correct: every absolute-home op this module
+    /// actually emits is a standalone `TerminalOp::Local` (see
+    /// `sync_window_operations`), so a mixed op containing `H` would be a
+    /// genuinely new, unaudited shape.
+    fn local_op_absolute_home_row(bytes: &[u8]) -> Option<i64> {
+        let text = std::str::from_utf8(bytes).ok()?;
+        let rest = text.strip_prefix("\x1b[")?;
+        let rest = rest.strip_suffix('H')?;
+        let (row_str, _col_str) = rest.split_once(';')?;
+        let row: i64 = row_str.parse().ok()?;
+        Some(row - 1)
+    }
+
     /// Walks `operations` tracking an absolute cursor row (starting at 0,
     /// the row the caller's cursor-up left it at), and records the row span
     /// each Kitty placement command's SUBSEQUENT placeholder-grid write
@@ -2596,6 +2688,14 @@ mod tests {
     /// just marked), so two spans in the result overlapping is exactly a
     /// ghost: two different ids both claiming to render over the same rows
     /// at the end of the sequence.
+    ///
+    /// Also recognizes a standalone absolute-home op
+    /// (`local_op_absolute_home_row`, e.g. `sync_window_operations`'s
+    /// `home`) and resets the tracked row to its target instead of treating
+    /// it as a relative-only op (which `local_op_row_delta` would correctly
+    /// reject with a panic — this function is the one caller that legitimately
+    /// needs to simulate an absolute-position-aware operation stream, per
+    /// `local_op_row_delta`'s own panic message).
     fn placement_row_spans(operations: &[TerminalOp]) -> Vec<RowSpan> {
         let mut spans: Vec<RowSpan> = Vec::new();
         let mut row: i64 = 0;
@@ -2627,6 +2727,8 @@ mod tests {
                             end: row + span_rows,
                         });
                         row += delta;
+                    } else if let Some(home_row) = local_op_absolute_home_row(bytes) {
+                        row = home_row;
                     } else {
                         row += local_op_row_delta(bytes);
                     }
@@ -3254,6 +3356,194 @@ mod tests {
             text.contains(&format!("\x1b[{old_rows_total}A\r")),
             "sanity: the ordinary path must actually emit the cursor-up: {text:?}"
         );
+    }
+
+    /// Traces a growing-answer `Replace(last)` scenario for a TALL block
+    /// (simulating a paragraph with a display-math integral following a
+    /// table, several times its neighbors' height) across every transition
+    /// `emit_batch` can take, with a reserved status-bar row throughout —
+    /// this is the live "crushed line" bug report's exact shape. Asserts
+    /// the replaced block's PLACEHOLDER rows (what
+    /// `tmath_core::placement::grid_for` derives and what the placeholder
+    /// grid actually writes) always equal its DECODED IMAGE rows (re-derived
+    /// fresh from the PNG bytes via `decode_png` + `grid_for`, independent
+    /// of any bookkeeping field) — i.e. the tall block is never truncated
+    /// to fewer rows than its own image needs, in any of:
+    ///
+    /// 1. Normal batch (`divergence_rewrite_operations`, pane comfortably
+    ///    larger than the stale tail).
+    /// 2. Clamp fallback (`clamp_fallback_new_tail`, pane just under the
+    ///    stale tail's row total, WITH `status_bar_active = true`).
+    /// 3. The fallback's follow-up window sync (`sync_window_operations`
+    ///    with `content_row_offset = 1`), confirming the tall block's row
+    ///    span in the synced output matches the same decoded-image rows.
+    ///
+    /// This pure trace comes back CLEAN for all three transitions: every
+    /// row-accounting path (`placed_state_for_op`, `divergence_rewrite_operations`,
+    /// `clamp_fallback_new_tail`, `sync_window_operations`) independently
+    /// re-derives `rows` from `grid_for(width, height, cell)` off the
+    /// SAME decoded PNG dimensions every time — there is no cached/stale
+    /// `rows` field read anywhere in this module's row-emission math (see
+    /// `sync_window_operations`'s doc comment on why it re-decodes rather
+    /// than trusting `PlacedState::rows`). A "crushed" (vertically
+    /// squashed) tall block is therefore not explained by anything in this
+    /// module's row bookkeeping; the live symptom traces to
+    /// `sync_window_operations`'s column/full-row-clear gap documented in
+    /// `sync_window_with_empty_emitted_ids_never_clears_full_rows_before_drawing`
+    /// above (a narrower/shorter old block's remnants showing through a
+    /// new block's placeholder grid can visually read as "crushed" if the
+    /// old content was a short table row and the new content is a tall
+    /// formula sharing the same physical rows), or to the render/rows side
+    /// (`grid_for` vs. the tall-inline image's actual proportions, or the
+    /// `trim_transparent_right` reserve) which is outside this module.
+    #[test]
+    fn tall_replaced_last_block_keeps_placeholder_rows_equal_to_decoded_image_rows_across_transitions(
+    ) {
+        let cell = CellSize {
+            width: 8,
+            height: 17,
+        };
+        // Five short "table row" blocks, then one TALL block (the
+        // integral-with-limits paragraph) as the stale tail's last entry —
+        // the exact "tall inline formula immediately after a table" shape.
+        let old_heights: [u32; 6] = [19, 19, 19, 19, 19, 200];
+        let old_rows: Vec<u32> = old_heights
+            .iter()
+            .map(|&height| tmath_core::placement::grid_for(100, height, cell).1)
+            .collect();
+        let tall_old_rows = *old_rows.last().unwrap();
+
+        let placed: Vec<PlacedState> = (1..=6u64)
+            .zip(old_rows.iter())
+            .map(|(id, &rows)| placed(id, rows, rgba8_png(100, 1)))
+            .collect();
+        let previous: Vec<tmath_render::PlannedBlock> = (1..=6u64)
+            .zip(old_heights.iter())
+            .map(|(id, &height)| tmath_render::PlannedBlock {
+                id,
+                hash: [0; 32],
+                width_px: 100,
+                height_px: height,
+            })
+            .collect();
+
+        // The revision re-renders only the tail block (growing streamed
+        // math), one taller still, at index 5 (`reanchor_from = 5`) — the
+        // other five blocks are an unwritten `Keep` prefix in the plan.
+        let new_tall_height = 240u32;
+        let new_tall_id = 106u64;
+        let plan = Plan {
+            ops: (1..=5u64)
+                .map(|id| PlanOp::Keep { id })
+                .chain(std::iter::once(PlanOp::Replace {
+                    old_id: 6,
+                    block: tmath_render::PlannedBlock {
+                        id: new_tall_id,
+                        hash: [1; 32],
+                        width_px: 100,
+                        height_px: new_tall_height,
+                    },
+                }))
+                .collect(),
+            reanchor_from: Some(5),
+        };
+        let mut prepared: Vec<PreparedBlock> = (0..5)
+            .map(|_| PreparedBlock {
+                rendered: None,
+                png: None,
+                cache: None,
+            })
+            .collect();
+        let tall_png = rgba8_png(100, new_tall_height);
+        prepared.push(PreparedBlock {
+            rendered: Some(Arc::new(RenderedBlock {
+                png: tall_png.clone(),
+                width_px: 100,
+                height_px: new_tall_height,
+                formula_errors: Vec::new(),
+                duration_ms: 0,
+            })),
+            png: Some(tall_png.clone()),
+            cache: Some(CacheOutcome::Miss),
+        });
+
+        let expected_rows = tmath_core::placement::grid_for(100, new_tall_height, cell).1;
+        // Sanity: the expectation itself must be re-derivable straight from
+        // the decoded PNG, independent of any bookkeeping field.
+        let (decoded_width, decoded_height, _) =
+            decode_png(&tall_png, u64::MAX).expect("valid PNG");
+        assert_eq!((decoded_width, decoded_height), (100, new_tall_height));
+        assert_eq!(
+            tmath_core::placement::grid_for(decoded_width, decoded_height, cell).1,
+            expected_rows
+        );
+
+        // --- Transition 1: normal batch (pane comfortably larger). ---
+        let old_rows_total = stale_tail_rows_total(&placed, &previous, 5);
+        let generous_pane_rows = old_rows_total + expected_rows + 100;
+        assert!(!clamp_would_truncate(
+            old_rows_total,
+            generous_pane_rows,
+            true
+        ));
+        let (operations, new_tail) = divergence_rewrite_operations(
+            &placed,
+            &previous,
+            &plan,
+            &prepared,
+            5,
+            cell,
+            u64::MAX,
+            true,
+        )
+        .unwrap();
+        assert_eq!(new_tail.len(), 1);
+        assert_eq!(
+            new_tail[0].rows, expected_rows,
+            "transition 1 (normal batch): the replaced tall block's bookkeeping \
+             rows must equal its decoded image rows"
+        );
+        assert_no_overlapping_row_spans(&operations);
+        assert_row_bookkeeping_is_internally_consistent(&operations, old_rows_total, &new_tail);
+
+        // --- Transition 2: clamp fallback (pane just under the stale
+        // --- tail, WITH the status-bar row reserved). ---
+        let tight_pane_rows = old_rows_total; // usable_rows = pane_rows - 1 < old_rows_total
+        assert!(clamp_would_truncate(old_rows_total, tight_pane_rows, true));
+        let fallback_tail =
+            clamp_fallback_new_tail(&placed, &plan, &prepared, 5, cell, u64::MAX, true).unwrap();
+        assert_eq!(fallback_tail.len(), 1);
+        assert_eq!(
+            fallback_tail[0].rows, expected_rows,
+            "transition 2 (clamp fallback): the replaced tall block's bookkeeping \
+             rows must equal its decoded image rows even though nothing was written"
+        );
+        assert_eq!(fallback_tail[0].id, new_tall_id);
+        assert!(
+            fallback_tail[0].rows >= tall_old_rows.min(expected_rows),
+            "the tall block's new row count must not have been silently truncated \
+             relative to what its own image needs"
+        );
+
+        // --- Transition 3: the fallback's follow-up window sync, with
+        // --- content_row_offset = 1 (status bar reserves row 1). ---
+        let mut synced_placed = placed[..5].to_vec();
+        synced_placed.extend(fallback_tail.clone());
+        let visible = 0..synced_placed.len();
+        let sync_ops =
+            sync_window_operations(&synced_placed, &[], visible, cell, u64::MAX, 1).unwrap();
+        let spans = placement_row_spans(&sync_ops);
+        let tall_span = spans
+            .iter()
+            .find(|span| span.id == u32::try_from(new_tall_id).unwrap())
+            .expect("the tall block's placement must survive the sync");
+        assert_eq!(
+            tall_span.end - tall_span.start,
+            i64::from(expected_rows),
+            "transition 3 (window sync): the tall block's drawn row span must \
+             equal its decoded image rows, not be crushed to fewer rows"
+        );
+        assert_no_overlapping_row_spans(&sync_ops);
     }
 
     // --- PART 2: live status bar (D-STATUS) ---

@@ -166,6 +166,21 @@ pub struct VisibleRange {
     pub last_exclusive: usize,
     /// Rows of the first visible block that are scrolled above the window
     /// top (informational; full-window redraw does not crop mid-block).
+    ///
+    /// Currently computed but not read by any caller: `agent_viewer::
+    /// sync_visible_window` only uses `first`/`last_exclusive` to build the
+    /// range it hands to `TerminalSink::sync_window`, and
+    /// `sync_window_operations` always draws the first visible block's
+    /// FULL image (every one of its own rows), never starting partway
+    /// through it. In practice this means a block that is only partially
+    /// scrolled into view is drawn in its entirety — its top rows extend
+    /// above the pane's actual content area rather than being cropped at
+    /// `skip_rows_in_first`. This has not been confirmed as the cause of
+    /// any reported symptom; it is a known gap in partial-block scroll
+    /// precision, tracked here rather than implemented, since consuming
+    /// this field correctly requires a partial-image placement/crop
+    /// mechanism `sync_window_operations` does not have today. Future work
+    /// if partial-block scroll precision becomes a real requirement.
     pub skip_rows_in_first: Rows,
 }
 
