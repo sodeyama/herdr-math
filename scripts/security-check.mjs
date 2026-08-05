@@ -3,7 +3,13 @@ import { extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const ignoredDirectories = new Set([".git", "node_modules", "coverage", "target"]);
+// `.cursor` holds editor-local debug artifacts that are gitignored and can
+// never be committed; scanning them only makes the gate fail on developer
+// machines while CI's clean checkout never sees them.
+const ignoredDirectories = new Set([".git", "node_modules", "coverage", "target", ".cursor"]);
+// Same reasoning for per-developer local settings: gitignored by design and
+// expected to contain absolute paths on the developer's machine.
+const localOnlyFiles = new Set([".claude/settings.local.json"]);
 const textExtensions = new Set([".css", ".html", ".js", ".json", ".md", ".mjs", ".rs", ".swift", ".toml", ".ts", ".txt"]);
 const textNames = new Set([".editorconfig", ".gitignore", "LICENSE"]);
 const allowedEnvironmentKeys = new Set();
@@ -45,6 +51,7 @@ const files = await collectFiles(root);
 const runtimeFiles = files.filter((path) => path.startsWith("src/") && path.endsWith(".ts"));
 
 for (const path of files) {
+  if (localOnlyFiles.has(path)) continue;
   const name = path.split("/").at(-1) ?? path;
   if (name !== ".env.example" && !committedLockfiles.has(name) && forbiddenArtifactNames.some((pattern) => pattern.test(name))) {
     violations.push(`${path}: forbidden generated or local artifact`);
