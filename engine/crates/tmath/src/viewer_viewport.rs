@@ -9,8 +9,14 @@
 //!
 //! State transitions:
 //! - [`Viewport::scroll_by`] moves the offset by a row delta, clamps it to
-//!   `[0, max_offset]`, and disengages follow — any manual scroll input maps
-//!   here through [`tmath_core::scroll_driver::scroll_delta`].
+//!   `[0, max_offset]`, and sets follow to whether the RESULT landed on the
+//!   bottom (`new_offset == max_offset()`) — any manual scroll input maps
+//!   here through [`tmath_core::scroll_driver::scroll_delta`]. This means a
+//!   scroll step that starts and ends at the bottom (e.g. one wheel-down
+//!   notch while already following) never disengages follow, and a scroll
+//!   step that lands back on the bottom (by wheel or by momentum decay)
+//!   re-engages it — the standard tmux/iTerm-style re-pin-at-bottom
+//!   behavior.
 //! - [`Viewport::jump_to_bottom_and_follow`] is `End`/`F`: it re-engages
 //!   follow and pins the offset to the bottom in one step.
 //! - [`Viewport::set_block_heights`] applies a new block-height list after an
@@ -76,14 +82,24 @@ impl Viewport {
     }
 
     /// Applies a manual scroll delta in rows (positive scrolls down/forward,
-    /// negative scrolls up/backward), clamps the result, and disengages
-    /// follow. Returns whether the offset actually changed.
+    /// negative scrolls up/backward) and clamps the result. Follow tracks
+    /// the RESULTING position, not the act of scrolling: it disengages the
+    /// instant the window leaves the bottom (`new_offset != max_offset()`)
+    /// and re-engages the instant a scroll lands it back on the bottom —
+    /// this is the standard tmux/iTerm-style re-pin-at-bottom behavior, and
+    /// it is what keeps a single wheel-down notch at the tail (delta 0 or
+    /// otherwise clamped back to `max_offset`) from spuriously disengaging
+    /// follow: the offset never actually leaves the bottom, so follow never
+    /// leaves either. When content fits the pane (`max_offset() == 0`), the
+    /// offset is always `0 == max`, so follow stays permanently engaged and
+    /// this function is inert — correct, since there is nothing to scroll.
+    /// Returns whether the offset actually changed.
     pub fn scroll_by(&mut self, delta_rows: f32) -> bool {
-        self.follow = false;
         let before = self.offset;
         let max = self.max_offset();
         let target = (self.offset as f32 + delta_rows).clamp(0.0, max as f32);
         self.offset = target.round().clamp(0.0, max as f32) as Rows;
+        self.follow = self.offset == max;
         self.offset != before
     }
 
@@ -157,6 +173,44 @@ impl Viewport {
             self.offset = max;
         }
     }
+
+    /// Stage 2's transient scrollbar thumb: the region-relative row range
+    /// (0-indexed within the pane's `pane_rows` content rows, e.g. `2..5`
+    /// meaning "draw the thumb glyph on the 3rd, 4th, and 5th content
+    /// rows") the thumb should occupy for the CURRENT offset, or `None`
+    /// when there is nothing to scroll (`total_rows <= pane_rows` — the
+    /// whole document already fits, so a scrollbar would be meaningless
+    /// chrome). Pure position math only; drawing the thumb glyph in the
+    /// pane's last column and deciding WHEN it should be visible
+    /// (`agent_viewer`'s auto-hide timer) are the caller's job.
+    ///
+    /// Thumb height is proportional to the fraction of content visible
+    /// (`pane_rows * pane_rows / total_rows`, rounded, clamped to at least
+    /// 1 row so it never vanishes to nothing on very long documents), and
+    /// thumb position is proportional to scroll progress
+    /// (`offset / max_offset`) within the remaining track
+    /// (`pane_rows - thumb_height`), matching the conventional
+    /// proportional-scrollbar contract most terminal/GUI scrollbars use:
+    /// offset `0` puts the thumb at the top, `max_offset` puts it flush at
+    /// the bottom, with linear interpolation in between.
+    pub fn scrollbar_thumb_rows(&self) -> Option<std::ops::Range<Rows>> {
+        let total = self.total_rows();
+        if total <= self.pane_rows {
+            return None;
+        }
+        let pane = self.pane_rows;
+        let thumb_height = ((u64::from(pane) * u64::from(pane)) / u64::from(total))
+            .clamp(1, u64::from(pane)) as Rows;
+        let track = pane.saturating_sub(thumb_height);
+        let max_offset = self.max_offset();
+        let thumb_start = if max_offset == 0 {
+            0
+        } else {
+            ((u64::from(self.offset) * u64::from(track)) / u64::from(max_offset)) as Rows
+        }
+        .min(track);
+        Some(thumb_start..thumb_start.saturating_add(thumb_height))
+    }
 }
 
 /// The block index range currently intersecting the visible window.
@@ -182,12 +236,11 @@ pub struct VisibleRange {
 }
 
 impl VisibleRange {
-    /// Not called from `agent_viewer` (since T3-303, `sync_visible_window`
-    /// passes an empty range straight through to `sync_window`, which
-    /// correctly deletes a previously non-empty window's placements rather
-    /// than skip the call). Kept as a tested public predicate for the empty
-    /// case.
-    #[allow(dead_code)]
+    /// Used by `sync_visible_window` (T3-303 passes an empty range straight
+    /// through to `sync_window`, which correctly deletes a previously
+    /// non-empty window's placements rather than skip the call) and by
+    /// stage 2's `agent_viewer::finish_momentum_step`, which must not
+    /// attempt an incremental scroll-back step into an empty window.
     pub fn is_empty(&self) -> bool {
         self.first >= self.last_exclusive
     }
@@ -221,16 +274,87 @@ mod tests {
 
         assert!(viewport.scroll_by(100.0));
         assert_eq!(viewport.offset(), 25, "clamped at the bottom");
+        assert!(
+            viewport.following(),
+            "landing back on the bottom re-engages follow (tmux/iTerm-style re-pin)"
+        );
 
         assert!(viewport.scroll_by(-3.0));
         assert_eq!(viewport.offset(), 22);
+        assert!(
+            !viewport.following(),
+            "moving off the bottom again disengages follow"
+        );
+    }
+
+    /// The coordinator's fix ruling, case (a): a wheel-down notch while
+    /// already following at the tail must NOT disengage follow — the
+    /// offset never actually leaves the bottom, so follow must not either.
+    /// This is the exact "spontaneous follow=false" mechanism a stray
+    /// down-notch from a hovering pointer used to trigger.
+    #[test]
+    fn scroll_by_at_the_bottom_that_stays_at_the_bottom_never_disengages_follow() {
+        let mut viewport = Viewport::new(5);
+        viewport.set_block_heights(vec![10, 10, 10]); // max_offset 25
+        assert!(viewport.following());
+        assert_eq!(viewport.offset(), 25);
+
+        // A wheel-down notch (positive delta) while already at the bottom:
+        // clamps right back to 25, offset does not change, follow must stay
+        // engaged and the step must report no movement.
+        assert!(!viewport.scroll_by(3.0), "no actual movement at the clamp");
+        assert!(
+            viewport.following(),
+            "a down-notch that cannot move past the bottom must not disengage follow"
+        );
+
+        // The literal zero-delta case `handle_scroll_input`'s wheel branch
+        // uses to disengage-check without moving yet (see agent_viewer.rs)
+        // must also leave follow engaged when already at the bottom.
+        assert!(!viewport.scroll_by(0.0));
+        assert!(viewport.following());
+    }
+
+    /// Case (b): scrolling up (disengaging) and then all the way back down
+    /// re-engages follow, without needing End/F.
+    #[test]
+    fn scrolling_back_down_to_the_bottom_reengages_follow() {
+        let mut viewport = Viewport::new(5);
+        viewport.set_block_heights(vec![10, 10, 10]); // max_offset 25
+        assert!(viewport.scroll_by(-10.0)); // offset -> 15, disengages
+        assert!(!viewport.following());
+
+        assert!(viewport.scroll_by(5.0)); // offset -> 20, still short of 25
+        assert!(!viewport.following(), "not back at the bottom yet");
+
+        assert!(viewport.scroll_by(5.0)); // offset -> 25, exactly the bottom
+        assert!(
+            viewport.following(),
+            "landing exactly on max_offset re-engages follow"
+        );
+    }
+
+    /// Content-fits case named in the coordinator's ruling: `max_offset() ==
+    /// 0` means offset is always `0 == max`, so follow stays permanently
+    /// engaged and scroll input is inert.
+    #[test]
+    fn scroll_by_when_content_fits_the_pane_keeps_follow_engaged() {
+        let mut viewport = Viewport::new(10);
+        viewport.set_block_heights(vec![3]); // total 3 <= pane 10, max_offset 0
+        assert!(viewport.following());
+        assert!(!viewport.scroll_by(-5.0));
+        assert!(
+            viewport.following(),
+            "nothing to scroll: follow stays engaged"
+        );
+        assert!(!viewport.scroll_by(5.0));
+        assert!(viewport.following());
     }
 
     #[test]
     fn scroll_by_reports_no_change_when_already_clamped() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![3]); // total 3 < pane 5, max_offset 0
-        viewport.follow = false;
         assert!(!viewport.scroll_by(-5.0), "already at the top");
         assert!(!viewport.scroll_by(5.0), "content fits, nothing to scroll");
     }
@@ -343,5 +467,94 @@ mod tests {
         let visible = viewport.visible_blocks();
         assert_eq!(visible.first, 1);
         assert_eq!(visible.last_exclusive, 3);
+    }
+
+    #[test]
+    fn scrollbar_thumb_rows_is_none_when_content_fits_the_pane() {
+        let mut viewport = Viewport::new(10);
+        viewport.set_block_heights(vec![3, 4]); // total 7 <= pane 10
+        assert_eq!(viewport.scrollbar_thumb_rows(), None);
+
+        // Exactly equal is still "fits" — no scrollbar needed.
+        let mut viewport = Viewport::new(10);
+        viewport.set_block_heights(vec![10]);
+        assert_eq!(viewport.scrollbar_thumb_rows(), None);
+    }
+
+    #[test]
+    fn scrollbar_thumb_rows_at_the_top_starts_the_thumb_at_row_zero() {
+        let mut viewport = Viewport::new(10);
+        viewport.set_block_heights(vec![100]); // total 100, pane 10, max_offset 90
+        viewport.scroll_by(f32::MIN); // Home: offset -> 0
+        let thumb = viewport.scrollbar_thumb_rows().expect("scrollbar needed");
+        assert_eq!(
+            thumb.start, 0,
+            "offset 0 must put the thumb at the very top"
+        );
+    }
+
+    #[test]
+    fn scrollbar_thumb_rows_at_the_bottom_ends_the_thumb_flush_with_the_pane() {
+        let mut viewport = Viewport::new(10);
+        viewport.set_block_heights(vec![100]); // total 100, pane 10, max_offset 90
+        viewport.jump_to_bottom_and_follow(); // offset -> max_offset (90)
+        let thumb = viewport.scrollbar_thumb_rows().expect("scrollbar needed");
+        assert_eq!(
+            thumb.end, 10,
+            "offset at max_offset must put the thumb flush against the pane's bottom row"
+        );
+    }
+
+    #[test]
+    fn scrollbar_thumb_rows_height_is_proportional_to_visible_fraction() {
+        // pane 10 out of total 100 -> visible fraction 1/10 -> thumb height
+        // ~= 10 * (10/100) = 1 row.
+        let mut viewport = Viewport::new(10);
+        viewport.set_block_heights(vec![100]);
+        let thumb = viewport.scrollbar_thumb_rows().expect("scrollbar needed");
+        assert_eq!(thumb.end - thumb.start, 1);
+
+        // pane 10 out of total 20 -> visible fraction 1/2 -> thumb height
+        // ~= 10 * (10/20) = 5 rows, clearly taller than the 1-row case above.
+        let mut tall_viewport = Viewport::new(10);
+        tall_viewport.set_block_heights(vec![20]);
+        let taller_thumb = tall_viewport
+            .scrollbar_thumb_rows()
+            .expect("scrollbar needed");
+        assert_eq!(taller_thumb.end - taller_thumb.start, 5);
+    }
+
+    #[test]
+    fn scrollbar_thumb_rows_never_exceeds_the_pane_even_on_a_huge_document() {
+        let mut viewport = Viewport::new(3);
+        viewport.set_block_heights(vec![1_000_000]);
+        let thumb = viewport.scrollbar_thumb_rows().expect("scrollbar needed");
+        assert!(
+            thumb.end <= 3,
+            "thumb must never extend past the pane: {thumb:?}"
+        );
+        assert!(
+            thumb.end - thumb.start >= 1,
+            "thumb must stay at least 1 row even on a huge document: {thumb:?}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_thumb_rows_moves_proportionally_at_the_midpoint() {
+        let mut viewport = Viewport::new(10);
+        viewport.set_block_heights(vec![100]); // max_offset 90
+        viewport.scroll_by(f32::MIN); // Home: offset -> 0 first
+        viewport.scroll_by(45.0); // then halfway
+        assert_eq!(viewport.offset(), 45);
+        let thumb = viewport.scrollbar_thumb_rows().expect("scrollbar needed");
+        // Thumb height 1, track = pane(10) - thumb(1) = 9; at offset 45/90
+        // (exactly halfway), thumb_start = 45 * 9 / 90 = 4.5 -> 4 (integer
+        // division), landing roughly in the middle of the pane, not at
+        // either edge.
+        assert!(
+            thumb.start > 0 && thumb.end < 10,
+            "a midpoint offset must land the thumb strictly between the \
+             pane's edges: {thumb:?}"
+        );
     }
 }

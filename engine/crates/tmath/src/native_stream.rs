@@ -507,6 +507,7 @@ impl StreamSink {
     pub(crate) fn with_status_bar(mut self, pane_cols: u32, pane_rows: u32) -> Self {
         if let Self::Terminal(sink) = &mut self {
             sink.pane_rows = pane_rows;
+            sink.pane_cols = pane_cols;
             sink.status_bar = Some(StatusBar::new(pane_cols));
             let top = 2u32;
             let bottom = pane_rows.max(top);
@@ -526,6 +527,32 @@ impl StreamSink {
     pub(crate) fn set_status(&mut self, state: StatusBarState) -> Result<(), RenderError> {
         if let Self::Terminal(sink) = self {
             sink.set_status(state)?;
+        }
+        Ok(())
+    }
+
+    /// Draws stage 2's transient scrollbar (see
+    /// [`crate::scroll_region::scrollbar_operations`]) at `thumb_rows` — a
+    /// no-op in `Summary` mode or if [`Self::with_status_bar`] was never
+    /// called (no `scroll_region` means no region to draw a scrollbar
+    /// against). Not gated by `suppress_writes`: the scrollbar, like the
+    /// status bar, is pane chrome rather than visibility-windowed content.
+    pub(crate) fn set_scrollbar(
+        &mut self,
+        thumb_rows: Option<std::ops::Range<u32>>,
+    ) -> Result<(), RenderError> {
+        if let Self::Terminal(sink) = self {
+            sink.set_scrollbar(thumb_rows)?;
+        }
+        Ok(())
+    }
+
+    /// Clears stage 2's transient scrollbar back to blank (the ~1s
+    /// auto-hide timer, or nothing left to scroll). A no-op in `Summary`
+    /// mode or if [`Self::with_status_bar`] was never called.
+    pub(crate) fn clear_scrollbar(&mut self) -> Result<(), RenderError> {
+        if let Self::Terminal(sink) = self {
+            sink.clear_scrollbar()?;
         }
         Ok(())
     }
@@ -587,6 +614,25 @@ impl StreamSink {
         match self {
             Self::Summary => Ok(()),
             Self::Terminal(sink) => sink.sync_window(visible, skip_rows_in_first),
+        }
+    }
+
+    /// Attempts stage 2's incremental scroll-back step (agent-viewer only).
+    /// Always `Ok(false)` in `Summary` mode (there is no region to scroll,
+    /// and `Summary` never draws anything anyway) — the caller falls back
+    /// to `sync_window`, which is itself also a no-op in `Summary` mode, so
+    /// this never changes `Summary`-mode behavior. See
+    /// [`TerminalSink::try_scroll_window_incrementally`].
+    pub(crate) fn try_scroll_window_incrementally(
+        &mut self,
+        entering_ids_in_order: &[u64],
+        new_visible: std::ops::Range<usize>,
+    ) -> Result<bool, RenderError> {
+        match self {
+            Self::Summary => Ok(false),
+            Self::Terminal(sink) => {
+                sink.try_scroll_window_incrementally(entering_ids_in_order, new_visible)
+            }
         }
     }
 
@@ -755,6 +801,13 @@ pub(crate) struct TerminalSink {
     /// see those functions' doc comments for why region-scroll replaces the
     /// old flowing-append/live-cursor-query behavior.
     scroll_region: Option<(u32, u32)>,
+    /// The pane's total column count, set together with `pane_rows`/
+    /// `scroll_region` in [`StreamSink::with_status_bar`] — stage 2's
+    /// scrollbar (`Self::set_scrollbar`/`clear_scrollbar`) draws in this
+    /// absolute last column. `0` (the default) disables the scrollbar
+    /// entirely, the same "never opted in" posture every other
+    /// `with_status_bar`-gated field has.
+    pane_cols: u32,
 }
 
 impl TerminalSink {
@@ -778,6 +831,7 @@ impl TerminalSink {
             pane_rows: 0,
             status_bar: None,
             scroll_region: None,
+            pane_cols: 0,
         }
     }
 
@@ -1109,6 +1163,114 @@ impl TerminalSink {
         Ok(())
     }
 
+    /// Stage 2's incremental scroll-back step: for the narrow case of a
+    /// small backward window move (scrolling toward older content, e.g. one
+    /// momentum tick's `whole_rows`) with NO OTHER window-shape change
+    /// (same `skip_rows_in_first`, no bottom-edge shrink), scrolls the
+    /// DECSTBM region down and draws only the newly-entering blocks at the
+    /// top edge (`crate::scroll_region::region_scroll_back_operations`)
+    /// instead of erasing and redrawing the WHOLE visible window
+    /// (`sync_window`) — a real smoothness difference during a decaying
+    /// momentum tail: `sync_window_operations` re-transmits every block in
+    /// `visible` on every call (needed for correctness there, since it must
+    /// tolerate an arbitrary window change), while this path only ever
+    /// touches the rows that actually changed.
+    ///
+    /// Returns `Ok(true)` when it handled the step; `Ok(false)` when the
+    /// shape does not match the narrow case this function covers (multiple
+    /// blocks entering with a mid-block edge, a forward step, a
+    /// `skip_rows_in_first` change, or anything else) — the caller must
+    /// then fall back to a full `sync_window` call, which remains correct
+    /// for every shape this function does not attempt, exactly as before
+    /// stage 2. Never itself a correctness risk if the heuristic under- or
+    /// over-restricts which cases it accepts: an `Ok(false)` is always safe
+    /// (just slower, not wrong), and this function only ever emits
+    /// operations it can prove correct for the specific shape it checked.
+    ///
+    /// `entering_ids_in_order` are the ids newly revealed at the window's
+    /// top edge, TOP-TO-BOTTOM (closest-to-top first) — the caller
+    /// (`agent_viewer`) computes this from the viewport's before/after
+    /// visible ranges, since only it has that history.
+    ///
+    /// Not covered by a byte-level `FakeTty`-driven test in this module's
+    /// own test suite, for the same structural reason `emit_batch`'s clamp
+    /// branch is not (see `two_consecutive_resets_keep_row_bookkeeping_
+    /// consistent_across_calls`'s doc comment): `TerminalSink` is hardcoded
+    /// to `Terminal<StdioTty>`, not generic over `Tty`, so a real
+    /// `TerminalSink` cannot be constructed in a test at all. This
+    /// function's shape-matching logic (the `matches_prefix` check) is
+    /// exercised indirectly through `crate::scroll_region`'s thorough
+    /// `region_scroll_back_operations` tests (the operations it delegates
+    /// to) and `agent_viewer`'s `incremental_entering_range` tests (the
+    /// caller-side shape detection that decides whether this function is
+    /// even called) — real-terminal evidence is what would close the
+    /// remaining gap on this function's own dispatch/eviction glue.
+    pub(crate) fn try_scroll_window_incrementally(
+        &mut self,
+        entering_ids_in_order: &[u64],
+        new_visible: std::ops::Range<usize>,
+    ) -> Result<bool, RenderError> {
+        let Some((region_top, region_bottom)) = self.scroll_region else {
+            return Ok(false);
+        };
+        if entering_ids_in_order.is_empty() {
+            return Ok(false);
+        }
+        let new_visible =
+            new_visible.start.min(self.placed.len())..new_visible.end.min(self.placed.len());
+        // Only handle the case where EVERY entering id is actually present,
+        // in order, at the very start of the new visible range — anything
+        // else (a gap, a reordering, an id that left retained-PNG budget)
+        // is not this function's narrow shape.
+        let matches_prefix = self.placed[new_visible.clone()]
+            .iter()
+            .take(entering_ids_in_order.len())
+            .map(|entry| entry.id)
+            .eq(entering_ids_in_order.iter().copied());
+        if !matches_prefix {
+            return Ok(false);
+        }
+        let entering: Vec<crate::scroll_region::RegionBlock<'_>> = entering_ids_in_order
+            .iter()
+            .map(|&id| {
+                self.placed
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .map(|entry| crate::scroll_region::RegionBlock {
+                        id,
+                        png: &entry.png,
+                    })
+                    .ok_or_else(stream_error)
+            })
+            .collect::<Result<_, _>>()?;
+        // A retained PNG evicted out of budget shows up as an empty `png`
+        // (see `PlacedState::png`'s doc comment) — `decode_png` inside
+        // `region_scroll_back_operations` would fail closed on that, which
+        // is correct, but the caller should have already restored it via
+        // `restore_missing_pngs` before calling this; bail to the full sync
+        // path rather than surface a hard error for a case the caller
+        // should have prevented.
+        if entering.iter().any(|block| block.png.is_empty()) {
+            return Ok(false);
+        }
+        let operations = crate::scroll_region::region_scroll_back_operations(
+            &entering,
+            self.cell,
+            self.max_image_pixels,
+            region_top,
+            region_bottom,
+        )
+        .map_err(|_| stream_error())?;
+        self.write_unless_suppressed(&operations)?;
+        self.first_append_at_line_start = true;
+        self.emitted_ids = self.placed[new_visible.clone()]
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
+        evict_pngs_outside_budget(&mut self.placed, new_visible, self.retained_window_blocks);
+        Ok(true)
+    }
+
     /// Runs AT-3-504's eviction directly, without a full `sync_window`
     /// (which also diffs `emitted_ids` and writes terminal bytes — neither
     /// of which the follow-engaged append path needs, since it never calls
@@ -1194,6 +1356,42 @@ impl TerminalSink {
             return Ok(());
         };
         let operations = status_bar_operations(status_bar.pane_cols, state);
+        terminal_output::write_operations(&operations).map_err(|_| stream_error())
+    }
+
+    /// Draws the scrollbar (thumb at `thumb_rows`, track everywhere else in
+    /// the region) at the pane's absolute last column. A no-op when the
+    /// region was never established (`scroll_region.is_none()`, e.g. plain
+    /// stream/watch sessions, or `with_status_bar` never called).
+    fn set_scrollbar(
+        &mut self,
+        thumb_rows: Option<std::ops::Range<u32>>,
+    ) -> Result<(), RenderError> {
+        let Some((region_top, region_bottom)) = self.scroll_region else {
+            return Ok(());
+        };
+        let region_rows = region_bottom.saturating_sub(region_top).saturating_add(1);
+        let operations = crate::scroll_region::scrollbar_operations(
+            thumb_rows,
+            region_rows,
+            region_top,
+            self.pane_cols,
+        );
+        terminal_output::write_operations(&operations).map_err(|_| stream_error())
+    }
+
+    /// Clears the scrollbar's column back to blank. A no-op under the same
+    /// conditions as [`Self::set_scrollbar`].
+    fn clear_scrollbar(&mut self) -> Result<(), RenderError> {
+        let Some((region_top, region_bottom)) = self.scroll_region else {
+            return Ok(());
+        };
+        let region_rows = region_bottom.saturating_sub(region_top).saturating_add(1);
+        let operations = crate::scroll_region::scrollbar_clear_operations(
+            region_rows,
+            region_top,
+            self.pane_cols,
+        );
         terminal_output::write_operations(&operations).map_err(|_| stream_error())
     }
 

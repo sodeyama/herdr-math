@@ -98,13 +98,6 @@ pub(crate) fn region_scroll_up(rows: u32) -> Vec<TerminalOp> {
 /// scroll-back: moves the region's content down by `n` rows and reveals `n`
 /// blank rows at the region's TOP edge. Same `n == 0` no-op rule as
 /// `region_scroll_up`, for the same reason.
-///
-/// Not called from `agent_viewer` yet: real scroll-back needs an incremental
-/// per-step driver (a wheel notch or a momentum tick), which stage 2 adds —
-/// see [`region_scroll_back_operations`]'s own doc comment for the same
-/// note. Kept as a tested, ready building block so stage 2 wires a consumer
-/// rather than writing this function under time pressure.
-#[allow(dead_code)]
 pub(crate) fn region_scroll_down(rows: u32) -> Vec<TerminalOp> {
     if rows == 0 {
         return Vec::new();
@@ -187,17 +180,12 @@ pub(crate) fn region_append_operations(
 /// caller (`agent_viewer`) is responsible for that ordering, since it is the
 /// one with the viewport's block list.
 ///
-/// Not called from `agent_viewer` yet: stage 1 fixes the reach-the-beginning
-/// defect through `sync_visible_window`'s existing absolute-redraw path
-/// (`native_stream::sync_window_operations`'s `skip_rows_in_first`
-/// parameter) rather than this function, since a genuinely INCREMENTAL
-/// scroll-back (as opposed to a discrete keyboard/wheel-notch jump) needs a
-/// per-tick driver — stage 2's momentum engine — to be meaningful; wiring
-/// this function ahead of that driver existing would mean it is only ever
-/// called with the whole delta in one step, indistinguishable from calling
-/// `sync_window` directly. Kept as a tested, ready building block for stage
-/// 2's tick loop.
-#[allow(dead_code)]
+/// Called from `native_stream::TerminalSink::try_scroll_window_incrementally`
+/// (stage 2), which handles the narrow "one or more blocks entering at the
+/// top edge, nothing else about the window shape changed" case; anything
+/// broader (a jump, a `skip_rows_in_first` change, a forward step) still
+/// goes through `sync_window`'s full resync, which remains correct for
+/// every shape this function does not attempt.
 pub(crate) fn region_scroll_back_operations(
     entering: &[RegionBlock<'_>],
     cell: CellSize,
@@ -331,6 +319,100 @@ pub(crate) fn region_tail_replace_operations(
         true,
     ));
     Ok(operations)
+}
+
+/// The scrollbar thumb glyph (a solid block), drawn in the pane's absolute
+/// last column while scrolling. Distinct from any placeholder cell content —
+/// see `layout::PANE_MARGIN_COLS`'s doc comment for why no block's
+/// placeholder grid can ever reach this column.
+const SCROLLBAR_THUMB_GLYPH: char = '█';
+/// The scrollbar track glyph, drawn in every region row NOT covered by the
+/// thumb while the scrollbar is visible, so the thumb reads as a moving
+/// element against a visible rail rather than floating in blank space.
+const SCROLLBAR_TRACK_GLYPH: char = '│';
+/// SGR for the thumb: a plain, moderately bright color, distinguishable
+/// from ordinary block content and from the dim track.
+const SCROLLBAR_THUMB_SGR: &str = "\x1b[38;5;250m";
+/// SGR for the track: dim, so it reads as background chrome, not content.
+const SCROLLBAR_TRACK_SGR: &str = "\x1b[38;5;238m";
+const SGR_RESET: &str = "\x1b[0m";
+
+/// Builds the operations that draw stage 2's transient scrollbar: a thumb
+/// glyph at `thumb_rows` (region-relative, 0-indexed — the same convention
+/// `viewer_viewport::Viewport::scrollbar_thumb_rows` returns) and a track
+/// glyph at every other row from `0..region_rows`, all in the pane's
+/// absolute LAST column (`pane_cols`).
+///
+/// Wrapped in DECSC/DECRC (`\x1b7`...`\x1b8`, the same save/restore pair
+/// `native_stream`'s status bar uses — chosen there and reused here for the
+/// same tmux-passthrough reliability reason) so drawing the scrollbar never
+/// disturbs the cursor position content operations rely on. Each row is
+/// addressed absolutely (`CSI {row};{pane_cols} H`) rather than
+/// cursor-relative, since the scrollbar's column has nothing to do with
+/// wherever content operations last left the cursor.
+///
+/// `region_top` is the DECSTBM region's first row (1-indexed, matching
+/// `decstbm_set`'s `top` parameter — `2` when the status bar reserves row
+/// 1); `thumb_rows` and the implied `0..region_rows` track range are both
+/// 0-indexed offsets INTO the region, so row 0 here means the region's own
+/// first row (`region_top`), not the pane's absolute row 1.
+///
+/// Must be called again, unconditionally, after any operation batch that
+/// could have cleared the scrollbar's column with a full-line clear (see
+/// the module doc's "Full-row-clear interaction" note) — this function does
+/// not itself track whether a redraw is needed; the caller's tick loop
+/// decides that.
+pub(crate) fn scrollbar_operations(
+    thumb_rows: Option<std::ops::Range<u32>>,
+    region_rows: u32,
+    region_top: u32,
+    pane_cols: u32,
+) -> Vec<TerminalOp> {
+    if region_rows == 0 {
+        return Vec::new();
+    }
+    let mut line = String::from("\x1b7");
+    for row in 0..region_rows {
+        let absolute_row = region_top + row;
+        line.push_str(&format!("\x1b[{absolute_row};{pane_cols}H"));
+        let in_thumb = thumb_rows
+            .as_ref()
+            .is_some_and(|thumb| thumb.contains(&row));
+        if in_thumb {
+            line.push_str(SCROLLBAR_THUMB_SGR);
+            line.push(SCROLLBAR_THUMB_GLYPH);
+        } else {
+            line.push_str(SCROLLBAR_TRACK_SGR);
+            line.push(SCROLLBAR_TRACK_GLYPH);
+        }
+        line.push_str(SGR_RESET);
+    }
+    line.push_str("\x1b8");
+    vec![TerminalOp::Local(line.into_bytes())]
+}
+
+/// Builds the operations that CLEAR the scrollbar's column back to blank —
+/// used when the auto-hide timer expires (the scrollbar is transient: shown
+/// while scrolling, hidden ~1s after motion stops, per the coordinator's
+/// spec) or when there is nothing to scroll
+/// (`Viewport::scrollbar_thumb_rows` returned `None`). Writes a plain space
+/// at each region row's last column rather than any glyph, wrapped in the
+/// same DECSC/DECRC save/restore as `scrollbar_operations`.
+pub(crate) fn scrollbar_clear_operations(
+    region_rows: u32,
+    region_top: u32,
+    pane_cols: u32,
+) -> Vec<TerminalOp> {
+    if region_rows == 0 {
+        return Vec::new();
+    }
+    let mut line = String::from("\x1b7");
+    for row in 0..region_rows {
+        let absolute_row = region_top + row;
+        line.push_str(&format!("\x1b[{absolute_row};{pane_cols}H "));
+    }
+    line.push_str("\x1b8");
+    vec![TerminalOp::Local(line.into_bytes())]
 }
 
 #[cfg(test)]
@@ -692,6 +774,75 @@ mod tests {
             ),
             Err(RegionOpError),
             "an out-of-range OLD id must also be rejected"
+        );
+    }
+
+    #[test]
+    fn scrollbar_operations_with_zero_region_rows_is_a_true_no_op() {
+        assert!(scrollbar_operations(Some(0..2), 0, 2, 80).is_empty());
+    }
+
+    #[test]
+    fn scrollbar_operations_draws_the_thumb_at_the_right_rows_and_column() {
+        // A 5-row region (top=2, so absolute rows 2..7), thumb at
+        // region-relative rows 1..3 (absolute rows 3..5), pane 80 cols wide.
+        let ops = scrollbar_operations(Some(1..3), 5, 2, 80);
+        let text = direct_text(&ops);
+        assert!(text.starts_with("\x1b7"), "wrapped in DECSC: {text:?}");
+        assert!(text.ends_with("\x1b8"), "wrapped in DECRC: {text:?}");
+        // Every row addresses column 80 (the pane's last column).
+        for absolute_row in 2..7 {
+            assert!(
+                text.contains(&format!("\x1b[{absolute_row};80H")),
+                "row {absolute_row} must be addressed at column 80: {text:?}"
+            );
+        }
+        // Thumb rows (region-relative 1, 2 -> absolute 3, 4) get the thumb
+        // glyph; every other row gets the track glyph.
+        let thumb_count = text.matches(SCROLLBAR_THUMB_GLYPH).count();
+        let track_count = text.matches(SCROLLBAR_TRACK_GLYPH).count();
+        assert_eq!(
+            thumb_count, 2,
+            "thumb glyph drawn exactly at the 2 thumb rows: {text:?}"
+        );
+        assert_eq!(
+            track_count, 3,
+            "track glyph drawn at the other 3 rows: {text:?}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_operations_with_no_thumb_draws_only_track() {
+        // `None` (content fits, no scrollbar needed per
+        // `Viewport::scrollbar_thumb_rows`) still draws the track everywhere
+        // — the caller decides whether to call this at all; when it does,
+        // every row is track.
+        let ops = scrollbar_operations(None, 5, 2, 80);
+        let text = direct_text(&ops);
+        assert_eq!(text.matches(SCROLLBAR_THUMB_GLYPH).count(), 0);
+        assert_eq!(text.matches(SCROLLBAR_TRACK_GLYPH).count(), 5);
+    }
+
+    #[test]
+    fn scrollbar_clear_operations_with_zero_region_rows_is_a_true_no_op() {
+        assert!(scrollbar_clear_operations(0, 2, 80).is_empty());
+    }
+
+    #[test]
+    fn scrollbar_clear_operations_writes_a_blank_at_every_row_and_column() {
+        let ops = scrollbar_clear_operations(3, 2, 80);
+        let text = direct_text(&ops);
+        assert!(text.starts_with("\x1b7"));
+        assert!(text.ends_with("\x1b8"));
+        for absolute_row in 2..5 {
+            assert!(
+                text.contains(&format!("\x1b[{absolute_row};80H ")),
+                "row {absolute_row} must be cleared to a blank at column 80: {text:?}"
+            );
+        }
+        assert!(
+            !text.contains(SCROLLBAR_THUMB_GLYPH) && !text.contains(SCROLLBAR_TRACK_GLYPH),
+            "no scrollbar glyphs must remain after a clear: {text:?}"
         );
     }
 }

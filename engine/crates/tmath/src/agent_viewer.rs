@@ -79,11 +79,33 @@ use tmath_render::{
 };
 
 use crate::native_stream::{self, EmitOutcome, StatusBarState, StreamSink};
-use crate::viewer_viewport::Viewport;
+use crate::viewer_viewport::{self, Viewport};
 
 const CONNECT_RETRIES: u32 = 50;
 const CONNECT_RETRY_MS: u64 = 100;
 const POLL_TIMEOUT: Duration = Duration::from_millis(40);
+const POLL_TIMEOUT_SECS: f32 = 0.04;
+
+/// One wheel notch's momentum impulse, rows/second — calibrated so a
+/// SINGLE isolated notch (no further input) travels exactly
+/// `tmath_core::scroll_driver`'s existing `WHEEL_ROWS` (3.0) rows in total
+/// before settling, matching today's discrete-jump distance while
+/// EASING there via momentum's decay instead of teleporting. Derived from
+/// the exact total-distance integral of an exponentially decaying velocity
+/// (`total = v0 / -ln(DECAY_PER_SECOND)`, the same closed form
+/// `tmath_core::momentum::Momentum::tick`'s per-tick displacement uses,
+/// integrated to infinity rather than over one `dt`): solving
+/// `3.0 = v0 / -ln(DECAY_PER_SECOND)` for `v0` gives this constant. A fast,
+/// sustained wheel spin still accumulates well past 3 rows, since
+/// `Momentum::add_impulse` sums same-tick notches and later ticks add more
+/// before the earlier impulse has fully decayed — this constant only
+/// calibrates the SINGLE-NOTCH case.
+const WHEEL_MOMENTUM_ROWS_PER_SEC: f32 = 15.154_372;
+
+/// How long stage 2's transient scrollbar stays visible after the most
+/// recent scroll step, before `run_viewer_loop`'s tick clears it — the
+/// coordinator's spec: "~1s auto-hide on the same tick."
+const SCROLLBAR_AUTO_HIDE: Duration = Duration::from_secs(1);
 
 /// Environment variable that re-enables the viewer's ongoing status/
 /// diagnostic `eprintln!` output (off by default per the user's live
@@ -108,6 +130,58 @@ fn viewer_log_enabled() -> bool {
 /// other tests running in the same binary).
 fn parse_viewer_log_enabled(raw: Option<&str>) -> bool {
     raw.is_some_and(|value| !value.is_empty())
+}
+
+/// Environment variable naming a file to route [`VIEWER_LOG_ENV_VAR`]'s
+/// diagnostic output to, INSTEAD of stderr (the live scroll-lab's
+/// observation 3: `eprintln!` writes reach the same physical pty as the
+/// viewer's own Kitty-graphics content stream, and since they go through
+/// neither `terminal_output::write_operations` nor the DECSTBM region at
+/// all — they are a completely separate, uncontrolled write path straight
+/// to the process's stderr fd — a log line prints at the cursor's CURRENT
+/// physical position and can scroll the pane exactly the way DECSTBM was
+/// built to prevent for controlled content writes, silently corrupting the
+/// window-managed pane's row invariants). Unset (the default): stderr,
+/// unchanged from before this variable existed.
+const VIEWER_LOG_FILE_ENV_VAR: &str = "TMATH_VIEWER_LOG_FILE";
+
+/// Redirects the process's OWN stderr file descriptor to the file named by
+/// [`VIEWER_LOG_FILE_ENV_VAR`], if set and openable — every existing
+/// `eprintln!` call site in this module keeps writing to "stderr" from
+/// Rust's point of view, unchanged, but the underlying fd now points at the
+/// file instead of the pty, so log lines never reach the managed pane at
+/// all. Best-effort: an unset variable, or a file that fails to open
+/// (unwritable directory, permission error), leaves stderr exactly as it
+/// was — logging failures must never block viewer startup, the same
+/// "never block on a malformed toggle" posture `TMATH_DPR` and
+/// [`viewer_log_enabled`] already have. Must be called BEFORE any
+/// `eprintln!` in this module runs (i.e. as early as possible in
+/// [`run_agent_viewer`]), or earlier log lines would still reach the pty.
+///
+/// Not covered by a unit test: it mutates the PROCESS'S OWN stderr file
+/// descriptor (`rustix::stdio::dup2_stderr`), which would silently redirect
+/// every other test's output (including panic messages) running in the same
+/// test binary — an unacceptable side effect for a unit test to have,
+/// unlike `viewer_log_enabled`'s env-var read (also process-global, but
+/// read-only and already isolated into a pure, directly-testable parsing
+/// rule in `parse_viewer_log_enabled`). There is no equivalent pure
+/// sub-rule to extract here beyond "does the env var name a file that opens
+/// successfully," which is exactly the two `let...else` lines below —
+/// nothing more complex to isolate. Manual verification: set
+/// `TMATH_VIEWER_LOG=1 TMATH_VIEWER_LOG_FILE=/path/to/file` and confirm
+/// diagnostic lines land in the file, not the pane.
+fn redirect_viewer_log_to_file_if_configured() {
+    let Some(path) = std::env::var_os(VIEWER_LOG_FILE_ENV_VAR) else {
+        return;
+    };
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    let _ = rustix::stdio::dup2_stderr(&file);
 }
 
 struct Viewer {
@@ -156,6 +230,51 @@ struct Viewer {
     /// frame, so a delta-reassembled document and a directly-sent one agree
     /// on the largest document either path can ever produce.
     delta: DeltaState,
+    /// Stage 2's velocity-based momentum engine (`tmath_core::momentum`),
+    /// distinct from `viewport.offset()`'s own clamped position: `momentum`
+    /// tracks ONLY the decaying velocity a wheel flick leaves behind, so
+    /// per-tick displacement is computed once here and applied to
+    /// `viewport` through `Viewport::scroll_by`, the same entry point
+    /// discrete keyboard/wheel-notch scrolling already uses — momentum
+    /// never bypasses the viewport's own clamping/follow-disengage rules,
+    /// it only supplies a different SOURCE of scroll deltas. Rests at zero
+    /// velocity while following (see `run_viewer_loop`'s tick handling).
+    momentum: tmath_core::momentum::Momentum,
+    /// The row delta pending from same-tick wheel events, coalesced into one
+    /// impulse before being fed to `momentum` (see `run_viewer_loop`'s doc
+    /// comment on why coalescing matters for a wheel that reports discrete
+    /// notches, not continuous pixel deltas). Reset to `0.0` every tick
+    /// after being applied; never carries over between ticks — a leftover
+    /// nonzero value here would double-count an already-applied impulse on
+    /// the next tick.
+    pending_wheel_rows: f32,
+    /// Sub-row fractional displacement left over from momentum ticks,
+    /// carried forward so it is not silently lost to `Viewport::offset`'s
+    /// `u32` rounding (`Viewport::scroll_by` re-rounds from the CURRENT
+    /// stored integer offset every call, not a running float accumulator —
+    /// correct for a single discrete jump, but a decaying momentum tail's
+    /// per-tick deltas are frequently well under 1.0 row once decay has run
+    /// for a while, so re-rounding from zero each tick would silently
+    /// discard fractional motion for several ticks in a row before it
+    /// finally crosses an integer boundary, reading as a stall rather than
+    /// smooth deceleration). `apply_momentum_tick` adds each tick's exact
+    /// float delta here, calls `scroll_by` only with `trunc()`'s
+    /// integer-crossing portion, and keeps the leftover fraction for the
+    /// next tick — cleared (not carried) on any cancel/jump, since a fresh
+    /// jump has no meaningful "leftover fraction" to resume from.
+    momentum_remainder: f32,
+    /// Stage 2's transient scrollbar auto-hide deadline: `Some(deadline)`
+    /// while the scrollbar should be visible (any scroll step sets this to
+    /// `now + SCROLLBAR_AUTO_HIDE` — see that constant), `None` once it has
+    /// been cleared. `run_viewer_loop`'s tick checks this every tick and
+    /// clears the scrollbar exactly once when `Instant::now() >= deadline`,
+    /// then sets this back to `None` so the clear is not repeated every
+    /// tick thereafter. A wall-clock `Instant` here (not tick-counted) is
+    /// deliberate — the auto-hide timer is real-world UX timing, not part
+    /// of the pure, tick-injectable momentum physics
+    /// (`tmath_core::momentum::Momentum`), which stays wall-clock-free for
+    /// determinism; only this ancillary visibility timer touches the clock.
+    scrollbar_visible_until: Option<Instant>,
 }
 
 pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
@@ -163,6 +282,11 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         println!("usage: tmath agent-viewer <socket-path>");
         return Ok(0);
     }
+    // Must run before any `eprintln!` below (including the very first one),
+    // or those earlier lines would still reach the pty. A no-op unless
+    // `TMATH_VIEWER_LOG_FILE` is set — see its doc comment for why this
+    // exists (observation 3 from the live scroll-lab run).
+    redirect_viewer_log_to_file_if_configured();
     let log_enabled = viewer_log_enabled();
     let socket = args.first().ok_or("agent-viewer requires a socket path")?;
 
@@ -326,6 +450,10 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         cell,
         block_sources: Vec::new(),
         delta: DeltaState::new(IPC_MAX_REQUEST_BYTES),
+        momentum: tmath_core::momentum::Momentum::new(),
+        pending_wheel_rows: 0.0,
+        momentum_remainder: 0.0,
+        scrollbar_visible_until: None,
     };
     let _ = viewer.stream.set_nonblocking(true);
     if log_enabled {
@@ -391,9 +519,16 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
         }
 
         // Terminal input: `q`/Ctrl-C close the viewer. `End`/`F` re-engage
-        // follow and jump the viewport to the bottom; any other scroll-shaped
-        // input disengages follow and moves the viewport. A window change
-        // triggers a redraw of the newly visible blocks.
+        // follow and jump the viewport to the bottom; a wheel notch is
+        // COALESCED into `pending_wheel_rows` rather than moving the
+        // viewport immediately (stage 2: momentum takes over the actual
+        // motion, applied once per tick below, so several notches arriving
+        // in the same 40ms read are summed into one impulse instead of each
+        // re-triggering its own decay curve — see `WHEEL_MOMENTUM_ROWS_PER_SEC`'s
+        // doc comment). Every other scroll-shaped input (arrows, `j`/`k`,
+        // `PgUp`/`PgDn`, `Home`) still jumps immediately and cancels any
+        // in-flight momentum, matching a keyboard user's expectation of an
+        // exact, non-eased jump.
         if stdin_readable() {
             let mut chunk = [0u8; 256];
             let mut stdin = io::stdin();
@@ -413,6 +548,26 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
             }
         }
 
+        // Stage 2: one momentum tick per loop iteration, regardless of
+        // whether new input arrived this tick — this is what lets a flick
+        // keep moving the viewport across ticks with no further wheel
+        // events, and what applies this tick's coalesced wheel impulse (if
+        // any). A no-op (zero displacement, no sync) when momentum is
+        // already settled and no wheel event arrived, so this costs nothing
+        // on an idle/following viewer.
+        apply_momentum_tick(viewer);
+
+        // Stage 2's scrollbar auto-hide: check every tick, not just after a
+        // scroll step, so the ~1s timer fires even once motion has fully
+        // stopped and no further ticks would otherwise touch the scrollbar
+        // state at all.
+        if viewer
+            .scrollbar_visible_until
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            hide_scrollbar(viewer);
+        }
+
         let elapsed = start.elapsed();
         if elapsed < POLL_TIMEOUT {
             std::thread::sleep(POLL_TIMEOUT - elapsed);
@@ -420,44 +575,367 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
     }
 }
 
-/// Routes one decoded input event through the viewport (AT-3-502): `End`/`F`
-/// re-engage follow and jump to the bottom; any other scroll-shaped event
-/// (wheel, arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`) disengages follow and moves
-/// the window by the same row mapping stream mode's scroll driver uses. A
-/// window that actually moved triggers a redraw of the newly visible blocks.
+/// Routes one decoded input event (AT-3-502): `End`/`F` re-engage follow,
+/// jump to the bottom, and cancel any in-flight momentum. A wheel notch
+/// (`ScrollUp`/`ScrollDown`) is coalesced into `pending_wheel_rows` for
+/// `apply_momentum_tick` to pick up this tick — it does NOT move the
+/// viewport or disengage follow itself; that happens once, from the
+/// coalesced impulse, when the tick runs. Every other scroll-shaped key
+/// (arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`) still jumps the viewport
+/// immediately and cancels momentum, matching a keyboard user's expectation
+/// of an exact, non-eased jump rather than an eased flick.
+///
+/// Logs WHICH input kind disengaged follow (the live scroll-lab's
+/// "spontaneous follow=false" observation asked for this): a
+/// same-tick-coalesced wheel notch is not itself distinguishable from a
+/// keyboard jump in `run_viewer_loop`'s aggregate `follow_changed` check, so
+/// this function logs the specific event immediately, before coalescing,
+/// rather than after the tick applies it.
 fn handle_scroll_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
     use tmath_core::input::{Event, KeyEvent};
-    use tmath_core::mouse::Key;
+    use tmath_core::mouse::{Key, MouseKind};
+
+    if let Event::Key(KeyEvent {
+        key: Key::End,
+        ctrl: false,
+        ..
+    })
+    | Event::Key(KeyEvent {
+        key: Key::Char('F'),
+        ctrl: false,
+        ..
+    }) = event
+    {
+        let following_before = viewer.viewport.following();
+        let before = viewer.viewport.offset();
+        viewer.viewport.jump_to_bottom_and_follow();
+        viewer.momentum.cancel();
+        viewer.pending_wheel_rows = 0.0;
+        viewer.momentum_remainder = 0.0;
+        let moved = viewer.viewport.offset() != before;
+        let follow_changed = viewer.viewport.following() != following_before;
+        log_follow_change(viewer, follow_changed, event);
+        finish_scroll_step(viewer, moved, follow_changed);
+        return;
+    }
+
+    if let Event::Mouse(mouse) = event {
+        match mouse.kind {
+            MouseKind::ScrollUp | MouseKind::ScrollDown => {
+                let following_before = viewer.viewport.following();
+                viewer.pending_wheel_rows += if mouse.kind == MouseKind::ScrollUp {
+                    -1.0
+                } else {
+                    1.0
+                };
+                // `scroll_by(0.0)` clamps the CURRENT offset against the
+                // CURRENT max and re-derives follow from where that lands
+                // (see `Viewport::scroll_by`'s doc comment): while already
+                // at the bottom this is a genuine no-op (follow stays
+                // engaged, matching the coordinator's fix — a wheel-down
+                // notch at the tail must never disengage follow), and while
+                // scrolled up it correctly keeps follow disengaged. The
+                // actual offset MOVE (if any) still happens on the next
+                // tick via the coalesced impulse; this call exists only to
+                // react to a follow-state change immediately, so the status
+                // bar and diagnostic log update on the same input rather
+                // than one tick later.
+                let moved = viewer.viewport.scroll_by(0.0);
+                let follow_changed = viewer.viewport.following() != following_before;
+                log_follow_change(viewer, follow_changed, event);
+                finish_scroll_step(viewer, moved, follow_changed);
+            }
+            // Move/Down/Up/ScrollLeft/ScrollRight never drive scrolling —
+            // `scroll_delta` already excludes them, but matching explicitly
+            // here (rather than falling through to the generic branch
+            // below) keeps the coordinator's specific ask visible in the
+            // code: these kinds must never disengage follow, and this
+            // early return proves it structurally rather than by relying on
+            // `scroll_delta`'s behavior alone.
+            _ => {}
+        }
+        return;
+    }
 
     let following_before = viewer.viewport.following();
-    let moved = match event {
-        Event::Key(KeyEvent {
-            key: Key::End,
-            ctrl: false,
-            ..
-        })
-        | Event::Key(KeyEvent {
-            key: Key::Char('F'),
-            ctrl: false,
-            ..
-        }) => {
-            let before = viewer.viewport.offset();
-            viewer.viewport.jump_to_bottom_and_follow();
-            viewer.viewport.offset() != before
+    let moved = match scroll_delta(event, None) {
+        Some(delta) => {
+            viewer.momentum.cancel();
+            viewer.pending_wheel_rows = 0.0;
+            viewer.momentum_remainder = 0.0;
+            viewer.viewport.scroll_by(delta)
         }
-        other => match scroll_delta(other, None) {
-            Some(delta) => viewer.viewport.scroll_by(delta),
-            None => false,
-        },
+        None => false,
     };
-
     let follow_changed = viewer.viewport.following() != following_before;
-    if viewer.log_enabled && follow_changed {
-        eprintln!("agent-viewer: follow={}", viewer.viewport.following());
+    log_follow_change(viewer, follow_changed, event);
+    finish_scroll_step(viewer, moved, follow_changed);
+}
+
+/// Applies one momentum tick (stage 2): folds this tick's coalesced wheel
+/// impulse (if any) into `momentum`, advances momentum by one tick
+/// (`POLL_TIMEOUT_SECS`, matching the real loop interval — see
+/// `tmath_core::momentum::Momentum::tick`'s doc comment for why this stays
+/// correct even if the loop's actual elapsed time drifts slightly from
+/// exactly 40ms; a small fixed-step assumption here, not a live wall-clock
+/// read, keeps the physics itself pure and testable, while the coalescing
+/// input above still reacts to real events every real tick), and applies
+/// the resulting row delta to the viewport through the same
+/// `Viewport::scroll_by` entry point discrete input already uses.
+///
+/// Accumulates each tick's exact float delta into `momentum_remainder`
+/// before calling `scroll_by` with only the integer-crossing portion
+/// (`trunc()`), keeping the leftover fraction for the next tick — see
+/// `Viewer::momentum_remainder`'s field doc for why this matters: a decaying
+/// momentum tail frequently produces sub-1.0-row deltas per tick, and
+/// `Viewport::scroll_by`'s own `u32` rounding would otherwise silently
+/// discard several ticks' worth of fractional motion before it finally
+/// crosses an integer boundary, reading as a stall rather than a smooth
+/// decelerating scroll.
+///
+/// A no-op while following: momentum only ever accumulates from wheel
+/// input, which itself disengages follow the instant a notch actually moves
+/// the window off the bottom (see `handle_scroll_input` and
+/// `Viewport::scroll_by`'s re-pin-at-bottom rule), so momentum is never fed
+/// while following in practice — this only defends against a future caller
+/// feeding it while following.
+///
+/// Momentum CAN, however, carry the window back onto the bottom mid-decay
+/// (scrolling down toward the tail while a flick is still running) — this
+/// is a real follow transition, unlike a jump: `Viewport::scroll_by` now
+/// re-engages follow the instant `scroll_by`'s result lands on
+/// `max_offset()` (the coordinator's fix), so a momentum tick must react to
+/// it exactly like any other follow-changing step: cancel the now-stale
+/// momentum and pending impulse (continuing to "coast" past the bottom
+/// under decaying velocity would fight the re-pin), hide the scrollbar
+/// immediately (a thumb position is meaningless while following, same as
+/// the End/F path), and log the transition with its own distinct cause so
+/// it reads differently from an explicit End/F/keyboard jump in the log.
+fn apply_momentum_tick(viewer: &mut Viewer) {
+    if viewer.pending_wheel_rows != 0.0 {
+        viewer
+            .momentum
+            .add_impulse(viewer.pending_wheel_rows * WHEEL_MOMENTUM_ROWS_PER_SEC);
+        viewer.pending_wheel_rows = 0.0;
     }
-    // Render/limit failures elsewhere in this module are fail-closed (log and
-    // keep the previous placements intact); a sync failure follows the same
-    // contract rather than tearing down the viewer process over a scroll step.
+    if viewer.momentum.settled() {
+        return;
+    }
+    let delta = viewer.momentum.tick(POLL_TIMEOUT_SECS);
+    viewer.momentum_remainder += delta;
+    let whole_rows = viewer.momentum_remainder.trunc();
+    viewer.momentum_remainder -= whole_rows;
+    if whole_rows == 0.0 {
+        return;
+    }
+    // Capture the visible range BEFORE the offset moves, so a successful
+    // incremental step (below) can compute exactly which block ids are
+    // newly entering the top edge — `finish_scroll_step`'s other call
+    // sites (jumps, follow toggles) don't need this, since a jump's window
+    // change is never the narrow "N blocks entered at the top, nothing
+    // else changed" shape `try_scroll_window_incrementally` handles.
+    let visible_before = viewer.viewport.visible_blocks();
+    let following_before = viewer.viewport.following();
+    let moved = viewer.viewport.scroll_by(whole_rows);
+    if viewer.viewport.following() && !following_before {
+        // Momentum carried the window back onto the bottom: this IS a real
+        // follow transition (re-pin), not the "always false" case the rest
+        // of this function's per-tick machinery assumes. Stop the decay
+        // outright rather than let it keep nudging a now-re-pinned window,
+        // and reconcile everything a discrete re-engage (End/F) already
+        // resets.
+        viewer.momentum.cancel();
+        viewer.pending_wheel_rows = 0.0;
+        viewer.momentum_remainder = 0.0;
+        log_follow_change_with_cause(viewer, true, "momentum-bottom");
+        finish_scroll_step(viewer, moved, true);
+        return;
+    }
+    // Momentum did not just re-engage follow (the common per-tick case:
+    // still decaying, still disengaged), so `scroll_by` here re-sets an
+    // already-false `follow` to itself — never a real transition — hence no
+    // `follow_changed` tracking or logging on this path.
+    if moved {
+        finish_momentum_step(viewer, visible_before);
+    }
+}
+
+/// The momentum-tick-specific tail of a scroll step (see
+/// `finish_scroll_step`'s doc comment for the shared fail-closed/status-bar
+/// contract every scroll path follows — this covers the same ground but
+/// tries stage 2's incremental region-scroll first): compares the viewport's
+/// visible range before and after this tick's offset change. When the
+/// change is EXACTLY "some number of blocks newly entered at the top edge,
+/// `skip_rows_in_first` unchanged, nothing left the bottom edge" (a
+/// backward/scroll-back step, the common shape while decelerating toward
+/// older content), it computes the entering ids and tries
+/// `TerminalSink::try_scroll_window_incrementally`. Any other shape (a
+/// forward step, a `skip_rows_in_first` change mid-block, an empty visible
+/// range) falls back to the full `sync_visible_window`, which remains
+/// correct for it exactly as before stage 2. Momentum never toggles follow
+/// (see `apply_momentum_tick`'s doc comment), so there is no
+/// `follow_changed` parameter here.
+fn finish_momentum_step(viewer: &mut Viewer, visible_before: viewer_viewport::VisibleRange) {
+    let visible_after = viewer.viewport.visible_blocks();
+    if let Some(entering_range) = incremental_entering_range(visible_before, visible_after) {
+        let entering_ids: Vec<u64> = viewer.planner.blocks()[entering_range]
+            .iter()
+            .map(|block| block.id)
+            .collect();
+        restore_missing_pngs(
+            viewer,
+            visible_after.first..visible_before.first.max(visible_after.first),
+        );
+        let range = visible_after.first..visible_after.last_exclusive;
+        match viewer
+            .sink
+            .try_scroll_window_incrementally(&entering_ids, range)
+        {
+            Ok(true) => {
+                // The incremental region-scroll path never touches
+                // `clear_rows` (see `scroll_region`'s module doc), so the
+                // scrollbar column is untouched here — but still redraw it
+                // unconditionally: the thumb POSITION changed even though
+                // its column bytes did not, and this also refreshes the
+                // auto-hide deadline for this step.
+                show_scrollbar(viewer);
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                if viewer.log_enabled {
+                    eprintln!(
+                        "agent-viewer: incremental_scroll_failed ({:?})",
+                        error.safe_record().code
+                    );
+                }
+            }
+        }
+    }
+    if let Err(error) = sync_visible_window(viewer) {
+        if viewer.log_enabled {
+            eprintln!("agent-viewer: {error}");
+        }
+    }
+    // The fallback path's `sync_window` uses `clear_rows` internally, which
+    // can touch the scrollbar's column (see `scroll_region`'s module doc's
+    // "Full-row-clear interaction" note) — redraw unconditionally rather
+    // than trying to prove which specific batches were "safe."
+    show_scrollbar(viewer);
+}
+
+/// Pure shape-detection for stage 2's incremental scroll-back path
+/// (`finish_momentum_step`): returns the block-index range that newly
+/// entered the visible window's TOP edge (`visible_after.first
+/// ..visible_before.first`) when — and only when — the window change is
+/// EXACTLY "some blocks entered at the top, `skip_rows_in_first` unchanged,
+/// nothing left the bottom edge" (a pure backward/scroll-back step, the
+/// common shape while momentum decelerates toward older content). Returns
+/// `None` for every other shape (a forward step, any `skip_rows_in_first`
+/// change, an empty new window, or a same-window no-op with nothing newly
+/// entering) — the caller must fall back to a full `sync_window` for those,
+/// which stays correct for every shape this function rejects.
+///
+/// Kept separate from `finish_momentum_step` (which also needs a live
+/// `Viewer` to fetch retained PNGs and call `TerminalSink`) specifically so
+/// this shape-matching logic is directly unit-testable without a terminal.
+fn incremental_entering_range(
+    visible_before: viewer_viewport::VisibleRange,
+    visible_after: viewer_viewport::VisibleRange,
+) -> Option<std::ops::Range<usize>> {
+    let is_pure_backward_step = visible_after.skip_rows_in_first
+        == visible_before.skip_rows_in_first
+        && visible_after.first <= visible_before.first
+        && visible_after.last_exclusive <= visible_before.last_exclusive
+        && !visible_after.is_empty();
+    if !is_pure_backward_step {
+        return None;
+    }
+    let entering_range = visible_after.first..visible_before.first;
+    if entering_range.is_empty() {
+        None
+    } else {
+        Some(entering_range)
+    }
+}
+
+/// Logs a follow-state transition with the SPECIFIC input kind that caused
+/// it (the live scroll-lab's ask: a stray SGR event or an unexpected key
+/// must be diagnosable from the log line itself, not just "follow=false"
+/// with no context on why). `follow_changed` is computed by the caller
+/// (which already has `following_before` in scope for its own control
+/// flow), so this function only formats and gates on `log_enabled`.
+fn log_follow_change(viewer: &Viewer, follow_changed: bool, event: &tmath_core::input::Event) {
+    log_follow_change_with_cause(viewer, follow_changed, describe_input_kind(event));
+}
+
+/// The cause-string form of [`log_follow_change`], for a follow transition
+/// that was not driven by one specific decoded input event — currently only
+/// `apply_momentum_tick`'s "momentum carried the window back onto the
+/// bottom" re-engage (`cause=momentum-bottom`), which has no single `Event`
+/// to describe: it is the cumulative effect of several ticks' decay, not
+/// one keystroke or wheel notch.
+fn log_follow_change_with_cause(viewer: &Viewer, follow_changed: bool, cause: &str) {
+    if !viewer.log_enabled || !follow_changed {
+        return;
+    }
+    eprintln!(
+        "agent-viewer: follow={} cause={cause}",
+        viewer.viewport.following()
+    );
+}
+
+/// A short, stable, content-free label for a decoded input event, safe to
+/// log per AGENTS.md's privacy invariants (event/status names and bounded
+/// enums only — never raw bytes or mouse coordinates).
+fn describe_input_kind(event: &tmath_core::input::Event) -> &'static str {
+    use tmath_core::input::{Event, KeyEvent};
+    use tmath_core::mouse::{Key, MouseKind};
+
+    match event {
+        Event::Mouse(mouse) => match mouse.kind {
+            MouseKind::ScrollUp => "wheel-up",
+            MouseKind::ScrollDown => "wheel-down",
+            MouseKind::ScrollLeft => "wheel-left",
+            MouseKind::ScrollRight => "wheel-right",
+            MouseKind::Move => "mouse-move",
+            MouseKind::Down => "mouse-down",
+            MouseKind::Up => "mouse-up",
+        },
+        Event::Key(KeyEvent { key, .. }) => match key {
+            Key::Up => "key-up",
+            Key::Down => "key-down",
+            Key::PageUp => "key-page-up",
+            Key::PageDown => "key-page-down",
+            Key::Home => "key-home",
+            Key::End => "key-end",
+            Key::Char('j') => "key-j",
+            Key::Char('k') => "key-k",
+            Key::Char('g') => "key-g",
+            Key::Char('G') => "key-G",
+            Key::Char('F') => "key-F",
+            Key::Char(_) => "key-other",
+            _ => "key-other",
+        },
+        Event::Paste(_) => "paste",
+        Event::Focus(_) => "focus",
+    }
+}
+
+/// The tail shared by every scroll-input path (AT-3-502): render/limit
+/// failures elsewhere are fail-closed (log and keep previous placements
+/// intact), so a sync failure here follows the same contract rather than
+/// tearing down the viewer process over a scroll step. Runs
+/// `sync_visible_window` when `moved`, and redraws the status bar's
+/// following/scrolled word when `follow_changed` — `sync_visible_window`
+/// only redraws content, never row 1, so a follow transition that did not
+/// otherwise move the window's content (e.g. already clamped at an edge)
+/// still needs its own explicit redraw here. Also updates stage 2's
+/// scrollbar: shown (and its auto-hide deadline reset) on any `moved` step
+/// while disengaged, hidden immediately on re-engaging follow (End/F) —
+/// a thumb position is not a meaningful thing to show while pinned to the
+/// tail, so this does not wait for the auto-hide timer in that case.
+fn finish_scroll_step(viewer: &mut Viewer, moved: bool, follow_changed: bool) {
     if moved {
         if let Err(error) = sync_visible_window(viewer) {
             if viewer.log_enabled {
@@ -465,13 +943,51 @@ fn handle_scroll_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
             }
         }
     }
-    // The status bar's state word (following/scrolled) must redraw on every
-    // follow transition, even a scroll step that did not otherwise move the
-    // window's content (e.g. already clamped at an edge) — the state word
-    // itself changed, and `sync_visible_window` above only runs `if moved`.
     if follow_changed {
         redraw_status_bar(viewer);
     }
+    if follow_changed && viewer.viewport.following() {
+        hide_scrollbar(viewer);
+    } else if moved {
+        show_scrollbar(viewer);
+    }
+}
+
+/// Draws the scrollbar at the viewport's current thumb position and resets
+/// the auto-hide deadline to `now + SCROLLBAR_AUTO_HIDE` — called whenever
+/// a scroll step actually moved the offset while follow is disengaged.
+/// Failures are logged, never fatal, matching every other UI-chrome redraw
+/// in this module (the scrollbar is not placed content).
+fn show_scrollbar(viewer: &mut Viewer) {
+    let thumb = viewer.viewport.scrollbar_thumb_rows();
+    if let Err(error) = viewer.sink.set_scrollbar(thumb) {
+        if viewer.log_enabled {
+            eprintln!(
+                "agent-viewer: scrollbar_failed ({:?})",
+                error.safe_record().code
+            );
+        }
+    }
+    viewer.scrollbar_visible_until = Some(Instant::now() + SCROLLBAR_AUTO_HIDE);
+}
+
+/// Clears the scrollbar immediately and cancels the auto-hide deadline (so
+/// `run_viewer_loop`'s tick does not also try to clear an already-cleared
+/// scrollbar). Called on re-engaging follow and by the tick loop once the
+/// auto-hide deadline passes.
+fn hide_scrollbar(viewer: &mut Viewer) {
+    if viewer.scrollbar_visible_until.is_none() {
+        return;
+    }
+    if let Err(error) = viewer.sink.clear_scrollbar() {
+        if viewer.log_enabled {
+            eprintln!(
+                "agent-viewer: scrollbar_failed ({:?})",
+                error.safe_record().code
+            );
+        }
+    }
+    viewer.scrollbar_visible_until = None;
 }
 
 fn stream_readable(stream: &UnixStream) -> bool {
@@ -831,9 +1347,17 @@ mod tests {
 
     #[test]
     fn follow_disengages_on_scroll_and_reengages_on_end_or_shift_f() {
+        // Button 64 = scroll UP (backward) — the notch that actually moves
+        // the window OFF the bottom, so it is the one that must disengage
+        // follow. Button 65 (scroll DOWN) at the tail is exactly the
+        // coordinator's fix case: it must NOT disengage follow, since the
+        // offset never leaves the bottom — covered by its own dedicated
+        // test (`wheel_down_at_the_tail_never_disengages_follow`) rather
+        // than here, to keep this test's scroll-then-reengage narrative
+        // using the notch that genuinely moves.
         let mut decoder = InputDecoder::new();
-        decoder.push(b"\x1b[<65;10;20M");
-        let wheel = decoder.next_event().expect("wheel event");
+        decoder.push(b"\x1b[<64;10;20M");
+        let wheel_up = decoder.next_event().expect("wheel event");
 
         // A tall viewport in rows relative to the content built below leaves
         // scroll_delta's clamp with room to move, so the assertions exercise
@@ -842,10 +1366,13 @@ mod tests {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![50]);
         assert!(viewer.viewport.following());
-        handle_scroll_input(&mut viewer, &wheel);
+        handle_scroll_input(&mut viewer, &wheel_up);
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer); // let the coalesced impulse actually move the offset
+        }
         assert!(
             !viewer.viewport.following(),
-            "manual scroll disengages follow"
+            "manual scroll off the bottom disengages follow"
         );
 
         let mut decoder = InputDecoder::new();
@@ -854,13 +1381,531 @@ mod tests {
         handle_scroll_input(&mut viewer, &end);
         assert!(viewer.viewport.following(), "End re-engages follow");
 
-        handle_scroll_input(&mut viewer, &wheel);
+        handle_scroll_input(&mut viewer, &wheel_up);
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
         assert!(!viewer.viewport.following());
         let mut decoder = InputDecoder::new();
         decoder.push(b"F");
         let shift_f = decoder.next_event().expect("F key");
         handle_scroll_input(&mut viewer, &shift_f);
         assert!(viewer.viewport.following(), "F re-engages follow");
+    }
+
+    /// The coordinator's fix, case (a), through the exact SGR byte path a
+    /// live pointer hover would produce: a scroll-DOWN notch while already
+    /// following at the tail must never disengage follow or flip the
+    /// status word — this was the "spontaneous follow=false" mechanism.
+    #[test]
+    fn wheel_down_at_the_tail_never_disengages_follow() {
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[<65;10;20M");
+        let wheel_down = decoder.next_event().expect("wheel event");
+
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        assert!(viewer.viewport.following());
+        handle_scroll_input(&mut viewer, &wheel_down);
+        assert!(
+            viewer.viewport.following(),
+            "a down-notch at the tail must not disengage follow"
+        );
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
+        assert!(
+            viewer.viewport.following(),
+            "still following after the tick — there was never anywhere to move"
+        );
+    }
+
+    fn wheel_event(down: bool) -> tmath_core::input::Event {
+        // SGR mouse report button codes: 65 = scroll down, 64 = scroll up.
+        let bytes: &[u8] = if down {
+            b"\x1b[<65;10;20M"
+        } else {
+            b"\x1b[<64;10;20M"
+        };
+        let mut decoder = InputDecoder::new();
+        decoder.push(bytes);
+        decoder.next_event().expect("wheel event")
+    }
+
+    /// Stage 2: a wheel notch disengages follow immediately but does NOT
+    /// move the viewport offset itself — the actual displacement is
+    /// deferred to `apply_momentum_tick`, coalesced from
+    /// `pending_wheel_rows`. This is the behavior change from the
+    /// pre-momentum immediate-jump `scroll_by(delta)` call.
+    #[test]
+    fn a_wheel_notch_disengages_follow_but_defers_movement_to_the_tick() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        let before_offset = viewer.viewport.offset();
+        // An UP notch (backward, away from the tail) — the notch that
+        // ACTUALLY moves the window once its tick applies, unlike a
+        // DOWN notch at the tail (covered by its own dedicated test,
+        // `wheel_down_at_the_tail_never_disengages_follow`, which must
+        // never disengage at all).
+        handle_scroll_input(&mut viewer, &wheel_event(false));
+        // `Viewport::scroll_by`'s re-pin-at-bottom rule (the coordinator's
+        // fix) means `handle_scroll_input`'s immediate `scroll_by(0.0)`
+        // reaction does NOT yet disengage follow here: the offset has not
+        // actually moved off the bottom yet (that happens on the next
+        // momentum tick), so follow correctly stays engaged until it does.
+        assert!(
+            viewer.viewport.following(),
+            "follow must not disengage before the offset actually moves"
+        );
+        assert_eq!(
+            viewer.viewport.offset(),
+            before_offset,
+            "the offset must not move until the momentum tick runs"
+        );
+        assert_ne!(
+            viewer.pending_wheel_rows, 0.0,
+            "the notch must be coalesced into the pending impulse"
+        );
+
+        // Once the tick actually applies the impulse and the offset moves
+        // off the bottom, follow disengages.
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
+        assert!(
+            !viewer.viewport.following(),
+            "follow disengages once the offset has genuinely left the bottom"
+        );
+    }
+
+    /// Several wheel notches arriving before the tick runs must coalesce
+    /// into ONE accumulated impulse, not each independently move the
+    /// viewport (AT the coalescing claim itself, not just "eventually
+    /// moves").
+    #[test]
+    fn multiple_same_tick_wheel_notches_coalesce_into_one_pending_impulse() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]); // follow pins offset to max_offset (45)
+        let start_offset = viewer.viewport.offset();
+        handle_scroll_input(&mut viewer, &wheel_event(true));
+        handle_scroll_input(&mut viewer, &wheel_event(true));
+        handle_scroll_input(&mut viewer, &wheel_event(true));
+        assert_eq!(
+            viewer.pending_wheel_rows, 3.0,
+            "three same-direction notches sum before the tick applies them"
+        );
+        assert_eq!(
+            viewer.viewport.offset(),
+            start_offset,
+            "still nothing applied to the viewport before the tick"
+        );
+    }
+
+    /// Opposite-direction notches in the same tick must cancel rather than
+    /// each independently move the viewport in its own direction.
+    #[test]
+    fn opposite_direction_notches_in_the_same_tick_cancel() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        handle_scroll_input(&mut viewer, &wheel_event(true));
+        handle_scroll_input(&mut viewer, &wheel_event(false));
+        assert_eq!(viewer.pending_wheel_rows, 0.0);
+    }
+
+    /// The tick actually applies the coalesced impulse to the viewport
+    /// offset, through momentum's decay, not a teleport — this is the
+    /// end-to-end proof that `apply_momentum_tick` moves real content.
+    /// Runs a handful of ticks (not just one) because sub-1.0-row deltas
+    /// accumulate in `momentum_remainder` before crossing an integer
+    /// boundary (see that field's doc comment) — a single 40ms tick's
+    /// delta from one notch is well under 1.0 row, so no visible offset
+    /// movement on tick 1 alone is CORRECT, not a bug; this test asserts
+    /// the cumulative effect across enough ticks to actually move.
+    #[test]
+    fn the_momentum_tick_applies_the_coalesced_impulse_to_the_viewport() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]); // max_offset 45
+        viewer.viewport.jump_to_bottom_and_follow();
+        let start_offset = viewer.viewport.offset();
+        handle_scroll_input(&mut viewer, &wheel_event(false)); // scroll up (backward)
+        assert_eq!(viewer.viewport.offset(), start_offset, "not yet applied");
+
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
+        assert!(
+            viewer.viewport.offset() < start_offset,
+            "scroll-up must move the offset backward within a few ticks: \
+             start={start_offset} after={}",
+            viewer.viewport.offset()
+        );
+        assert_eq!(
+            viewer.pending_wheel_rows, 0.0,
+            "the impulse must be drained into momentum, not left pending"
+        );
+    }
+
+    /// Momentum keeps moving the viewport across MULTIPLE ticks with no
+    /// further wheel input — the actual "flick and it keeps going" claim,
+    /// not just a single-tick displacement. Compares two well-separated
+    /// checkpoints (5 ticks vs. 10 ticks) rather than consecutive single
+    /// ticks: with fractional-remainder carrying (see
+    /// `Viewer::momentum_remainder`'s doc comment), any ONE tick's own
+    /// delta can legitimately fail to cross an integer row boundary by
+    /// itself without breaking the "keeps moving" claim over a slightly
+    /// longer window — the position must still be strictly decreasing
+    /// across that longer window with zero further input.
+    #[test]
+    fn momentum_continues_moving_across_ticks_with_no_further_input() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![200]); // plenty of room to move
+        viewer.viewport.jump_to_bottom_and_follow();
+        let start_offset = viewer.viewport.offset();
+        handle_scroll_input(&mut viewer, &wheel_event(false));
+
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
+        let after_five_ticks = viewer.viewport.offset();
+        assert!(
+            after_five_ticks < start_offset,
+            "momentum must have moved the offset within 5 ticks: \
+             start={start_offset} after_five={after_five_ticks}"
+        );
+
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer); // five MORE ticks, no new input
+        }
+        assert!(
+            viewer.viewport.offset() < after_five_ticks,
+            "momentum must keep moving the offset across ticks with no new \
+             wheel input: after_five={after_five_ticks} after_ten={}",
+            viewer.viewport.offset()
+        );
+    }
+
+    /// Momentum eventually settles (stops moving the viewport) rather than
+    /// running forever — proves the stop-threshold contract end to end
+    /// through the viewer, not just inside `Momentum` itself.
+    #[test]
+    fn momentum_eventually_settles_and_stops_moving_the_viewport() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![10_000]); // never clamps mid-flight
+        viewer.viewport.jump_to_bottom_and_follow();
+        handle_scroll_input(&mut viewer, &wheel_event(false));
+        // `momentum.settled()` reflects `Momentum`'s OWN velocity, which
+        // only receives this tick's coalesced `pending_wheel_rows` inside
+        // `apply_momentum_tick` itself — right after `handle_scroll_input`
+        // the impulse is still sitting in `pending_wheel_rows`, unapplied,
+        // so `momentum` is still (correctly) reporting settled. A
+        // `while !settled` loop would therefore never run at all here; this
+        // must be a do-while shape (apply first, then check) to actually
+        // drive momentum through its decay.
+        let mut ticks = 0;
+        loop {
+            apply_momentum_tick(&mut viewer);
+            ticks += 1;
+            assert!(ticks < 10_000, "momentum never settled through the viewer");
+            if viewer.momentum.settled() {
+                break;
+            }
+        }
+        let settled_offset = viewer.viewport.offset();
+        apply_momentum_tick(&mut viewer);
+        assert_eq!(
+            viewer.viewport.offset(),
+            settled_offset,
+            "once settled, further ticks must not move the offset"
+        );
+    }
+
+    /// End cancels in-flight momentum cleanly: a flick in progress must not
+    /// keep nudging the offset after End jumped to the tail and re-engaged
+    /// follow — that would visibly fight the jump.
+    #[test]
+    fn end_cancels_in_flight_momentum() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![200]);
+        viewer.viewport.jump_to_bottom_and_follow();
+        handle_scroll_input(&mut viewer, &wheel_event(false));
+        apply_momentum_tick(&mut viewer);
+        assert!(
+            !viewer.momentum.settled(),
+            "momentum should still be decaying"
+        );
+
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[4~");
+        let end = decoder.next_event().expect("end key");
+        handle_scroll_input(&mut viewer, &end);
+
+        assert!(
+            viewer.momentum.settled(),
+            "End must cancel in-flight momentum"
+        );
+        assert_eq!(viewer.pending_wheel_rows, 0.0);
+        assert!(viewer.viewport.following());
+        let offset_at_end = viewer.viewport.offset();
+        apply_momentum_tick(&mut viewer);
+        assert_eq!(
+            viewer.viewport.offset(),
+            offset_at_end,
+            "a tick after End must not move the offset — no residual momentum"
+        );
+    }
+
+    /// Home (a discrete keyboard jump) also cancels in-flight momentum, the
+    /// same as End — any absolute jump must not fight a decaying flick.
+    #[test]
+    fn home_cancels_in_flight_momentum() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![200]);
+        viewer.viewport.jump_to_bottom_and_follow();
+        handle_scroll_input(&mut viewer, &wheel_event(false));
+        apply_momentum_tick(&mut viewer);
+        assert!(!viewer.momentum.settled());
+
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[1~");
+        let home = decoder.next_event().expect("home key");
+        handle_scroll_input(&mut viewer, &home);
+
+        assert!(
+            viewer.momentum.settled(),
+            "Home must cancel in-flight momentum"
+        );
+        assert_eq!(viewer.viewport.offset(), 0, "Home jumps to the very top");
+    }
+
+    /// Case (c) of the coordinator's fix: momentum decay that carries the
+    /// window back onto the bottom must re-engage follow (not just leave it
+    /// disengaged at `offset == max_offset` by coincidence), cancel the
+    /// now-stale momentum/pending state cleanly (so a later tick cannot
+    /// "coast" past the bottom), and hide the scrollbar immediately — the
+    /// same reconciliation End/F already does, but triggered by decay
+    /// alone, with no keyboard input at all.
+    #[test]
+    fn momentum_decay_reaching_the_bottom_reengages_follow_and_cancels_cleanly() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]); // max_offset 45
+        viewer.viewport.jump_to_bottom_and_follow();
+
+        // Scroll up just 2 rows (small, deliberately close to the bottom)
+        // so momentum's own decay — with no further wheel input — is
+        // enough to carry it back down to max_offset within a handful of
+        // ticks.
+        assert!(viewer.viewport.scroll_by(-2.0));
+        assert!(!viewer.viewport.following());
+        assert_eq!(viewer.viewport.offset(), 43);
+
+        // A down notch's momentum, ticked repeatedly with no further
+        // input, must eventually clamp back to 45 (the bottom) and,
+        // because `Viewport::scroll_by` now re-derives follow from the
+        // RESULT, that exact tick must re-engage follow.
+        handle_scroll_input(&mut viewer, &wheel_event(true)); // scroll down
+        let mut reengaged = false;
+        for _ in 0..200 {
+            apply_momentum_tick(&mut viewer);
+            if viewer.viewport.following() {
+                reengaged = true;
+                break;
+            }
+        }
+        assert!(
+            reengaged,
+            "momentum decay must eventually re-engage follow once it reaches the bottom"
+        );
+        assert_eq!(
+            viewer.viewport.offset(),
+            45,
+            "settled exactly at the bottom"
+        );
+
+        // Reconciliation: momentum/pending state must be cancelled, not
+        // left to keep decaying past the bottom.
+        assert!(
+            viewer.momentum.settled(),
+            "momentum must be cancelled once it carries the window back to the bottom"
+        );
+        assert_eq!(viewer.pending_wheel_rows, 0.0);
+        assert_eq!(viewer.momentum_remainder, 0.0);
+        assert!(
+            viewer.scrollbar_visible_until.is_none(),
+            "the scrollbar must be hidden immediately on the momentum re-engage, \
+             the same as an explicit End/F"
+        );
+
+        // A further tick must not move the offset at all — no residual
+        // "coast past the bottom".
+        let offset_at_reengage = viewer.viewport.offset();
+        apply_momentum_tick(&mut viewer);
+        assert_eq!(viewer.viewport.offset(), offset_at_reengage);
+    }
+
+    /// A scroll step that actually moves the offset while disengaged must
+    /// set the scrollbar's auto-hide deadline (i.e. show it) — the
+    /// `Summary`-mode `TerminalSink` makes the actual terminal write a
+    /// no-op, so this test asserts the STATE MACHINE (`scrollbar_visible_
+    /// until`) directly, which is exactly what `run_viewer_loop`'s tick
+    /// reads to decide when to hide it.
+    #[test]
+    fn a_moving_scroll_step_shows_the_scrollbar() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        assert!(viewer.scrollbar_visible_until.is_none());
+        handle_scroll_input(&mut viewer, &wheel_event(false));
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
+        assert!(
+            viewer.scrollbar_visible_until.is_some(),
+            "a moving scroll step must show the scrollbar"
+        );
+    }
+
+    /// Re-engaging follow (End/F) hides the scrollbar immediately, without
+    /// waiting for the auto-hide timer — a thumb position is meaningless
+    /// while pinned to the tail.
+    #[test]
+    fn end_hides_the_scrollbar_immediately() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![200]);
+        viewer.viewport.jump_to_bottom_and_follow();
+        handle_scroll_input(&mut viewer, &wheel_event(false));
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
+        assert!(viewer.scrollbar_visible_until.is_some());
+
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[4~");
+        let end = decoder.next_event().expect("end key");
+        handle_scroll_input(&mut viewer, &end);
+        assert!(
+            viewer.scrollbar_visible_until.is_none(),
+            "End must hide the scrollbar immediately, not defer to the timer"
+        );
+    }
+
+    /// The tick loop's auto-hide check: once `Instant::now()` passes the
+    /// deadline, `hide_scrollbar` clears `scrollbar_visible_until` back to
+    /// `None`. Drives the same condition `run_viewer_loop` checks every
+    /// tick, without needing the full loop or a real sleep.
+    #[test]
+    fn hide_scrollbar_clears_the_deadline() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        viewer.scrollbar_visible_until = Some(Instant::now());
+        hide_scrollbar(&mut viewer);
+        assert!(viewer.scrollbar_visible_until.is_none());
+    }
+
+    /// Mouse move/down/up/scroll-left/scroll-right must never disengage
+    /// follow — only ScrollUp/ScrollDown do (the live scroll-lab's
+    /// "spontaneous follow=false" investigation: this proves the OTHER
+    /// mouse event kinds are structurally inert here, not just relying on
+    /// `scroll_delta` upstream).
+    #[test]
+    fn non_scroll_mouse_events_never_disengage_follow() {
+        use tmath_core::mouse::{Mods, MouseButton, MouseEvent, MouseKind};
+
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        assert!(viewer.viewport.following());
+
+        for kind in [
+            MouseKind::Move,
+            MouseKind::Down,
+            MouseKind::Up,
+            MouseKind::ScrollLeft,
+            MouseKind::ScrollRight,
+        ] {
+            let event = tmath_core::input::Event::Mouse(MouseEvent {
+                kind,
+                button: MouseButton::None,
+                mods: Mods::default(),
+                x: 10,
+                y: 10,
+            });
+            handle_scroll_input(&mut viewer, &event);
+            assert!(
+                viewer.viewport.following(),
+                "{kind:?} must never disengage follow"
+            );
+            assert_eq!(
+                viewer.pending_wheel_rows, 0.0,
+                "{kind:?} must never accumulate a pending wheel impulse"
+            );
+        }
+    }
+
+    fn visible_range(
+        first: usize,
+        last_exclusive: usize,
+        skip_rows_in_first: u32,
+    ) -> viewer_viewport::VisibleRange {
+        viewer_viewport::VisibleRange {
+            first,
+            last_exclusive,
+            skip_rows_in_first,
+        }
+    }
+
+    /// The core positive case: N blocks entered at the top edge,
+    /// `skip_rows_in_first` unchanged, the bottom edge only shrank (never
+    /// grew) — a pure backward step.
+    #[test]
+    fn incremental_entering_range_detects_a_pure_backward_step() {
+        // Before: blocks [3, 8). After: blocks [1, 6) — 2 blocks (1, 2)
+        // newly entered at the top; blocks 6, 7 left the bottom.
+        let before = visible_range(3, 8, 0);
+        let after = visible_range(1, 6, 0);
+        assert_eq!(incremental_entering_range(before, after), Some(1..3));
+    }
+
+    #[test]
+    fn incremental_entering_range_is_none_for_a_forward_step() {
+        // A forward step (scrolling toward newer content) is not this
+        // function's shape — `first` increased.
+        let before = visible_range(1, 6, 0);
+        let after = visible_range(3, 8, 0);
+        assert_eq!(incremental_entering_range(before, after), None);
+    }
+
+    #[test]
+    fn incremental_entering_range_is_none_when_skip_rows_in_first_changes() {
+        // Same block-index range, but a different crop within the first
+        // block — this is a partial-edge shape the incremental path does
+        // not attempt (it only redraws newly ENTERING blocks, never
+        // recrops an already-drawn one).
+        let before = visible_range(1, 6, 2);
+        let after = visible_range(1, 6, 5);
+        assert_eq!(incremental_entering_range(before, after), None);
+    }
+
+    #[test]
+    fn incremental_entering_range_is_none_when_nothing_actually_entered() {
+        // `first` unchanged (no new block at the top) even though the
+        // bottom shrank — no entering range to compute.
+        let before = visible_range(2, 8, 0);
+        let after = visible_range(2, 6, 0);
+        assert_eq!(incremental_entering_range(before, after), None);
+    }
+
+    #[test]
+    fn incremental_entering_range_is_none_for_an_empty_new_window() {
+        let before = visible_range(3, 8, 0);
+        let after = visible_range(0, 0, 0);
+        assert_eq!(incremental_entering_range(before, after), None);
+    }
+
+    #[test]
+    fn incremental_entering_range_is_none_when_the_bottom_edge_grows() {
+        // `last_exclusive` increasing means content GREW into view from
+        // the bottom too, not a pure "entered at the top" shape.
+        let before = visible_range(3, 8, 0);
+        let after = visible_range(1, 9, 0);
+        assert_eq!(incremental_entering_range(before, after), None);
     }
 
     /// AT-3-502: while follow is engaged, an appended block keeps the
@@ -1093,6 +2138,14 @@ mod tests {
         decoder.push(b"\x1b[<64;10;20M"); // wheel up
         let wheel_up = decoder.next_event().expect("wheel event");
         handle_scroll_input(&mut viewer, &wheel_up);
+        // The immediate reaction only re-derives follow from the (still
+        // unmoved) offset — see `Viewport::scroll_by`'s re-pin-at-bottom
+        // rule — so disengage only becomes visible once a tick actually
+        // applies the coalesced impulse and moves the offset off the
+        // bottom.
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
         assert!(
             !viewer.viewport.following(),
             "manual scroll disengages follow"
@@ -1126,6 +2179,11 @@ mod tests {
         decoder.push(b"\x1b[<64;10;20M"); // wheel up
         let wheel_up = decoder.next_event().expect("wheel event");
         handle_scroll_input(&mut viewer, &wheel_up);
+        // See the sibling test's comment: disengage only becomes visible
+        // once a tick actually moves the offset off the bottom.
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer);
+        }
         assert!(!viewer.viewport.following());
 
         let rows_before = viewer.viewport.total_rows();
@@ -1247,6 +2305,10 @@ mod tests {
             },
             block_sources: Vec::new(),
             delta: DeltaState::new(IPC_MAX_REQUEST_BYTES),
+            momentum: tmath_core::momentum::Momentum::new(),
+            pending_wheel_rows: 0.0,
+            momentum_remainder: 0.0,
+            scrollbar_visible_until: None,
         }
     }
 

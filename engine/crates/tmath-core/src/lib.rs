@@ -9,6 +9,7 @@ pub mod agent;
 pub mod input;
 pub mod ipc;
 pub mod kitty;
+pub mod momentum;
 pub mod mouse;
 pub mod native;
 pub mod placement;
