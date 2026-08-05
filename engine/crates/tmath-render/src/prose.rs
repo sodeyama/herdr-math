@@ -9,6 +9,7 @@ use crate::{
     limits::{render_guard, RenderDeadline},
     typst_doc::compose_block_with_deadline,
     Block, ErrorCode, Limits, MathImage, RenderError, RenderOptions, SafeErrorRecord,
+    DARK_THEME_TEXT_COLOR,
 };
 
 /// CJK prose coverage (D-CJK): M PLUS 2, vendored under `assets/fonts/`
@@ -113,6 +114,48 @@ pub(crate) fn render_display_math_block(
         &source,
         &[(name, image.svg)],
         Vec::new(),
+        options,
+        false,
+        limits,
+        deadline,
+    )
+}
+
+/// Renders a standalone display-math block's `[invalid latex]` error badge
+/// (AT-3-103: invalid LaTeX in one formula fails closed PER FORMULA — the
+/// block still renders, with a bounded badge, rather than the whole render
+/// aborting). This is the display-math counterpart to
+/// `typst_doc.rs::push_text_with_math`'s inline badge path — same literal
+/// badge text, same `#raw(..., block: ...)` construct, same fixed string
+/// with nothing derived from the invalid LaTeX source (per AGENTS.md, the
+/// error record and the visible badge both carry only allowlisted content,
+/// never the rejected formula text itself). Uses the same page/margin/font
+/// setup every other block gets so a badge block stacks and reads exactly
+/// like a normal display-math block, just with `#raw` text where the image
+/// would be.
+pub(crate) fn render_display_math_error_badge(
+    formula_error: SafeErrorRecord,
+    options: &RenderOptions,
+    limits: &Limits,
+    deadline: &RenderDeadline,
+) -> Result<RenderedImage, RenderError> {
+    let block_margin_pt = crate::typst_doc::INTER_BLOCK_MARGIN_EM * options.font_size_pt;
+    let source = format!(
+        "#set page(width: {width}pt, height: auto, \
+         margin: (top: {block_margin}pt, bottom: {block_margin}pt, x: 0pt), fill: none)\n\
+         #set text(font: {fonts}, size: {font_size}pt, fill: rgb(\"{color}\"))\n\
+         #align(center)[#raw(\"[invalid latex]\", block: true)]\n",
+        width = options.content_width_pt,
+        block_margin = block_margin_pt,
+        fonts = crate::typst_doc::font_fallback_list(options.cjk_font),
+        font_size = options.font_size_pt,
+        color = DARK_THEME_TEXT_COLOR,
+    );
+    deadline.checkpoint()?;
+    render_typst_source(
+        &source,
+        &[],
+        vec![formula_error],
         options,
         false,
         limits,

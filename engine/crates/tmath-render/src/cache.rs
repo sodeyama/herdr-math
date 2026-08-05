@@ -311,13 +311,21 @@ mod tests {
 
     #[test]
     fn render_errors_are_misses_but_are_not_cached() {
-        let invalid = block(BlockKind::DisplayMath, "$$\\frac{a$$");
+        // A display-math block with an unterminated `$$` never resolves to
+        // one complete formula at all (`FormulaNotFound`), so it stays a
+        // genuine run-level `Err` regardless of AT-3-103's invalid-LaTeX
+        // badge fix — `$$\frac{a$$` (this test's original input) no longer
+        // works here since that string DOES scan as one complete formula
+        // and now renders an `[invalid latex]` badge (`Ok`) instead of
+        // erroring, per that fix; see `lib.rs::render_tests` for the
+        // badge-path coverage.
+        let invalid = block(BlockKind::DisplayMath, "$$incomplete");
         let valid = block(BlockKind::Paragraph, "Valid after an error");
         let options = RenderOptions::default();
         let mut cache = cache(2, u64::MAX);
 
         let error = cache.render(&invalid, &options).unwrap_err();
-        assert_eq!(error.safe_record().code, ErrorCode::InvalidLatex);
+        assert_eq!(error.safe_record().code, ErrorCode::FormulaNotFound);
         assert_eq!(cache.stats().misses, 1);
         assert_eq!(cache.stats().entries, 0);
 

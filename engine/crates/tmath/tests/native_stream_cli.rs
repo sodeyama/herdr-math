@@ -253,3 +253,65 @@ fn stream_error_is_safe_json_without_input() {
         "{record}"
     );
 }
+
+/// AT-3-103, stream-mode contract: a revision containing an invalid
+/// display-math formula must apply normally — an `append`/`replace` event
+/// for the block plus `event=done ... formula_errors=N` at N >= 1 — rather
+/// than the whole run aborting with a hard JSON error record the way it did
+/// before this fix (team-lead's exact repro:
+/// `printf '$$x \badcmdxyz$$\n' | tmath render --engine native -`).
+#[test]
+fn at_3_103_invalid_display_math_applies_the_revision_with_formula_errors_incremented() {
+    let mut process = StreamProcess::spawn();
+    process.write(b"$$x \\badcmdxyz$$\n");
+
+    let first = process.next_line();
+    assert!(
+        first.starts_with("event=append id=1 "),
+        "bad display math must still place a (badge) block, not abort: {first}"
+    );
+
+    let rest = process.finish();
+    assert_eq!(
+        rest.last().map(String::as_str),
+        Some("event=done blocks=1 formula_errors=1"),
+        "{rest:?}"
+    );
+}
+
+/// Sibling blocks around a bad display formula must render too — proves
+/// AT-3-103's "sibling formulas and all other blocks render normally" at
+/// the stream-event level, not just the direct `render_block` level
+/// `lib.rs`'s unit tests already cover.
+#[test]
+fn at_3_103_sibling_blocks_around_a_bad_display_formula_still_place() {
+    let mut process = StreamProcess::spawn();
+    process.write(b"Before.\n\n$$x \\badcmdxyz$$\n\nAfter.\n");
+
+    let events: Vec<String> = std::iter::from_fn(|| Some(process.next_line()))
+        .take(2)
+        .collect();
+    assert!(
+        events
+            .iter()
+            .any(|line| line.starts_with("event=append id=1 ")),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|line| line.starts_with("event=append id=2 ")),
+        "{events:?}"
+    );
+
+    let rest = process.finish();
+    assert!(
+        rest.iter()
+            .any(|line| line.starts_with("event=append id=3 ")),
+        "the block after the bad formula must still place: {rest:?}"
+    );
+    assert_eq!(
+        rest.last().map(String::as_str),
+        Some("event=done blocks=3 formula_errors=1")
+    );
+}

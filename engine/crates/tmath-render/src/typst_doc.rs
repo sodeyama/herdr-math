@@ -64,7 +64,7 @@ const PRIMARY_FONT: &str = "NewCM10";
 /// phase 2), so every block's composed Typst source and any future
 /// multi-family selection stay derived from a single source of truth
 /// instead of a second hard-coded family name drifting out of sync.
-fn font_fallback_list(cjk_font: crate::CjkFont) -> String {
+pub(crate) fn font_fallback_list(cjk_font: crate::CjkFont) -> String {
     let mut list = String::from("(\"");
     escape_typst_string_into(PRIMARY_FONT, &mut list);
     list.push_str("\", \"");
