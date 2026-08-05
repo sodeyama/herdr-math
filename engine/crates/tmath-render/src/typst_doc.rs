@@ -110,12 +110,23 @@ pub(crate) fn font_fallback_list(cjk_font: crate::CjkFont) -> String {
 /// existing zero gap yields a combined `2 * INTER_BLOCK_MARGIN_EM =
 /// PAR_LEADING_EM` gap between their ink — the same line-box-to-line-box
 /// gap Typst's own `par.leading` inserts between two lines in one block.
-/// Horizontal margin stays 0 (unrelated to vertical rhythm, and changing it
-/// would shift `content_width_pt` semantics for every consumer).
+///
+/// The SAME value is also applied left and right (pane-edge margins,
+/// queued separately): "half a line-gap" reads naturally as a horizontal
+/// rhythm too, and reusing this constant rather than inventing a second one
+/// means both axes retune together if `TARGET_LINE_ADVANCE_EM`/the edges
+/// ever change. For a prose block, whose PNG then gets right-trimmed to its
+/// actual ink (`prose.rs::trim_transparent_right`), the trim boundary is
+/// deliberately stopped `INTER_BLOCK_MARGIN_EM * font_size_pt` short of the
+/// content edge instead of at the bare content edge, so the intended right
+/// margin survives trimming instead of being cropped away as "just more
+/// transparent space" (see `trim_transparent_right`'s doc comment). The
+/// left margin needs no such adjustment: nothing trims the left edge.
 ///
 /// Derived from the existing line-metric constants above, not a new magic
 /// number, so a future retune of `TARGET_LINE_ADVANCE_EM`/edges
-/// automatically keeps inter-block and intra-block rhythm consistent.
+/// automatically keeps inter-block, intra-block, AND pane-edge rhythm
+/// consistent.
 pub(crate) const INTER_BLOCK_MARGIN_EM: f64 = PAR_LEADING_EM / 2.0;
 
 /// A complete, self-contained Typst source document.
@@ -189,13 +200,14 @@ pub(crate) fn compose_block_with_deadline(
     // Typst's default text size, not `options.font_size_pt`. Compute the
     // margin as an absolute pt value in Rust instead, exactly like every
     // other size in this module (`image.width_pt`, etc.), so it always
-    // tracks the block's actual font size unambiguously.
+    // tracks the block's actual font size unambiguously. The SAME value is
+    // used on all four sides (see `INTER_BLOCK_MARGIN_EM`'s doc comment for
+    // why horizontal reuses the vertical constant rather than a new one).
     let block_margin_pt = INTER_BLOCK_MARGIN_EM * options.font_size_pt;
 
     Ok(TypstSource {
         source: format!(
-            "#set page(width: {width}pt, height: auto, \
-             margin: (top: {block_margin}pt, bottom: {block_margin}pt, x: 0pt), fill: none)\n\
+            "#set page(width: {width}pt, height: auto, margin: {block_margin}pt, fill: none)\n\
              #set text(font: {fonts}, size: {font_size}pt, \
              fill: rgb(\"{color}\"), top-edge: {top_edge}em, bottom-edge: {bottom_edge}em)\n\
              #set par(leading: {leading}em)\n\

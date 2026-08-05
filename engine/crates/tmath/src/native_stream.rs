@@ -17,6 +17,183 @@ use crate::terminal_output;
 
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 
+// --- Live status bar (agent-viewer only, pane row 1) ---
+//
+// The agent-viewer permanently reserves the pane's row 1 for a live status
+// bar instead of placed content — the SAME reserved row PART 2's top
+// margin needed anyway (a block's placeholder grid never touches row 1;
+// see `sync_window_operations`'s home-draw, which now starts content at
+// row 2). Plain `tmath render`/`tmath watch` streaming sessions never
+// reserve this row: they never call `StreamSink::with_status_bar`, so
+// `TerminalSink::status_bar` stays `None` and every draw path here is
+// skipped entirely, leaving their behavior exactly as it was before this
+// feature.
+//
+// Left side (static brand): `∑ Terminal Math` in the accent color (bold),
+// `· live typeset viewer` dim. Right side (dynamic, right-aligned):
+// `following`/`scrolled · N blocks · Xpt`, dim except the state word, which
+// is accented in a different hue depending on state — so scroll state is
+// glanceable without reading the whole line. Redrawn via a single
+// save-cursor/move/write/restore-cursor sequence (`\x1b7`...`\x1b8`, DECSC/
+// DECRC — chosen over `\x1b[s`/`\x1b[u` for broader terminal/tmux-passthrough
+// support) so it never disturbs the real cursor position flowing appends
+// rely on, or the content area below row 1.
+
+/// The static left-side brand string (UI copy — English only per AGENTS.md).
+const STATUS_BRAND: &str = "\u{2211} Terminal Math";
+/// The static left-side tagline, dim, immediately after the brand.
+const STATUS_TAGLINE: &str = "\u{b7} live typeset viewer";
+/// Right-side state word while the viewport follows new content.
+const STATUS_STATE_FOLLOWING: &str = "following";
+/// Right-side state word while the viewport is manually scrolled
+/// (follow disengaged).
+const STATUS_STATE_SCROLLED: &str = "scrolled";
+/// 256-color accent for the brand and the `following` state word: a bright
+/// blue/cyan (color 75) that reads clearly on both light and dark
+/// terminal-default backgrounds.
+const STATUS_ACCENT_COLOR: u16 = 75;
+/// 256-color accent for the `scrolled` state word — a distinct yellow-ish
+/// hue (color 179) so the disengaged state is visually distinguishable from
+/// `following` at a glance, not just by the word text.
+const STATUS_SCROLLED_COLOR: u16 = 179;
+/// SGR dim (faint) attribute code for the tagline and separators.
+const SGR_DIM: &str = "\x1b[2m";
+/// SGR bold attribute code for the brand.
+const SGR_BOLD: &str = "\x1b[1m";
+/// Full SGR reset.
+const SGR_RESET: &str = "\x1b[0m";
+
+/// The live status-bar's dynamic fields, refreshed by the caller whenever
+/// any of them changes (see [`TerminalSink::set_status`]'s callers).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StatusBarState {
+    pub(crate) following: bool,
+    pub(crate) blocks: usize,
+    pub(crate) font_size_pt: f64,
+}
+
+/// Owns the status bar's draw width; the dynamic state itself is passed
+/// fresh to each redraw rather than cached here, so there is exactly one
+/// source of truth for "what should row 1 show right now" (the caller's
+/// current viewer/viewport state), not a second copy that could drift.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StatusBar {
+    pane_cols: u32,
+}
+
+impl StatusBar {
+    fn new(pane_cols: u32) -> Self {
+        Self { pane_cols }
+    }
+}
+
+/// One right-side field, kept alongside its PLAIN (uncolored) text so width
+/// measurement and colored rendering always agree on length without
+/// re-deriving it twice.
+struct RightField {
+    plain: String,
+    colored: String,
+}
+
+/// Builds the save/move/write/restore operation sequence that draws the
+/// status bar at row 1. Pure and independent of any live terminal, the same
+/// way every other `*_operations` builder in this module is.
+///
+/// Layout: `{accent+bold}BRAND{reset} {dim}TAGLINE{reset}` on the left,
+/// `{accent-or-yellow}STATE{reset} {dim}\u{b7} N blocks{reset} {dim}\u{b7}
+/// Xpt{reset}` on the right, right-aligned to `pane_cols`. When the full
+/// line would not fit `pane_cols`, right-side fields are dropped starting
+/// from the LEFT of that group — i.e. `N blocks`/`Xpt` go first, the state
+/// word is kept longest, since it is the single most important glanceable
+/// signal — down to no right side at all, rather than ever wrapping onto a
+/// second row (wrapping would corrupt the reserved-row invariant every
+/// other draw path depends on).
+fn status_bar_operations(pane_cols: u32, state: StatusBarState) -> Vec<TerminalOp> {
+    let pane_cols = pane_cols.max(1) as usize;
+
+    let left_plain_len = STATUS_BRAND.chars().count() + 1 + STATUS_TAGLINE.chars().count();
+    let left_colored = format!(
+        "{SGR_BOLD}\x1b[38;5;{STATUS_ACCENT_COLOR}m{STATUS_BRAND}{SGR_RESET} \
+         {SGR_DIM}{STATUS_TAGLINE}{SGR_RESET}"
+    );
+
+    let (state_word, state_color) = if state.following {
+        (STATUS_STATE_FOLLOWING, STATUS_ACCENT_COLOR)
+    } else {
+        (STATUS_STATE_SCROLLED, STATUS_SCROLLED_COLOR)
+    };
+    let state_field = RightField {
+        plain: state_word.to_string(),
+        colored: format!("{SGR_BOLD}\x1b[38;5;{state_color}m{state_word}{SGR_RESET}"),
+    };
+    let blocks_plain = format!("{} blocks", state.blocks);
+    let blocks_field = RightField {
+        colored: format!("{SGR_DIM}{blocks_plain}{SGR_RESET}"),
+        plain: blocks_plain,
+    };
+    let font_plain = format!("{}pt", format_font_size(state.font_size_pt));
+    let font_field = RightField {
+        colored: format!("{SGR_DIM}{font_plain}{SGR_RESET}"),
+        plain: font_plain,
+    };
+    // Ordered so `full_right_fields[start..]` (used below) drops
+    // `blocks`/`font` before ever dropping the state word.
+    let full_right_fields = [blocks_field, font_field, state_field];
+    const SEPARATOR_PLAIN: &str = " \u{b7} ";
+    let separator_colored = format!("{SGR_DIM}{SEPARATOR_PLAIN}{SGR_RESET}");
+
+    // Try every suffix of `full_right_fields`, widest first, and take the
+    // first one that fits — this drops `blocks`/`font` from the front while
+    // always keeping the state word (the last element) as long as ANY
+    // right-side content fits at all.
+    let mut chosen: &[RightField] = &[];
+    for start in 0..full_right_fields.len() {
+        let candidate = &full_right_fields[start..];
+        let candidate_plain_len: usize = candidate
+            .iter()
+            .map(|field| field.plain.chars().count())
+            .sum::<usize>()
+            + SEPARATOR_PLAIN.chars().count() * candidate.len().saturating_sub(1);
+        if left_plain_len + 1 + candidate_plain_len <= pane_cols {
+            chosen = candidate;
+            break;
+        }
+    }
+
+    let mut line = left_colored;
+    if !chosen.is_empty() {
+        let chosen_plain_len: usize = chosen
+            .iter()
+            .map(|field| field.plain.chars().count())
+            .sum::<usize>()
+            + SEPARATOR_PLAIN.chars().count() * chosen.len().saturating_sub(1);
+        let gap = pane_cols
+            .saturating_sub(left_plain_len + chosen_plain_len)
+            .max(1);
+        line.push_str(&" ".repeat(gap));
+        for (index, field) in chosen.iter().enumerate() {
+            if index > 0 {
+                line.push_str(&separator_colored);
+            }
+            line.push_str(&field.colored);
+        }
+    }
+
+    vec![TerminalOp::Local(
+        format!("\x1b7\x1b[1;1H\x1b[2K{line}{SGR_RESET}\x1b8").into_bytes(),
+    )]
+}
+
+/// Formats a font size in points with no trailing `.0` for whole numbers
+/// (`15pt`, not `15.0pt`), matching how the rest of the CLI reports sizes.
+fn format_font_size(font_size_pt: f64) -> String {
+    if font_size_pt.fract() == 0.0 {
+        format!("{font_size_pt:.0}")
+    } else {
+        format!("{font_size_pt:.1}")
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CacheOutcome {
     Hit,
@@ -168,6 +345,34 @@ fn spawn_reader() -> Receiver<InputEvent> {
     receiver
 }
 
+/// Whether the caller must follow up with a full visibility-window sync
+/// (`sync_window`/`sync_visible_window`) after `apply_revision` returns.
+///
+/// `NeedsWindowSync` is what [`TerminalSink::emit_batch`] reports when a
+/// divergence rewrite's stale-tail row span could not fit inside a relative
+/// cursor-up from the pane top (see [`clamp_would_truncate`]'s doc comment
+/// for the mechanism): `\x1b[{n}A` silently clamps at the terminal's actual
+/// top row rather than erroring, so a cursor-up that is too large lands the
+/// whole rewrite too low on screen, leaving the stale tail's old placeholder
+/// rows visible above it — a live-run "ghost" report traced this exact
+/// mechanism (see `ba800aa`'s row-span invariant checkers, which proved the
+/// row bookkeeping itself is correct; the bug is a terminal-boundary
+/// behavior a pure trace can never see). Falling back to an absolute
+/// `\x1b[H`-anchored full-window redraw (the same mechanism AT-3-503's
+/// `sync_window` already uses for scroll) sidesteps the clamp entirely,
+/// since it never depends on how far the cursor can move relative to its
+/// current position.
+///
+/// Plain stream/watch sessions never see `NeedsWindowSync`: `emit_batch`
+/// only runs when `retain_pngs` is set (agent-viewer only — see
+/// `TerminalSink::emit`'s gate), so this variant is only ever produced (and
+/// only ever needs handling) on the viewer's `sync_visible_window` path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EmitOutcome {
+    Applied,
+    NeedsWindowSync,
+}
+
 pub(crate) fn apply_revision(
     revision: &Revision,
     options: &RenderOptions,
@@ -175,7 +380,7 @@ pub(crate) fn apply_revision(
     planner: &mut PlacementPlanner,
     formula_errors: &mut Vec<usize>,
     sink: &mut StreamSink,
-) -> Result<(), RenderError> {
+) -> Result<EmitOutcome, RenderError> {
     let previous = planner.blocks().to_vec();
     let previous_formula_errors = formula_errors.clone();
     let mut inputs = Vec::with_capacity(revision.blocks.len());
@@ -223,9 +428,9 @@ pub(crate) fn apply_revision(
     }
 
     let plan = planner.plan(&inputs);
-    sink.emit(&plan, &prepared, &previous)?;
+    let outcome = sink.emit(&plan, &prepared, &previous)?;
     *formula_errors = next_formula_errors;
-    Ok(())
+    Ok(outcome)
 }
 
 pub(crate) enum StreamSink {
@@ -279,6 +484,34 @@ impl StreamSink {
         self
     }
 
+    /// Opts a `Terminal` sink into the agent-viewer's reserved-row-1 live
+    /// status bar (see the `status_bar` module doc) and, in the same call,
+    /// sets [`TerminalSink::pane_rows`] — the two are opt-in together
+    /// because both are viewer-only pane-geometry facts plain stream/watch
+    /// sessions never need. `pane_cols` is the status bar's own draw width;
+    /// `pane_rows` is what [`TerminalSink::emit_batch`]'s clamp check
+    /// compares the stale-tail row span against. A no-op in `Summary` mode.
+    pub(crate) fn with_status_bar(mut self, pane_cols: u32, pane_rows: u32) -> Self {
+        if let Self::Terminal(sink) = &mut self {
+            sink.pane_rows = pane_rows;
+            sink.status_bar = Some(StatusBar::new(pane_cols));
+        }
+        self
+    }
+
+    /// Updates the live status-bar state and redraws row 1 in place (a
+    /// save/move/write/restore sequence — see
+    /// [`status_bar::status_bar_operations`] — that never disturbs the
+    /// content area or the cursor position flowing appends rely on). A
+    /// no-op in `Summary` mode or if [`Self::with_status_bar`] was never
+    /// called.
+    pub(crate) fn set_status(&mut self, state: StatusBarState) -> Result<(), RenderError> {
+        if let Self::Terminal(sink) = self {
+            sink.set_status(state)?;
+        }
+        Ok(())
+    }
+
     /// Sets or clears visibility-gated emission (AT-3-503): while suppressed,
     /// `apply_revision`'s append/replace/remove operations still update
     /// state but skip terminal writes. See [`TerminalSink::suppress_writes`].
@@ -294,9 +527,9 @@ impl StreamSink {
         plan: &Plan,
         prepared: &[PreparedBlock],
         previous: &[tmath_render::PlannedBlock],
-    ) -> Result<(), RenderError> {
+    ) -> Result<EmitOutcome, RenderError> {
         match self {
-            Self::Summary => emit_summary(plan, prepared),
+            Self::Summary => emit_summary(plan, prepared).map(|()| EmitOutcome::Applied),
             Self::Terminal(sink) => sink.emit(plan, prepared, previous),
         }
     }
@@ -470,6 +703,25 @@ pub(crate) struct TerminalSink {
     /// want since they never retain PNGs in the first place. Set only
     /// through [`StreamSink::with_retained_window_blocks`].
     retained_window_blocks: u64,
+    /// The pane's total row count, used ONLY by [`Self::emit_batch`]'s
+    /// clamp-aware fallback check (see [`clamp_would_truncate`]) — `0` (the
+    /// default) disables the check entirely (never triggers a fallback),
+    /// which is correct for plain stream/watch sessions: `emit_batch` is
+    /// unreachable there regardless (it requires `retain_pngs`, which only
+    /// the agent-viewer ever sets — see [`Self::emit`]'s gate), so this
+    /// field is meaningless off that path and safe to leave unset. Set only
+    /// through [`StreamSink::with_status_bar`], the same opt-in the status
+    /// bar itself uses, since both are viewer-only pane-geometry facts.
+    pane_rows: u32,
+    /// The live status-bar state (row 1, agent-viewer only — see the
+    /// `status_bar` module doc). `None` (the default) disables the status
+    /// bar and the reserved top row entirely: plain stream/watch sessions
+    /// never call [`StreamSink::with_status_bar`], so `sync_window`'s
+    /// content draw starts at the pane's actual top row exactly as before
+    /// this feature existed. Set only through
+    /// [`StreamSink::with_status_bar`]; updated on every redraw-triggering
+    /// event via [`StreamSink::set_status`].
+    status_bar: Option<StatusBar>,
 }
 
 impl TerminalSink {
@@ -490,6 +742,8 @@ impl TerminalSink {
             emitted_ids: Vec::new(),
             suppress_writes: false,
             retained_window_blocks: u64::MAX,
+            pane_rows: 0,
+            status_bar: None,
         }
     }
 
@@ -498,7 +752,7 @@ impl TerminalSink {
         plan: &Plan,
         prepared: &[PreparedBlock],
         previous: &[tmath_render::PlannedBlock],
-    ) -> Result<(), RenderError> {
+    ) -> Result<EmitOutcome, RenderError> {
         // A divergence anywhere but the tail — any Replace or Remove — needs
         // the batch rewrite below in viewer mode: per-op cursor arithmetic
         // (`replace`'s `top_is_reachable`, `remove`'s bare Kitty delete with
@@ -540,7 +794,7 @@ impl TerminalSink {
                 PlanOp::Remove { id } => self.remove(*id)?,
             }
         }
-        Ok(())
+        Ok(EmitOutcome::Applied)
     }
 
     /// Batch rewrite for a revision whose plan diverges from the previous
@@ -553,15 +807,45 @@ impl TerminalSink {
     /// This is the same "erase and redraw the affected span" shape as
     /// `sync_window_operations`, just anchored at the plan's first
     /// non-`Keep` index instead of a viewport window.
+    ///
+    /// Clamp-aware fallback: before writing anything, checks whether the
+    /// stale tail's row span could ever be reached by the relative
+    /// cursor-up `divergence_rewrite_operations` is about to emit (see
+    /// [`clamp_would_truncate`]). When it could not, this skips the
+    /// relative-cursor rewrite ENTIRELY — writing a cursor-up that will
+    /// clamp is what produces the ghost, so there is no safe partial write
+    /// here — updates `self.placed`'s bookkeeping to the new plan exactly
+    /// as the normal path would (so the caller's state stays correct for
+    /// the fallback full-window redraw), and returns
+    /// `EmitOutcome::NeedsWindowSync` so the caller runs
+    /// `sync_visible_window`/`sync_window` instead, which redraws from an
+    /// absolute `\x1b[H` and therefore never depends on relative cursor
+    /// travel distance.
     fn emit_batch(
         &mut self,
         plan: &Plan,
         prepared: &[PreparedBlock],
         previous: &[tmath_render::PlannedBlock],
-    ) -> Result<(), RenderError> {
+    ) -> Result<EmitOutcome, RenderError> {
         let Some(reanchor_from) = plan.reanchor_from else {
-            return Ok(());
+            return Ok(EmitOutcome::Applied);
         };
+        let old_rows_total = stale_tail_rows_total(&self.placed, previous, reanchor_from);
+        if clamp_would_truncate(old_rows_total, self.pane_rows, self.status_bar.is_some()) {
+            let new_tail = clamp_fallback_new_tail(
+                &self.placed,
+                plan,
+                prepared,
+                reanchor_from,
+                self.cell,
+                self.max_image_pixels,
+                self.retain_pngs,
+            )?;
+            self.placed.truncate(reanchor_from.min(self.placed.len()));
+            self.placed.extend(new_tail);
+            return Ok(EmitOutcome::NeedsWindowSync);
+        }
+
         let (operations, new_tail) = divergence_rewrite_operations(
             &self.placed,
             previous,
@@ -578,7 +862,7 @@ impl TerminalSink {
         if !plan.ops.is_empty() {
             self.first_append_at_line_start = true;
         }
-        Ok(())
+        Ok(EmitOutcome::Applied)
     }
 
     fn append(&mut self, id: u64, rendered: &RenderedBlock, png: &[u8]) -> Result<(), RenderError> {
@@ -714,12 +998,14 @@ impl TerminalSink {
         visible: std::ops::Range<usize>,
     ) -> Result<(), RenderError> {
         let visible = visible.start.min(self.placed.len())..visible.end.min(self.placed.len());
+        let content_row_offset = u32::from(self.status_bar.is_some());
         let operations = sync_window_operations(
             &self.placed,
             &self.emitted_ids,
             visible.clone(),
             self.cell,
             self.max_image_pixels,
+            content_row_offset,
         )?;
         terminal_output::write_operations(&operations).map_err(|_| stream_error())?;
         self.first_append_at_line_start = true;
@@ -802,6 +1088,21 @@ impl TerminalSink {
             return Ok(());
         }
         terminal_output::write_operations(operations).map_err(|_| stream_error())
+    }
+
+    /// Redraws row 1's live status bar in place from `state`, if the status
+    /// bar was enabled via [`StreamSink::with_status_bar`] — a no-op
+    /// otherwise. Not gated by `suppress_writes`: the status bar is not
+    /// part of the visibility-windowed content area `suppress_writes`
+    /// protects (see that field's doc), and the save/restore sequence
+    /// [`status_bar_operations`] emits never touches the cursor position
+    /// flowing appends rely on regardless of viewport/follow state.
+    fn set_status(&mut self, state: StatusBarState) -> Result<(), RenderError> {
+        let Some(status_bar) = self.status_bar else {
+            return Ok(());
+        };
+        let operations = status_bar_operations(status_bar.pane_cols, state);
+        terminal_output::write_operations(&operations).map_err(|_| stream_error())
     }
 
     fn decode(
@@ -1069,6 +1370,124 @@ fn plan_has_interior_divergence(plan: &Plan) -> bool {
 /// Returns the operations plus the new tail of `PlacedState` entries (in
 /// the new plan's document order) that the caller splices in at
 /// `reanchor_from` to replace the old tail.
+/// The ids of `previous[reanchor_from..]` — the stale tail a divergence
+/// rewrite deletes and re-places — in document order.
+fn stale_tail_ids(previous: &[tmath_render::PlannedBlock], reanchor_from: usize) -> Vec<u64> {
+    previous[reanchor_from.min(previous.len())..]
+        .iter()
+        .map(|block| block.id)
+        .collect()
+}
+
+/// The exact row-span cursor-up amount a divergence rewrite's relative path
+/// (`divergence_rewrite_operations`) sends: `placed[].rows` summed over the
+/// stale tail's ids, looked up by id (not index — see
+/// `divergence_rewrite_operations`'s doc comment for why). Factored out so
+/// [`TerminalSink::emit_batch`]'s clamp check compares against the exact
+/// same value the relative rewrite would use, with no risk of the two
+/// computations drifting apart.
+fn stale_tail_rows_total(
+    placed: &[PlacedState],
+    previous: &[tmath_render::PlannedBlock],
+    reanchor_from: usize,
+) -> u32 {
+    stale_tail_ids(previous, reanchor_from)
+        .iter()
+        .filter_map(|id| placed.iter().find(|entry| entry.id == *id))
+        .map(|entry| entry.rows)
+        .fold(0u32, |total, rows| total.saturating_add(rows))
+}
+
+/// Whether a relative cursor-up of `old_rows_total` rows, issued from
+/// wherever the cursor happens to currently sit, could clamp at the
+/// terminal's actual top row before reaching its intended target — the
+/// mechanism behind the live-run "ghost placement" report (see
+/// `EmitOutcome::NeedsWindowSync`'s doc comment for the full chain).
+///
+/// `\x1b[{n}A` (Cursor Up) is defined to stop at the screen's top row
+/// rather than erroring or scrolling, so ANY cursor-up whose target would
+/// be above row 1 silently lands at row 1 instead — `n` rows too short.
+/// The exact current cursor row is not queried here (a live `CSI 6n`
+/// round-trip is too slow to call on every batch rewrite, and does not
+/// reliably return through tmux passthrough at all — see
+/// `Terminal::cursor_position`'s doc comment) — instead this uses the
+/// worst-case-safe static bound: the cursor can never be more than
+/// `pane_rows` rows below the pane's top row (row 1), and one additional
+/// row is reserved when the status bar is active (content starts at row 2,
+/// not row 1 — see the `status_bar` module doc), so a cursor-up of
+/// `pane_rows - reserved_rows` or more is guaranteed to clamp regardless of
+/// the cursor's actual position. This is deliberately conservative: it may
+/// fall back to a window sync a little earlier than the true clamp point
+/// in some cursor positions, but it can never MISS a clamp that would
+/// actually happen, which is the only failure mode that matters (a missed
+/// detection reproduces the ghost; an over-eager fallback just does a
+/// window sync that was not strictly necessary).
+///
+/// `pane_rows == 0` (the default for a `TerminalSink` that never opted
+/// into the status bar/pane-geometry fields via
+/// `StreamSink::with_status_bar`) always returns `false` — the check is
+/// disabled, matching that `emit_batch` is unreachable for plain
+/// stream/watch sessions regardless (see `pane_rows`'s field doc).
+fn clamp_would_truncate(old_rows_total: u32, pane_rows: u32, status_bar_active: bool) -> bool {
+    if pane_rows == 0 {
+        return false;
+    }
+    let reserved_rows = u32::from(status_bar_active);
+    let usable_rows = pane_rows.saturating_sub(reserved_rows);
+    old_rows_total >= usable_rows
+}
+
+/// Decodes one `Keep`/`Append`/`Replace` plan op into the `PlacedState`
+/// entry it produces, without building any terminal operations — the
+/// state-only half of what `divergence_rewrite_operations`'s loop does,
+/// shared so the clamp fallback (`clamp_fallback_new_tail`) and the normal
+/// relative-cursor rewrite always compute identical `PlacedState` rows for
+/// the same plan (the row-bookkeeping invariant `ba800aa` added checkers
+/// for must hold on BOTH paths, not just the common one).
+fn placed_state_for_op(
+    operation: &PlanOp,
+    index: usize,
+    placed: &[PlacedState],
+    prepared: &[PreparedBlock],
+    cell: CellSize,
+    max_image_pixels: u64,
+    retain: bool,
+) -> Result<Option<PlacedState>, RenderError> {
+    match operation {
+        PlanOp::Keep { id } => {
+            let entry = placed
+                .iter()
+                .find(|entry| entry.id == *id)
+                .ok_or_else(stream_error)?;
+            let (width, height, _) =
+                decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
+            let (_, rows) = tmath_core::placement::grid_for(width, height, cell);
+            Ok(Some(PlacedState {
+                id: *id,
+                rows,
+                pixels: u64::from(width) * u64::from(height),
+                png: entry.png.clone(),
+            }))
+        }
+        PlanOp::Append { block } | PlanOp::Replace { block, .. } => {
+            let (rendered, png, _) = rendered_event(prepared, index)?;
+            let (width, height, _) =
+                decode_png(png, max_image_pixels).map_err(|_| stream_error())?;
+            if width != rendered.width_px || height != rendered.height_px {
+                return Err(stream_error());
+            }
+            let (_, rows) = tmath_core::placement::grid_for(width, height, cell);
+            Ok(Some(PlacedState {
+                id: block.id,
+                rows,
+                pixels: u64::from(width) * u64::from(height),
+                png: retained_png(png, retain),
+            }))
+        }
+        PlanOp::Remove { .. } => Ok(None),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn divergence_rewrite_operations(
     placed: &[PlacedState],
@@ -1080,15 +1499,8 @@ fn divergence_rewrite_operations(
     max_image_pixels: u64,
     retain: bool,
 ) -> Result<(Vec<TerminalOp>, Vec<PlacedState>), RenderError> {
-    let stale_ids: Vec<u64> = previous[reanchor_from.min(previous.len())..]
-        .iter()
-        .map(|block| block.id)
-        .collect();
-    let old_rows_total: u32 = stale_ids
-        .iter()
-        .filter_map(|id| placed.iter().find(|entry| entry.id == *id))
-        .map(|entry| entry.rows)
-        .fold(0u32, |total, rows| total.saturating_add(rows));
+    let stale_ids = stale_tail_ids(previous, reanchor_from);
+    let old_rows_total = stale_tail_rows_total(placed, previous, reanchor_from);
 
     let mut operations = Vec::new();
     if old_rows_total > 0 {
@@ -1108,51 +1520,68 @@ fn divergence_rewrite_operations(
 
     let mut new_tail = Vec::with_capacity(plan.ops.len().saturating_sub(reanchor_from));
     for (index, operation) in plan.ops.iter().enumerate().skip(reanchor_from) {
-        match operation {
-            PlanOp::Keep { id } => {
-                let entry = placed
-                    .iter()
-                    .find(|entry| entry.id == *id)
-                    .ok_or_else(stream_error)?;
-                let (width, height, rgba) =
-                    decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
-                let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
-                let image_id = u32::try_from(*id).map_err(|_| stream_error())?;
-                operations.extend(append_operations(
-                    image_id, width, height, &rgba, cols, rows, true,
-                ));
-                new_tail.push(PlacedState {
-                    id: *id,
-                    rows,
-                    pixels: u64::from(width) * u64::from(height),
-                    png: entry.png.clone(),
-                });
-            }
-            PlanOp::Append { block } | PlanOp::Replace { block, .. } => {
-                let (rendered, png, _) = rendered_event(prepared, index)?;
-                let (width, height, rgba) =
-                    decode_png(png, max_image_pixels).map_err(|_| stream_error())?;
-                if width != rendered.width_px || height != rendered.height_px {
-                    return Err(stream_error());
-                }
-                let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
-                let image_id = u32::try_from(block.id).map_err(|_| stream_error())?;
-                operations.extend(append_operations(
-                    image_id, width, height, &rgba, cols, rows, true,
-                ));
-                new_tail.push(PlacedState {
-                    id: block.id,
-                    rows,
-                    pixels: u64::from(width) * u64::from(height),
-                    png: retained_png(png, retain),
-                });
-            }
-            PlanOp::Remove { .. } => {}
-        }
+        let Some(entry) = placed_state_for_op(
+            operation,
+            index,
+            placed,
+            prepared,
+            cell,
+            max_image_pixels,
+            retain,
+        )?
+        else {
+            continue;
+        };
+        let (width, height, rgba) =
+            decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
+        let (cols, rows) = tmath_core::placement::grid_for(width, height, cell);
+        let image_id = u32::try_from(entry.id).map_err(|_| stream_error())?;
+        operations.extend(append_operations(
+            image_id, width, height, &rgba, cols, rows, true,
+        ));
+        new_tail.push(entry);
     }
     operations.push(TerminalOp::Local(b"\x1b[0J".to_vec()));
 
     Ok((operations, new_tail))
+}
+
+/// The clamp fallback's equivalent of `divergence_rewrite_operations`, minus
+/// building the (would-be-clamped) relative-cursor operations: computes only
+/// the new `PlacedState` tail via [`placed_state_for_op`], so
+/// [`TerminalSink::emit_batch`] can update its bookkeeping to the new plan
+/// even though it writes nothing to the terminal itself — the caller's
+/// follow-up `sync_visible_window`/`sync_window` redraws from this state
+/// using an absolute `\x1b[H`, not a relative cursor-up. Takes the same
+/// `placed`/`reanchor_from` pair as `divergence_rewrite_operations` (the
+/// `Keep` branch of `placed_state_for_op` resolves ids from it), so the two
+/// functions always compute row-identical `PlacedState` entries for the
+/// same plan.
+#[allow(clippy::too_many_arguments)]
+fn clamp_fallback_new_tail(
+    placed: &[PlacedState],
+    plan: &Plan,
+    prepared: &[PreparedBlock],
+    reanchor_from: usize,
+    cell: CellSize,
+    max_image_pixels: u64,
+    retain: bool,
+) -> Result<Vec<PlacedState>, RenderError> {
+    let mut new_tail = Vec::with_capacity(plan.ops.len().saturating_sub(reanchor_from));
+    for (index, operation) in plan.ops.iter().enumerate().skip(reanchor_from) {
+        if let Some(entry) = placed_state_for_op(
+            operation,
+            index,
+            placed,
+            prepared,
+            cell,
+            max_image_pixels,
+            retain,
+        )? {
+            new_tail.push(entry);
+        }
+    }
+    Ok(new_tail)
 }
 
 /// Builds the operation list for a visibility-driven viewport sync
@@ -1194,20 +1623,32 @@ fn divergence_rewrite_operations(
 /// cells and image fragments from a taller previous draw. It costs a
 /// constant few bytes regardless of window size, so it does not affect the
 /// history-independence bound. When nothing is drawn (`visible` is empty)
-/// but something was previously on screen, the pane is homed and erased
-/// too, so a scroll past all content still clears what was there.
+/// but something was previously on screen, the pane is homed (to
+/// `content_row_offset + 1`) and erased too, so a scroll past all content
+/// still clears what was there.
+///
+/// `content_row_offset` reserves that many rows at the pane's actual top
+/// (row 1..=`content_row_offset`) for the live status bar (see the
+/// `status_bar` module doc) — content homes to row `content_row_offset +
+/// 1` instead of row 1, and `\x1b[0J`'s erase-below never reaches back up
+/// into the reserved rows since it always runs from a cursor position at or
+/// below them. `0` (plain stream/watch sessions, which never enable the
+/// status bar) reproduces the exact `\x1b[H`-at-row-1 behavior this
+/// function had before the reserved row existed.
 fn sync_window_operations(
     placed: &[PlacedState],
     emitted_ids: &[u64],
     visible: std::ops::Range<usize>,
     cell: CellSize,
     max_image_pixels: u64,
+    content_row_offset: u32,
 ) -> Result<Vec<TerminalOp>, RenderError> {
     let visible = visible.start.min(placed.len())..visible.end.min(placed.len());
     let visible_ids: Vec<u64> = placed[visible.clone()]
         .iter()
         .map(|entry| entry.id)
         .collect();
+    let home = format!("\x1b[{};1H", content_row_offset.saturating_add(1));
 
     let mut operations = Vec::new();
     for &id in emitted_ids {
@@ -1220,10 +1661,11 @@ fn sync_window_operations(
     }
 
     if !visible.is_empty() {
-        // Move home once; each block below is then placed immediately after
-        // the previous one via the cursor-relative form, so no per-block
-        // home-row arithmetic is needed to keep window-relative rows correct.
-        operations.push(TerminalOp::Local(b"\x1b[H".to_vec()));
+        // Move to the content home row once; each block below is then
+        // placed immediately after the previous one via the cursor-relative
+        // form, so no per-block home-row arithmetic is needed to keep
+        // window-relative rows correct.
+        operations.push(TerminalOp::Local(home.clone().into_bytes()));
         for entry in &placed[visible] {
             let (width, height, rgba) =
                 decode_png(&entry.png, max_image_pixels).map_err(|_| stream_error())?;
@@ -1235,7 +1677,7 @@ fn sync_window_operations(
         }
         operations.push(TerminalOp::Local(b"\x1b[0J".to_vec()));
     } else if !emitted_ids.is_empty() {
-        operations.push(TerminalOp::Local(b"\x1b[H\x1b[0J".to_vec()));
+        operations.push(TerminalOp::Local(format!("{home}\x1b[0J").into_bytes()));
     }
 
     Ok(operations)
@@ -1403,7 +1845,7 @@ mod tests {
             placed(3, 1, rgba8_png(1, 1)),
         ];
 
-        let operations = sync_window_operations(&placed, &[1, 2], 1..3, cell, u64::MAX).unwrap();
+        let operations = sync_window_operations(&placed, &[1, 2], 1..3, cell, u64::MAX, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
 
@@ -1412,7 +1854,11 @@ mod tests {
         assert!(text.contains("\x1b_Ga=d,d=I,i=1,q=2\x1b\\"));
         assert!(!text.contains("\x1b_Ga=d,d=I,i=2,q=2\x1b\\"));
         assert!(!text.contains("\x1b_Ga=d,d=I,i=3,q=2\x1b\\"));
-        assert!(text.contains("\x1b[H"), "home once before re-emitting");
+        assert!(
+            text.contains("\x1b[1;1H"),
+            "home to row 1 (content_row_offset=0, no reserved status-bar row) once \
+             before re-emitting"
+        );
         // Both blocks now inside the window (ids 2 and 3) are re-emitted,
         // even though id=2 was already visible before this sync.
         assert!(text.contains("i=2,U=1,c=1,r=3,q=2"));
@@ -1445,7 +1891,7 @@ mod tests {
         let emitted_ids = [99u64, 1];
 
         let operations =
-            sync_window_operations(&placed, &emitted_ids, 0..1, cell, u64::MAX).unwrap();
+            sync_window_operations(&placed, &emitted_ids, 0..1, cell, u64::MAX, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
 
@@ -1471,15 +1917,16 @@ mod tests {
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
 
-        let operations = sync_window_operations(&placed, &[1], 0..0, cell, u64::MAX).unwrap();
+        let operations = sync_window_operations(&placed, &[1], 0..0, cell, u64::MAX, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
 
         assert!(text.contains("\x1b_Ga=d,d=I,i=1,q=2\x1b\\"));
         assert!(!text.contains("U=1,c=1"), "no placement is re-emitted");
         assert!(
-            text.ends_with("\x1b[H\x1b[0J"),
-            "home and erase clear the stale rows when nothing is re-emitted: {text:?}"
+            text.ends_with("\x1b[1;1H\x1b[0J"),
+            "home (row 1, content_row_offset=0) and erase clear the stale rows when \
+             nothing is re-emitted: {text:?}"
         );
     }
 
@@ -1493,7 +1940,7 @@ mod tests {
             height: 1,
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
-        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX).unwrap();
+        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
         assert!(!text.contains("a=d,d=I"), "nothing to delete");
@@ -1509,7 +1956,7 @@ mod tests {
             height: 1,
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
-        let operations = sync_window_operations(&placed, &[], 0..0, cell, u64::MAX).unwrap();
+        let operations = sync_window_operations(&placed, &[], 0..0, cell, u64::MAX, 0).unwrap();
         assert!(operations.is_empty());
     }
 
@@ -1520,7 +1967,7 @@ mod tests {
             height: 1,
         };
         let placed = vec![placed(1, 2, rgba8_png(1, 2))];
-        let operations = sync_window_operations(&placed, &[1], 0..5, cell, u64::MAX).unwrap();
+        let operations = sync_window_operations(&placed, &[1], 0..5, cell, u64::MAX, 0).unwrap();
         let bytes = direct_bytes(&operations);
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("i=1,U=1,c=1,r=2,q=2"));
@@ -1555,8 +2002,15 @@ mod tests {
         // 1..=9), so the delete set is bounded the same way too.
         let previously_emitted = [5u64, 6, 7, 8, 9];
         let short_bytes = direct_bytes(
-            &sync_window_operations(&short_history, &previously_emitted, 5..10, cell, u64::MAX)
-                .unwrap(),
+            &sync_window_operations(
+                &short_history,
+                &previously_emitted,
+                5..10,
+                cell,
+                u64::MAX,
+                0,
+            )
+            .unwrap(),
         );
         let long_bytes = direct_bytes(
             &sync_window_operations(
@@ -1565,6 +2019,7 @@ mod tests {
                 995..1000,
                 cell,
                 u64::MAX,
+                0,
             )
             .unwrap(),
         );
@@ -2219,6 +2674,50 @@ mod tests {
         }
     }
 
+    /// The clamp-aware fallback's own invariant (PART 1): after the fix, NO
+    /// operation stream this module emits may ever contain a relative
+    /// cursor-up (`\x1b[{n}A`) whose `n` exceeds `pane_rows` — a cursor-up
+    /// that large is exactly the ghost mechanism (`clamp_would_truncate`'s
+    /// doc comment), so a correct emitter must either keep `n` within the
+    /// pane or not emit a relative cursor-up at all (falling back to the
+    /// absolute `\x1b[H`-based window sync instead). Scans every `Local`
+    /// op's bytes directly for `CSI n A` sequences, independent of
+    /// `local_op_row_delta`'s net-delta accounting, so this is a genuinely
+    /// separate check, not a restatement of the same arithmetic.
+    fn assert_no_cursor_up_exceeds_pane_rows(operations: &[TerminalOp], pane_rows: u32) {
+        for operation in operations {
+            let TerminalOp::Local(bytes) = operation else {
+                continue;
+            };
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
+                    let start = i + 2;
+                    let mut end = start;
+                    while end < bytes.len() && !(0x40..=0x7e).contains(&bytes[end]) {
+                        end += 1;
+                    }
+                    if end < bytes.len() && bytes[end] == b'A' {
+                        let params = std::str::from_utf8(&bytes[start..end]).unwrap_or("");
+                        let n: u32 = if params.is_empty() {
+                            1
+                        } else {
+                            params.parse().unwrap_or(0)
+                        };
+                        assert!(
+                            n <= pane_rows,
+                            "cursor-up by {n} rows exceeds pane_rows={pane_rows} — this WILL \
+                             clamp at the pane's top row and ghost the rewrite"
+                        );
+                    }
+                    i = end + 1;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
     /// Reproduces a synthetic 12-block whole-document Reset with realistic,
     /// NON-uniform pixel heights that include the inter-block margin
     /// (`53b20da`) — heights are `12 + 2*margin_px` style values that are
@@ -2581,5 +3080,374 @@ mod tests {
         // old, un-deleted or wrongly-positioned span still claiming rows
         // near a new one).
         assert_no_overlapping_row_spans(&combined_operations);
+    }
+
+    // --- PART 1: clamp-aware fallback (D-CLAMP) ---
+
+    /// `clamp_would_truncate`'s decision boundary: exactly at
+    /// `usable_rows` the cursor-up is guaranteed to clamp (the pane has no
+    /// row above that to move into), and one row below the boundary it is
+    /// not. Checked with and without a reserved status-bar row.
+    #[test]
+    fn clamp_would_truncate_decision_boundary() {
+        // No status bar: usable_rows == pane_rows.
+        assert!(!clamp_would_truncate(23, 24, false), "one row of headroom");
+        assert!(
+            clamp_would_truncate(24, 24, false),
+            "exactly at the boundary"
+        );
+        assert!(clamp_would_truncate(25, 24, false), "past the boundary");
+
+        // With a reserved status-bar row: usable_rows == pane_rows - 1.
+        assert!(
+            !clamp_would_truncate(22, 24, true),
+            "one row of headroom, minus the reserved row"
+        );
+        assert!(
+            clamp_would_truncate(23, 24, true),
+            "exactly at the boundary, minus the reserved row"
+        );
+        assert!(clamp_would_truncate(24, 24, true), "past the boundary");
+
+        // `pane_rows == 0` (never opted into `with_status_bar`) always
+        // disables the check — this is what makes it safe for plain
+        // stream/watch sessions, which never set `pane_rows`.
+        assert!(!clamp_would_truncate(u32::MAX, 0, false));
+        assert!(!clamp_would_truncate(u32::MAX, 0, true));
+    }
+
+    /// End-to-end proof that `emit_batch` actually takes the fallback path
+    /// when the stale tail is too tall for the pane: builds a `TerminalSink`-
+    /// equivalent scenario (via the same pure functions the cross-call test
+    /// above threads by hand) with a 12-block stale tail whose row total
+    /// exceeds a small `pane_rows`, and confirms (a) the returned outcome is
+    /// `NeedsWindowSync`, (b) NOTHING is written for that revision (the
+    /// would-be-clamped relative cursor-up never gets emitted, since a
+    /// PARTIAL write is not safe either), and (c) the row-bookkeeping state
+    /// (`new_tail`) still updates correctly so the caller's follow-up
+    /// window sync has accurate data to redraw from.
+    #[test]
+    fn emit_batch_falls_back_to_window_sync_when_the_stale_tail_exceeds_the_pane() {
+        let cell = CellSize {
+            width: 8,
+            height: 17,
+        };
+        let heights: [u32; 12] = [19, 38, 55, 19, 91, 19, 38, 127, 19, 55, 19, 73];
+        let old_rows: Vec<u32> = heights
+            .iter()
+            .map(|&height| tmath_core::placement::grid_for(100, height, cell).1)
+            .collect();
+        let old_rows_total: u32 = old_rows
+            .iter()
+            .fold(0u32, |total, &rows| total.saturating_add(rows));
+        // A pane shorter than the stale tail's total rows — this MUST clamp.
+        let pane_rows = old_rows_total.saturating_sub(1).max(1);
+        assert!(
+            clamp_would_truncate(old_rows_total, pane_rows, false),
+            "test setup: the pane must be too short for the stale tail"
+        );
+
+        let placed: Vec<PlacedState> = (1..=12u64)
+            .zip(old_rows.iter())
+            .map(|(id, &rows)| placed(id, rows, rgba8_png(1, 1)))
+            .collect();
+        let previous: Vec<tmath_render::PlannedBlock> = (1..=12u64)
+            .zip(heights.iter())
+            .map(|(id, &height)| tmath_render::PlannedBlock {
+                id,
+                hash: [0; 32],
+                width_px: 100,
+                height_px: height,
+            })
+            .collect();
+        let plan = Plan {
+            ops: (1..=12u64)
+                .map(|old_id| PlanOp::Replace {
+                    old_id,
+                    block: tmath_render::PlannedBlock {
+                        id: old_id + 100,
+                        hash: [1; 32],
+                        width_px: 100,
+                        height_px: 20,
+                    },
+                })
+                .collect(),
+            reanchor_from: Some(0),
+        };
+        let prepared: Vec<PreparedBlock> = (0..12)
+            .map(|_| {
+                let png = rgba8_png(100, 20);
+                PreparedBlock {
+                    rendered: Some(Arc::new(RenderedBlock {
+                        png: png.clone(),
+                        width_px: 100,
+                        height_px: 20,
+                        formula_errors: Vec::new(),
+                        duration_ms: 0,
+                    })),
+                    png: Some(png),
+                    cache: Some(CacheOutcome::Miss),
+                }
+            })
+            .collect();
+
+        // Mirror exactly what `TerminalSink::emit_batch` does for the
+        // clamp branch (this test cannot construct a real `TerminalSink`
+        // — see `two_consecutive_resets_keep_row_bookkeeping_consistent_across_calls`'s
+        // doc comment for why — so it drives the same pure functions in the
+        // same order `emit_batch` calls them).
+        assert!(clamp_would_truncate(
+            stale_tail_rows_total(&placed, &previous, 0),
+            pane_rows,
+            false
+        ));
+        let new_tail =
+            clamp_fallback_new_tail(&placed, &plan, &prepared, 0, cell, u64::MAX, true).unwrap();
+
+        // (a)/(c): the new bookkeeping is correct even though nothing was
+        // written — every new id/rows is present, ready for a window sync
+        // to redraw from.
+        assert_eq!(new_tail.len(), 12);
+        for (index, entry) in new_tail.iter().enumerate() {
+            assert_eq!(entry.id, 101 + index as u64);
+            assert_eq!(entry.rows, tmath_core::placement::grid_for(100, 20, cell).1);
+        }
+        // (b): `clamp_fallback_new_tail` itself never returns any
+        // `TerminalOp`s — by construction, it has no `Vec<TerminalOp>` in
+        // its return type at all, so there is no relative cursor-up for
+        // this revision to accidentally clamp. The only bytes a real
+        // `emit_batch` call would send for this revision are whatever the
+        // CALLER's subsequent `sync_window` emits, which is anchored
+        // absolutely (`\x1b[H`-based), never relatively.
+
+        // Positive counter-check, same scenario: with a GENEROUS pane
+        // (comfortably larger than the stale tail), `clamp_would_truncate`
+        // is false, the ORDINARY relative-cursor path runs instead, and
+        // `assert_no_cursor_up_exceeds_pane_rows` must hold for its real,
+        // non-empty operations — proving the checker is not vacuously true
+        // on empty output; it actively validates a genuine cursor-up
+        // against a genuine pane bound.
+        let generous_pane_rows = old_rows_total + 100;
+        assert!(!clamp_would_truncate(
+            old_rows_total,
+            generous_pane_rows,
+            false
+        ));
+        let (operations, _) = divergence_rewrite_operations(
+            &placed,
+            &previous,
+            &plan,
+            &prepared,
+            0,
+            cell,
+            u64::MAX,
+            true,
+        )
+        .unwrap();
+        assert_no_cursor_up_exceeds_pane_rows(&operations, generous_pane_rows);
+        // Sanity: this scenario really does emit a relative cursor-up (so
+        // the check above is exercising something, not skipping an empty
+        // operations list the way the fallback case's would).
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains(&format!("\x1b[{old_rows_total}A\r")),
+            "sanity: the ordinary path must actually emit the cursor-up: {text:?}"
+        );
+    }
+
+    // --- PART 2: live status bar (D-STATUS) ---
+
+    fn following_state(blocks: usize, font_size_pt: f64) -> StatusBarState {
+        StatusBarState {
+            following: true,
+            blocks,
+            font_size_pt,
+        }
+    }
+
+    /// The status bar's byte sequence: save cursor, move to row 1, clear
+    /// the line, write, restore cursor — a sequence that never leaves the
+    /// cursor anywhere but where it started (DECSC/DECRC bracket the
+    /// whole thing), starts with an absolute move to row 1 col 1, clears
+    /// the line first, and ends with a full SGR reset before the restore
+    /// — so it can never bleed color into whatever the real cursor
+    /// position's content was.
+    #[test]
+    fn status_bar_operations_bracket_a_full_redraw_with_save_and_restore() {
+        let operations = status_bar_operations(80, following_state(12, 15.0));
+        assert_eq!(operations.len(), 1, "one atomic Local op");
+        let TerminalOp::Local(bytes) = &operations[0] else {
+            panic!("status bar operations must be Local, not Graphics");
+        };
+        let text = String::from_utf8_lossy(bytes);
+        assert!(text.starts_with("\x1b7\x1b[1;1H\x1b[2K"), "{text:?}");
+        assert!(text.ends_with("\x1b8"), "{text:?}");
+        // The reset immediately before the restore, so nothing after this
+        // op inherits stray color/attribute state.
+        assert!(
+            text[..text.len() - "\x1b8".len()].ends_with("\x1b[0m"),
+            "{text:?}"
+        );
+    }
+
+    /// The static brand and tagline must always be present, and the
+    /// dynamic fields must reflect the passed state: block count, font
+    /// size (integer pt formatted with no trailing `.0`), and the
+    /// `following` word in the accent color.
+    #[test]
+    fn status_bar_operations_render_the_brand_and_dynamic_fields() {
+        let operations = status_bar_operations(80, following_state(7, 15.0));
+        let TerminalOp::Local(bytes) = &operations[0] else {
+            panic!("expected Local");
+        };
+        let text = String::from_utf8_lossy(bytes);
+        assert!(text.contains(STATUS_BRAND), "{text:?}");
+        assert!(text.contains(STATUS_TAGLINE), "{text:?}");
+        assert!(text.contains(STATUS_STATE_FOLLOWING), "{text:?}");
+        assert!(text.contains("7 blocks"), "{text:?}");
+        assert!(text.contains("15pt"), "{text:?}");
+        assert!(
+            text.contains(&format!(
+                "\x1b[38;5;{STATUS_ACCENT_COLOR}m{STATUS_STATE_FOLLOWING}"
+            )),
+            "the following-state word must use the accent color: {text:?}"
+        );
+    }
+
+    /// A follow-transition redraw: the SAME state (blocks, font size)
+    /// rendered `following` vs. `scrolled` must differ in the state word
+    /// AND its color (a different hue per the disengaged-state
+    /// requirement), while the rest of the line (brand, tagline, block
+    /// count, font size) stays identical.
+    #[test]
+    fn status_bar_operations_distinguish_following_from_scrolled_by_word_and_color() {
+        let following = status_bar_operations(80, following_state(5, 15.0));
+        let scrolled = status_bar_operations(
+            80,
+            StatusBarState {
+                following: false,
+                blocks: 5,
+                font_size_pt: 15.0,
+            },
+        );
+        let TerminalOp::Local(following_bytes) = &following[0] else {
+            panic!("expected Local");
+        };
+        let TerminalOp::Local(scrolled_bytes) = &scrolled[0] else {
+            panic!("expected Local");
+        };
+        let following_text = String::from_utf8_lossy(following_bytes);
+        let scrolled_text = String::from_utf8_lossy(scrolled_bytes);
+
+        assert!(following_text.contains(STATUS_STATE_FOLLOWING));
+        assert!(scrolled_text.contains(STATUS_STATE_SCROLLED));
+        assert!(
+            following_text.contains(&format!("\x1b[38;5;{STATUS_ACCENT_COLOR}m")),
+            "{following_text:?}"
+        );
+        assert!(
+            scrolled_text.contains(&format!("\x1b[38;5;{STATUS_SCROLLED_COLOR}m")),
+            "{scrolled_text:?}"
+        );
+        assert_ne!(
+            STATUS_ACCENT_COLOR, STATUS_SCROLLED_COLOR,
+            "the two states must use genuinely different hues"
+        );
+        // The shared fields (brand, tagline, block count, font size) are
+        // identical between the two redraws — only the state word/color
+        // differs.
+        assert!(following_text.contains(STATUS_BRAND) && scrolled_text.contains(STATUS_BRAND));
+        assert!(following_text.contains("5 blocks") && scrolled_text.contains("5 blocks"));
+        assert!(following_text.contains("15pt") && scrolled_text.contains("15pt"));
+    }
+
+    /// Narrow-pane truncation: as `pane_cols` shrinks, right-side fields
+    /// drop from the front (font size, then block count) before the state
+    /// word, and the state word itself is dropped before the line would
+    /// ever wrap — the brand is NEVER dropped or truncated (it always
+    /// fits, or the line just has no right side at all).
+    #[test]
+    fn status_bar_operations_drop_right_side_fields_before_ever_wrapping() {
+        let state = following_state(123, 17.5);
+
+        // Plenty of room: every field present.
+        let wide = status_bar_operations(200, state);
+        let TerminalOp::Local(wide_bytes) = &wide[0] else {
+            panic!("expected Local")
+        };
+        let wide_text = String::from_utf8_lossy(wide_bytes);
+        assert!(wide_text.contains(STATUS_STATE_FOLLOWING));
+        assert!(wide_text.contains("123 blocks"));
+        assert!(wide_text.contains("17.5pt"));
+
+        // Just enough room for the brand plus the state word, nothing else.
+        let left_len = STATUS_BRAND.chars().count() + 1 + STATUS_TAGLINE.chars().count();
+        let state_word_len = STATUS_STATE_FOLLOWING.chars().count();
+        let narrow_cols = (left_len + 1 + state_word_len) as u32;
+        let narrow = status_bar_operations(narrow_cols, state);
+        let TerminalOp::Local(narrow_bytes) = &narrow[0] else {
+            panic!("expected Local")
+        };
+        let narrow_text = String::from_utf8_lossy(narrow_bytes);
+        assert!(
+            narrow_text.contains(STATUS_STATE_FOLLOWING),
+            "the state word must survive even a tight fit: {narrow_text:?}"
+        );
+        assert!(
+            !narrow_text.contains("123 blocks"),
+            "blocks must be dropped once it no longer fits: {narrow_text:?}"
+        );
+        assert!(
+            !narrow_text.contains("17.5pt"),
+            "font size must be dropped once it no longer fits: {narrow_text:?}"
+        );
+
+        // Impossibly narrow: not even the brand plus state word fits — no
+        // right side at all, but the brand itself is still emitted whole
+        // (never truncated mid-word) and the op never panics.
+        let tiny = status_bar_operations(1, state);
+        let TerminalOp::Local(tiny_bytes) = &tiny[0] else {
+            panic!("expected Local")
+        };
+        let tiny_text = String::from_utf8_lossy(tiny_bytes);
+        assert!(
+            tiny_text.contains(STATUS_BRAND),
+            "the brand is never truncated: {tiny_text:?}"
+        );
+        assert!(!tiny_text.contains(STATUS_STATE_FOLLOWING));
+        assert!(!tiny_text.contains("123 blocks"));
+        assert!(!tiny_text.contains("17.5pt"));
+        // Exactly one Local op, exactly one line — never wraps onto a
+        // second row regardless of how narrow the pane is.
+        assert_eq!(tiny.len(), 1);
+        assert_eq!(
+            tiny_text.matches('\n').count(),
+            0,
+            "must never emit a bare newline (would wrap/scroll the pane): {tiny_text:?}"
+        );
+    }
+
+    /// `sync_window_operations`'s `content_row_offset` reserves row 1 for
+    /// the status bar: content homes to row 2, not row 1, and the erase-below
+    /// never claws back into row 1.
+    #[test]
+    fn sync_window_operations_with_a_reserved_row_starts_content_at_row_two() {
+        let cell = CellSize {
+            width: 1,
+            height: 1,
+        };
+        let placed = vec![placed(1, 2, rgba8_png(1, 2))];
+        let operations = sync_window_operations(&placed, &[], 0..1, cell, u64::MAX, 1).unwrap();
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("\x1b[2;1H"),
+            "content must home to row 2 (row 1 reserved): {text:?}"
+        );
+        assert!(
+            !text.contains("\x1b[1;1H"),
+            "must never home to row 1 when a row is reserved: {text:?}"
+        );
     }
 }

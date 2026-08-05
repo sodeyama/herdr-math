@@ -70,12 +70,20 @@ pub(crate) fn render_prose_block_with_deadline(
 ) -> Result<RenderedImage, RenderError> {
     let source = compose_block_with_deadline(block, options, limits, deadline)?;
     deadline.checkpoint()?;
+    // A prose page's right edge is transparent margin (`INTER_BLOCK_MARGIN_EM`,
+    // see `typst_doc.rs`), not just "past the content" — `trim_transparent_right`
+    // must stop this many px short of the ink's own right edge, or the pane-edge
+    // margin gets cropped away as if it were ordinary trailing whitespace.
+    let right_margin_px = (crate::typst_doc::INTER_BLOCK_MARGIN_EM
+        * options.font_size_pt
+        * f64::from(options.device_pixel_ratio.clamp(1, 4)))
+    .round() as u32;
     render_typst_source(
         source.as_str(),
         &source.static_files,
         source.formula_errors.clone(),
         options,
-        true,
+        Some(right_margin_px),
         limits,
         deadline,
     )
@@ -94,14 +102,14 @@ pub(crate) fn render_display_math_block(
     // `math.rs` and `typst_doc.rs::push_math_image`).
     let name = format!("math-{block_index}-0.svg");
     let total_height = image.height_pt + image.depth_pt;
-    // Same D-LINE inter-block margin every other block page gets (see
-    // `typst_doc::INTER_BLOCK_MARGIN_EM`), so a standalone display-math
-    // block stacks against neighboring prose blocks with the same gap as
-    // any other block pair, not zero.
+    // Same D-LINE inter-block margin every other block page gets, on all
+    // four sides (see `typst_doc::INTER_BLOCK_MARGIN_EM`), so a standalone
+    // display-math block stacks against neighboring prose blocks with the
+    // same gap as any other block pair, and clears the pane's left/right
+    // edges the same way a prose block does.
     let block_margin_pt = crate::typst_doc::INTER_BLOCK_MARGIN_EM * options.font_size_pt;
     let source = format!(
-        "#set page(width: {width}pt, height: auto, \
-         margin: (top: {block_margin}pt, bottom: {block_margin}pt, x: 0pt), fill: none)\n\
+        "#set page(width: {width}pt, height: auto, margin: {block_margin}pt, fill: none)\n\
          #align(center)[#image(\"{name}\", width: {image_width}pt, \
          height: {image_height}pt, fit: \"stretch\")]\n",
         width = options.content_width_pt,
@@ -115,7 +123,7 @@ pub(crate) fn render_display_math_block(
         &[(name, image.svg)],
         Vec::new(),
         options,
-        false,
+        None,
         limits,
         deadline,
     )
@@ -141,8 +149,7 @@ pub(crate) fn render_display_math_error_badge(
 ) -> Result<RenderedImage, RenderError> {
     let block_margin_pt = crate::typst_doc::INTER_BLOCK_MARGIN_EM * options.font_size_pt;
     let source = format!(
-        "#set page(width: {width}pt, height: auto, \
-         margin: (top: {block_margin}pt, bottom: {block_margin}pt, x: 0pt), fill: none)\n\
+        "#set page(width: {width}pt, height: auto, margin: {block_margin}pt, fill: none)\n\
          #set text(font: {fonts}, size: {font_size}pt, fill: rgb(\"{color}\"))\n\
          #align(center)[#raw(\"[invalid latex]\", block: true)]\n",
         width = options.content_width_pt,
@@ -157,7 +164,7 @@ pub(crate) fn render_display_math_error_badge(
         &[],
         vec![formula_error],
         options,
-        false,
+        None,
         limits,
         deadline,
     )
@@ -168,7 +175,7 @@ fn render_typst_source(
     static_files: &[(String, Vec<u8>)],
     formula_errors: Vec<SafeErrorRecord>,
     options: &RenderOptions,
-    trim_right: bool,
+    trim_right_reserve_px: Option<u32>,
     limits: &Limits,
     deadline: &RenderDeadline,
 ) -> Result<RenderedImage, RenderError> {
@@ -204,8 +211,8 @@ fn render_typst_source(
         .encode_png()
         .map_err(|_| renderer_error("PNG encoding failed"))?;
     scaled_limits.check_raw_png_bytes(full_width_png.len() as u64)?;
-    let (png, width_px) = if trim_right {
-        trim_transparent_right(&full_width_png)?
+    let (png, width_px) = if let Some(reserve_px) = trim_right_reserve_px {
+        trim_transparent_right(&full_width_png, reserve_px)?
     } else {
         (full_width_png, raster_width_px)
     };
@@ -220,7 +227,18 @@ fn render_typst_source(
     })
 }
 
-fn trim_transparent_right(png_bytes: &[u8]) -> Result<(Vec<u8>, u32), RenderError> {
+/// Crops trailing transparent columns off the right edge, but stops
+/// `reserve_px` short of the actual ink's right edge so the page's own
+/// pane-edge right margin (`INTER_BLOCK_MARGIN_EM`, transparent by
+/// construction — it is Typst page margin, not content) survives instead
+/// of being cropped away as ordinary trailing whitespace. Never trims
+/// closer than `reserve_px` even if the ink itself extends past
+/// `info.width - reserve_px` (a content_width_pt this tight is already
+/// clamped elsewhere; this function only needs to not UNDER-reserve).
+fn trim_transparent_right(
+    png_bytes: &[u8],
+    reserve_px: u32,
+) -> Result<(Vec<u8>, u32), RenderError> {
     let mut decoder = png::Decoder::new(Cursor::new(png_bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
     let mut reader = decoder
@@ -241,14 +259,18 @@ fn trim_transparent_right(png_bytes: &[u8]) -> Result<(Vec<u8>, u32), RenderErro
         .ok()
         .and_then(|width| width.checked_mul(4))
         .ok_or_else(|| renderer_error("PNG row size overflowed"))?;
-    let content_width = (0..usize::try_from(info.width).unwrap_or(usize::MAX))
+    let ink_right_edge = (0..usize::try_from(info.width).unwrap_or(usize::MAX))
         .rev()
         .find(|x| {
             rgba.chunks_exact(row_bytes)
                 .any(|row| row[x.saturating_mul(4) + 3] > 0)
         })
         .map_or(1, |x| x + 1);
-    if content_width == usize::try_from(info.width).unwrap_or(usize::MAX) {
+    let full_width = usize::try_from(info.width).unwrap_or(usize::MAX);
+    let content_width = ink_right_edge
+        .saturating_add(reserve_px as usize)
+        .min(full_width);
+    if content_width == full_width {
         return Ok((png_bytes.to_vec(), info.width));
     }
 
@@ -380,6 +402,50 @@ mod tests {
         assert!(with_formula.width_px > without_formula.width_px);
         assert_ne!(with_formula.png, without_formula.png);
         assert!(with_formula.formula_errors.is_empty());
+    }
+
+    /// PART 2 pane-edge margins: a trimmed prose block's right edge must
+    /// stay transparent for `INTER_BLOCK_MARGIN_EM * font_size_pt` px past
+    /// the actual ink, proving `trim_transparent_right`'s reserve keeps the
+    /// intended right margin instead of cropping it away as ordinary
+    /// trailing whitespace (the regression this fix targets: before the
+    /// reserve existed, ANY transparent trailing space — margin or not —
+    /// was cropped to the bare content edge).
+    #[test]
+    fn trimmed_prose_block_preserves_the_right_pane_margin() {
+        let options = RenderOptions::new(480.0, 12.0, 1).unwrap();
+        let image =
+            render_prose_block(&block(BlockKind::Paragraph, "Short line."), &options).unwrap();
+
+        let expected_margin_px =
+            (crate::typst_doc::INTER_BLOCK_MARGIN_EM * options.font_size_pt).round() as u32;
+        assert!(
+            expected_margin_px > 0,
+            "the derived pane-edge margin must be a positive, non-zero px value"
+        );
+
+        let mut decoder = png::Decoder::new(Cursor::new(&image.png));
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
+        let mut reader = decoder.read_info().unwrap();
+        let mut output = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut output).unwrap();
+        let rgba = &output[..info.buffer_size()];
+        assert_eq!(info.width, image.width_px);
+
+        // The rightmost `expected_margin_px` columns must be fully
+        // transparent (alpha 0) in EVERY row — that is the reserved right
+        // margin, and it must not have been trimmed away.
+        let row_bytes = (info.width as usize) * 4;
+        for row in rgba.chunks_exact(row_bytes) {
+            for col in (info.width - expected_margin_px)..info.width {
+                let alpha = row[(col as usize) * 4 + 3];
+                assert_eq!(
+                    alpha, 0,
+                    "column {col} (within the last {expected_margin_px}px reserved margin) \
+                     must be fully transparent, got alpha={alpha}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1031,7 +1097,7 @@ mod tests {
     }
 
     /// A heading block and a paragraph block must emit the EXACT same
-    /// `#set page(margin: ...)` values — proven directly from the composed
+    /// `#set page(margin: ...)` value — proven directly from the composed
     /// Typst source (via `compose_block`, not an empirical height
     /// measurement), since `block_margin_pt` is computed once from the
     /// outer `options.font_size_pt` and written into `#set page(...)`
@@ -1039,8 +1105,12 @@ mod tests {
     /// ...em, weight: "bold")` override — is ever emitted. This is the
     /// most hermetic possible proof that the margin is a page property
     /// independent of `BlockKind` and of a heading's larger inner font
-    /// size: reading the literal generated margin values, not inferring
-    /// them from rendered pixel heights.
+    /// size: reading the literal generated margin value, not inferring it
+    /// from rendered pixel heights. The margin is now uniform on all four
+    /// sides (`#set page(margin: {value}pt, ...)`, PART 2's pane-edge
+    /// horizontal margins reusing the same `INTER_BLOCK_MARGIN_EM`
+    /// constant as the vertical rhythm — see its doc comment), so a single
+    /// value covers both axes.
     #[test]
     fn heading_and_paragraph_blocks_emit_the_identical_page_margin() {
         let options = RenderOptions::default();
@@ -1057,27 +1127,23 @@ mod tests {
         );
 
         let expected_margin_pt = crate::typst_doc::INTER_BLOCK_MARGIN_EM * options.font_size_pt;
-        assert!(
-            paragraph_margin.contains(&format!("top: {expected_margin_pt}pt"))
-                && paragraph_margin.contains(&format!("bottom: {expected_margin_pt}pt")),
-            "margin clause {paragraph_margin:?} did not contain the expected \
-             {expected_margin_pt}pt top/bottom derived from INTER_BLOCK_MARGIN_EM"
-        );
-        assert!(
-            paragraph_margin.contains("x: 0pt"),
-            "horizontal margin must stay 0pt: {paragraph_margin:?}"
+        assert_eq!(
+            paragraph_margin,
+            format!("margin: {expected_margin_pt}pt"),
+            "margin clause did not match the expected uniform value derived from \
+             INTER_BLOCK_MARGIN_EM"
         );
     }
 
-    /// Pulls the `margin: (...)` clause out of a composed block's `#set
+    /// Pulls the `margin: ...pt` clause out of a composed block's `#set
     /// page(...)` line, for exact source-level comparison.
     fn extract_page_margin(source: &str) -> String {
         let start = source
-            .find("margin: (")
+            .find("margin: ")
             .expect("margin clause must be present");
         let rest = &source[start..];
-        let end = rest.find(')').expect("margin clause must be closed");
-        rest[..=end].to_owned()
+        let end = rest.find("pt,").expect("margin clause must end with pt,");
+        rest[..end + 2].to_owned()
     }
 
     /// The re-route's explicit requirement: display-math blocks

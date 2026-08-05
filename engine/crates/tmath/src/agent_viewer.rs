@@ -78,7 +78,7 @@ use tmath_render::{
     Block, CacheBudget, Limits, PlacementPlanner, RenderCache, RenderOptions, StreamSplitter,
 };
 
-use crate::native_stream::{self, StreamSink};
+use crate::native_stream::{self, EmitOutcome, StatusBarState, StreamSink};
 use crate::viewer_viewport::Viewport;
 
 const CONNECT_RETRIES: u32 = 50;
@@ -283,18 +283,38 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         max_entries,
         max_pixels: scaled.image_pixels.max(1),
     });
-    let sink = StreamSink::new(
+    let mut sink = StreamSink::new(
         Some((terminal, (cell.width, cell.height))),
         scaled.image_pixels,
     )
     .with_retained_pngs()
-    .with_retained_window_blocks(limits.retained_window_blocks);
+    .with_retained_window_blocks(limits.retained_window_blocks)
+    .with_status_bar(pane_size.cols, pane_size.rows);
+
+    // Row 1 is the reserved live status bar (see the `status_bar` module
+    // doc in `native_stream.rs`) — it is the SAME reserved row PART 2's
+    // pane-edge top margin needed anyway, not an additional one, so the
+    // viewport's visible-row budget shrinks by exactly one, never two.
+    let content_pane_rows = viewport_pane_rows(pane_size.rows);
+    let initial_status = StatusBarState {
+        following: true,
+        blocks: 0,
+        font_size_pt,
+    };
+    if let Err(error) = sink.set_status(initial_status) {
+        if log_enabled {
+            eprintln!(
+                "agent-viewer: status_bar_failed ({:?})",
+                error.safe_record().code
+            );
+        }
+    }
 
     let mut viewer = Viewer {
         stream,
         input: InputDecoder::new(),
         messages: Decoder::new(),
-        viewport: Viewport::new(pane_size.rows),
+        viewport: Viewport::new(content_pane_rows),
         cache,
         limits,
         planner: PlacementPlanner::new(),
@@ -431,7 +451,8 @@ fn handle_scroll_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
         },
     };
 
-    if viewer.log_enabled && viewer.viewport.following() != following_before {
+    let follow_changed = viewer.viewport.following() != following_before;
+    if viewer.log_enabled && follow_changed {
         eprintln!("agent-viewer: follow={}", viewer.viewport.following());
     }
     // Render/limit failures elsewhere in this module are fail-closed (log and
@@ -443,6 +464,13 @@ fn handle_scroll_input(viewer: &mut Viewer, event: &tmath_core::input::Event) {
                 eprintln!("agent-viewer: {error}");
             }
         }
+    }
+    // The status bar's state word (following/scrolled) must redraw on every
+    // follow transition, even a scroll step that did not otherwise move the
+    // window's content (e.g. already clamped at an edge) — the state word
+    // itself changed, and `sync_visible_window` above only runs `if moved`.
+    if follow_changed {
+        redraw_status_bar(viewer);
     }
 }
 
@@ -495,6 +523,17 @@ fn apply_incoming_message(viewer: &mut Viewer, message: &Message) -> Result<(), 
             Ok(())
         }
     }
+}
+
+/// The viewport's visible-row budget for a pane of `pane_rows` total rows:
+/// `pane_rows - 1`, reserving exactly row 1 for the live status bar (see
+/// the `status_bar` module doc in `native_stream.rs`) — this is the SAME
+/// reserved row PART 2's pane-edge top margin needed anyway, not a second
+/// one, so the budget shrinks by exactly one regardless of pane size.
+/// `saturating_sub` keeps a degenerate 0-row pane at 0 rather than
+/// underflowing.
+fn viewport_pane_rows(pane_rows: u32) -> u32 {
+    pane_rows.saturating_sub(1)
 }
 
 /// Converts the planner's current per-block pixel dimensions into the row
@@ -649,7 +688,7 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     viewer
         .sink
         .set_suppress_writes(!viewer.viewport.following());
-    if let Err(error) = native_stream::apply_revision(
+    let outcome = match native_stream::apply_revision(
         &revision,
         &viewer.options,
         &mut viewer.cache,
@@ -657,15 +696,18 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         &mut viewer.formula_errors,
         &mut viewer.sink,
     ) {
-        viewer.sink.set_suppress_writes(false);
-        if viewer.log_enabled {
-            eprintln!(
-                "agent-viewer: render_failed ({:?})",
-                error.safe_record().code
-            );
+        Ok(outcome) => outcome,
+        Err(error) => {
+            viewer.sink.set_suppress_writes(false);
+            if viewer.log_enabled {
+                eprintln!(
+                    "agent-viewer: render_failed ({:?})",
+                    error.safe_record().code
+                );
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
+    };
     viewer.sink.set_suppress_writes(false);
     // Keep the source text in step with `planner.blocks()` (same order and
     // length) so a later scroll-back restore can re-render any block whose
@@ -693,7 +735,13 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     viewer
         .sink
         .evict_outside_window(visible.first..visible.last_exclusive);
-    if !viewer.viewport.following() {
+    // `NeedsWindowSync` (the clamp-aware fallback, PART 1) always needs a
+    // full window resync regardless of follow state: `apply_revision`
+    // wrote NOTHING to the terminal for that revision (the relative
+    // cursor-up would have clamped and ghosted), so even a following
+    // session's screen is now stale and must be redrawn from an absolute
+    // `\x1b[H`, exactly like the disengaged-follow path already does.
+    if !viewer.viewport.following() || outcome == EmitOutcome::NeedsWindowSync {
         if let Err(error) = sync_visible_window(viewer) {
             if viewer.log_enabled {
                 eprintln!("agent-viewer: {error}");
@@ -701,6 +749,11 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         }
     }
     viewer.blocks_placed = viewer.planner.blocks().len();
+    // Redraw the status bar's block count every time it can have changed —
+    // `sync_visible_window` above already redraws content, but never row 1
+    // itself, so the status bar needs its own explicit refresh here
+    // regardless of which content path just ran.
+    redraw_status_bar(viewer);
     if viewer.log_enabled {
         let stats = viewer.cache.stats();
         eprintln!(
@@ -712,6 +765,29 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Redraws the live status bar (row 1) from the viewer's current state —
+/// the single call site every status-changing event (a new revision's block
+/// count, a follow-state transition, a window sync) routes through, so
+/// there is exactly one place that assembles a [`StatusBarState`] from
+/// live viewer fields. Failures are logged, never fatal — the status bar is
+/// UI chrome, not placed content, so a failed redraw must not disturb
+/// anything else `render_and_place`/`handle_scroll_input` already did.
+fn redraw_status_bar(viewer: &mut Viewer) {
+    let state = StatusBarState {
+        following: viewer.viewport.following(),
+        blocks: viewer.planner.blocks().len(),
+        font_size_pt: viewer.options.font_size_pt,
+    };
+    if let Err(error) = viewer.sink.set_status(state) {
+        if viewer.log_enabled {
+            eprintln!(
+                "agent-viewer: status_bar_failed ({:?})",
+                error.safe_record().code
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -732,6 +808,24 @@ mod tests {
             parse_viewer_log_enabled(Some("0")),
             "any non-empty value enables it, including a literal '0' \
              (this is a simple on/off toggle, not a boolean parse)"
+        );
+    }
+
+    /// PART 2: the viewport's visible-row budget must be exactly
+    /// `pane_rows - 1` — the status bar's reserved row 1 IS the top margin,
+    /// not an additional reservation, so this must never subtract 2.
+    #[test]
+    fn viewport_pane_rows_reserves_exactly_the_status_bar_row() {
+        assert_eq!(viewport_pane_rows(24), 23);
+        assert_eq!(
+            viewport_pane_rows(1),
+            0,
+            "a 1-row pane leaves no content rows"
+        );
+        assert_eq!(
+            viewport_pane_rows(0),
+            0,
+            "a degenerate 0-row pane must not underflow"
         );
     }
 
