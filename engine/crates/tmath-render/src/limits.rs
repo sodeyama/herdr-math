@@ -12,6 +12,22 @@ pub struct Limits {
     pub image_height_px: u32,
     pub image_pixels: u64,
     pub raw_png_bytes: u64,
+    /// Finite bound on one formula's embedded SVG byte length (`MathImage::svg`,
+    /// UTF-8 markup, not a raster). SVG is vector output and has no pixel
+    /// dimensions to bound, so this is the sole per-formula size check
+    /// before the formula is embedded in the composed Typst page; the
+    /// page's final rasterized PNG still goes through `image_width_px`/
+    /// `image_height_px`/`image_pixels`/`raw_png_bytes` unchanged.
+    pub math_svg_bytes: u64,
+    /// The agent-viewer's bound on how many blocks' PNG bytes stay retained
+    /// (D7's "cached blocks"): blocks whose distance from the current
+    /// visibility window exceeds this budget on either side have their
+    /// retained PNG evicted and are re-rendered on scroll-back (AT-3-504).
+    /// A plain byte count, not pixel-scaled — retention is about how many
+    /// answer blocks a session keeps in memory at once, not image
+    /// resolution. Unused by stream/watch sessions, which never retain PNGs
+    /// at all (see `TerminalSink::retain_pngs`).
+    pub retained_window_blocks: u64,
 }
 
 impl Default for Limits {
@@ -24,6 +40,8 @@ impl Default for Limits {
             image_height_px: 16_384,
             image_pixels: 33_554_432,
             raw_png_bytes: 512 * 1024,
+            math_svg_bytes: 512 * 1024,
+            retained_window_blocks: 200,
         }
     }
 }
@@ -42,6 +60,10 @@ impl Limits {
             image_height_px: self.image_height_px.saturating_mul(linear_scale),
             image_pixels: self.image_pixels.saturating_mul(area_scale),
             raw_png_bytes: self.raw_png_bytes.saturating_mul(area_scale),
+            // SVG markup is vector output generated at the logical font
+            // size; unlike a raster, its byte length does not grow with
+            // device pixel ratio, so this limit is not DPR-scaled.
+            math_svg_bytes: self.math_svg_bytes,
             device_pixel_ratio,
         }
     }
@@ -109,6 +131,15 @@ impl Limits {
             SafeLimitKind::RawPngBytes,
         )
     }
+
+    pub fn check_math_svg_bytes(self, actual: u64) -> Result<(), RenderError> {
+        check_limit(
+            actual,
+            self.math_svg_bytes,
+            ErrorCode::ImageTooLarge,
+            SafeLimitKind::MathSvgBytes,
+        )
+    }
 }
 
 /// Render limits after DPR scaling.
@@ -121,6 +152,7 @@ pub struct ScaledLimits {
     pub image_height_px: u32,
     pub image_pixels: u64,
     pub raw_png_bytes: u64,
+    pub math_svg_bytes: u64,
     pub device_pixel_ratio: u8,
 }
 
@@ -185,6 +217,15 @@ impl ScaledLimits {
             self.raw_png_bytes,
             ErrorCode::ImageTooLarge,
             SafeLimitKind::RawPngBytes,
+        )
+    }
+
+    pub fn check_math_svg_bytes(self, actual: u64) -> Result<(), RenderError> {
+        check_limit(
+            actual,
+            self.math_svg_bytes,
+            ErrorCode::ImageTooLarge,
+            SafeLimitKind::MathSvgBytes,
         )
     }
 }
@@ -280,6 +321,8 @@ mod tests {
         assert_eq!(limits.image_height_px, 16_384);
         assert_eq!(limits.image_pixels, 33_554_432);
         assert_eq!(limits.raw_png_bytes, 512 * 1024);
+        assert_eq!(limits.math_svg_bytes, 512 * 1024);
+        assert_eq!(limits.retained_window_blocks, 200);
     }
 
     #[test]
@@ -368,6 +411,17 @@ mod tests {
             limits.raw_png_bytes,
             limits.raw_png_bytes + 1,
         );
+
+        assert!(limits.check_math_svg_bytes(limits.math_svg_bytes).is_ok());
+        assert_limit_error(
+            limits
+                .check_math_svg_bytes(limits.math_svg_bytes + 1)
+                .unwrap_err(),
+            ErrorCode::ImageTooLarge,
+            SafeLimitKind::MathSvgBytes,
+            limits.math_svg_bytes,
+            limits.math_svg_bytes + 1,
+        );
     }
 
     #[test]
@@ -378,6 +432,9 @@ mod tests {
         assert_eq!(scaled.image_height_px, limits.image_height_px * 2);
         assert_eq!(scaled.image_pixels, limits.image_pixels * 4);
         assert_eq!(scaled.raw_png_bytes, limits.raw_png_bytes * 4);
+        // SVG byte length does not grow with DPR (see `Limits::scaled`'s
+        // `math_svg_bytes` doc comment): it stays exactly the unscaled limit.
+        assert_eq!(scaled.math_svg_bytes, limits.math_svg_bytes);
     }
 
     #[test]
@@ -387,6 +444,7 @@ mod tests {
             image_height_px: u32::MAX,
             image_pixels: u64::MAX,
             raw_png_bytes: u64::MAX,
+            math_svg_bytes: u64::MAX,
             ..Limits::default()
         };
 
@@ -396,6 +454,7 @@ mod tests {
         assert_eq!(scaled.image_height_px, u32::MAX);
         assert_eq!(scaled.image_pixels, u64::MAX);
         assert_eq!(scaled.raw_png_bytes, u64::MAX);
+        assert_eq!(scaled.math_svg_bytes, u64::MAX);
 
         assert_eq!(limits.scaled(0).device_pixel_ratio, 1);
         assert_eq!(limits.scaled(u8::MAX).device_pixel_ratio, 4);

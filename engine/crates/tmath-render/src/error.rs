@@ -35,6 +35,10 @@ pub enum SafeLimitKind {
     ImagePixels,
     RawPngBytes,
     Base64PayloadBytes,
+    /// Native-engine-only: bounds one formula's embedded SVG byte length
+    /// (`Limits::math_svg_bytes`). No TypeScript/Node-engine counterpart
+    /// exists yet, since that pipeline still rasterizes formulas to PNG.
+    MathSvgBytes,
 }
 
 /// Numeric, input-free details safe to cross the public error boundary.
@@ -190,6 +194,7 @@ mod tests {
             (SafeLimitKind::ImagePixels, "image_pixels"),
             (SafeLimitKind::RawPngBytes, "raw_png_bytes"),
             (SafeLimitKind::Base64PayloadBytes, "base64_payload_bytes"),
+            (SafeLimitKind::MathSvgBytes, "math_svg_bytes"),
         ];
 
         for (value, expected) in cases {

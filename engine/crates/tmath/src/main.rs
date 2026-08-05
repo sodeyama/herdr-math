@@ -29,9 +29,16 @@ use crate::render::{render_document_text, renderer_worker_path};
 mod agent_allowlist;
 mod agent_viewer;
 mod agent_watcher;
+mod config;
+mod layout;
 mod native_render;
+mod native_stream;
+mod native_watch;
 mod render;
+mod scroll_region;
 mod terminal_output;
+mod transcript_adapter;
+mod viewer_viewport;
 
 fn main() {
     let code = match run() {
@@ -52,6 +59,7 @@ fn run() -> Result<i32, String> {
     };
     match command.as_str() {
         "render" => render(&args[1..]),
+        "watch" => watch(&args[1..]),
         "diagnose" => diagnose(&args[1..]),
         "agent" => agent_watcher::run_agent(&args[1..]),
         "agent-viewer" => agent_viewer::run_agent_viewer(&args[1..]),
@@ -74,10 +82,14 @@ fn help_text() -> String {
     format!(
         "tmath {version} — render Markdown + LaTeX as scrollback-anchored images.\n\
          \n\
-         USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath agent [OPTIONS]\n  tmath agent-viewer <socket-path>\n  tmath agent-enable [<dir>]\n  tmath agent-disable [<dir>]\n  tmath agent-allowed [<dir>]\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
+         USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath watch [OPTIONS] <file>\n  tmath agent [OPTIONS]\n  tmath agent-viewer <socket-path>\n  tmath agent-enable [<dir>]\n  tmath agent-disable [<dir>]\n  tmath agent-allowed [<dir>]\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
          \n\
-         OPTIONS (render):\n  --content-width <px>  Render width in pixels (default 480)\n  --font-size <px>      Base font size in pixels (default 14)\n\
+         OPTIONS (render):\n  --content-width <px>  Render width in pixels (overrides auto-fit; default 480 without a terminal)\n  --font-size <px>      Base font size in pixels (overrides auto-fit; default 14 without a terminal)\n\
   --engine <engine>     Renderer: node or native (default node)\n\
+         \n\
+         OPTIONS (watch):\n  --content-width <px>  Render width in pixels (overrides auto-fit; default 480 without a terminal)\n  --font-size <px>      Base font size in pixels (overrides auto-fit; default 14 without a terminal)\n\
+  --engine <engine>     Renderer: native only (default native)\n\
+  --poll-ms <ms>        Fallback poll interval when native watching fails (default 250)\n\
          \n\
          OPTIONS (agent):\n  --source-pane <id>  tmux pane to watch (default: current pane)\n  --percent <p>       Viewer split width in percent (default 35)\n  --wait-ms <ms>      Answer settle debounce (default 600)\n  --poll-ms <ms>      Pane poll interval (default 250)\n  --history <lines>   Scrollback lines to capture (default 500)\n\
          \n\
@@ -89,6 +101,19 @@ fn help_text() -> String {
          With `-`, the document is read from stdin. When stdout is a terminal\n\
          with Kitty graphics support, the image is placed in the main buffer so\n\
          it scrolls with the shell scrollback; `q` or Ctrl-C exits.\n\
+         `tmath watch` monitors the file's parent directory and updates only\n\
+         changed blocks. Ctrl-C exits; non-terminal mode also exits on SIGTERM.\n\
+         \n\
+         With `--engine native` and a connected terminal, content width, font\n\
+         size, and device pixel ratio are auto-fit to the terminal's measured\n\
+         cell size and pane width so the image fits the pane and its text size\n\
+         matches the surrounding terminal text. Precedence: an explicit\n\
+         `--content-width`/`--font-size` value always wins; otherwise the\n\
+         auto-fit value applies when a terminal is connected; otherwise the\n\
+         fixed defaults above apply. The `node` engine and a non-terminal\n\
+         destination always use the fixed defaults (plus any explicit\n\
+         override). `tmath agent-viewer` always auto-fits its pane; it has no\n\
+         CLI override.\n\
          \n\
          `tmath agent` runs inside tmux, watches a pane running a coding agent\n\
          (Claude Code, Codex, opencode, and similar), and shows each finished\n\
@@ -116,6 +141,15 @@ struct RenderArgs {
     content_width: Option<u32>,
     font_size: Option<u32>,
     engine: RenderEngine,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatchArgs {
+    input: String,
+    content_width: Option<u32>,
+    font_size: Option<u32>,
+    engine: RenderEngine,
+    poll_ms: u64,
 }
 
 fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
@@ -179,13 +213,80 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     })
 }
 
-/// Assumed CSS-pixel width of one terminal cell on a standard-density
-/// display; `deviceScaleFactor` is derived by comparing this against the
-/// terminal's actually reported (physical-pixel) cell width.
-pub(crate) const ASSUMED_CELL_WIDTH_PX: f64 = 8.0;
+fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
+    let mut input: Option<String> = None;
+    let mut content_width: Option<u32> = None;
+    let mut font_size: Option<u32> = None;
+    let mut engine = RenderEngine::Native;
+    let mut poll_ms = 250u64;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--content-width" => {
+                let value = args.get(index + 1).ok_or("--content-width needs a value")?;
+                content_width = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("invalid content width {value:?}"))?,
+                );
+                index += 2;
+            }
+            "--font-size" => {
+                let value = args.get(index + 1).ok_or("--font-size needs a value")?;
+                font_size = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("invalid font size {value:?}"))?,
+                );
+                index += 2;
+            }
+            "--engine" => {
+                let value = args.get(index + 1).ok_or("--engine needs a value")?;
+                engine = match value.as_str() {
+                    "node" => RenderEngine::Node,
+                    "native" => RenderEngine::Native,
+                    _ => return Err(format!("invalid watch engine {value:?}; expected 'native'")),
+                };
+                index += 2;
+            }
+            "--poll-ms" => {
+                let value = args.get(index + 1).ok_or("--poll-ms needs a value")?;
+                poll_ms = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("invalid poll interval {value:?}"))?;
+                if poll_ms == 0 {
+                    return Err("--poll-ms must be greater than zero".into());
+                }
+                index += 2;
+            }
+            "--help" | "-h" => return Err("use 'tmath --help'".into()),
+            other if other.starts_with('-') => {
+                return Err(format!("unknown option {other:?}"));
+            }
+            other => {
+                if input.is_some() {
+                    return Err("expected one input path".into());
+                }
+                input = Some(other.to_string());
+                index += 1;
+            }
+        }
+    }
+    let input = input.ok_or("missing input; use 'tmath watch <file>'")?;
+    Ok(WatchArgs {
+        input,
+        content_width,
+        font_size,
+        engine,
+        poll_ms,
+    })
+}
 
 fn render(args: &[String]) -> Result<i32, String> {
     let parsed = parse_render_args(args)?;
+    if parsed.engine == RenderEngine::Native && parsed.input == "-" && !io::stdin().is_terminal() {
+        return render_native_stream(&parsed);
+    }
     let source = read_document(&parsed.input)?;
 
     let connected = if io::stdout().is_terminal() {
@@ -200,25 +301,101 @@ fn render(args: &[String]) -> Result<i32, String> {
     }
 }
 
+fn watch(args: &[String]) -> Result<i32, String> {
+    let parsed = parse_watch_args(args)?;
+    if parsed.engine == RenderEngine::Node {
+        return Err("watch supports only '--engine native'; the node engine is unavailable".into());
+    }
+    if !io::stdout().is_terminal() && env::var_os("TMATH_WATCH_WORKER").is_none() {
+        return exec_watch_supervisor(args);
+    }
+    let connected = if io::stdout().is_terminal() {
+        Some(connect_terminal()?)
+    } else {
+        None
+    };
+    native_watch::run(
+        std::path::Path::new(&parsed.input),
+        parsed.content_width,
+        parsed.font_size,
+        parsed.poll_ms,
+        connected,
+    )
+}
+
+#[cfg(unix)]
+fn exec_watch_supervisor(args: &[String]) -> Result<i32, String> {
+    use std::os::unix::process::CommandExt as _;
+
+    const SCRIPT: &str = r#"
+bin=$1
+shift
+"$bin" watch "$@" &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; exit 0' TERM
+wait "$child"
+status=$?
+exit "$status"
+"#;
+
+    let executable =
+        env::current_exe().map_err(|error| format!("resolve tmath executable: {error}"))?;
+    let error = Command::new("sh")
+        .args(["-c", SCRIPT, "tmath-watch-supervisor"])
+        .arg(executable)
+        .args(args)
+        .env("TMATH_WATCH_WORKER", "1")
+        .exec();
+    Err(format!("start watch signal supervisor: {error}"))
+}
+
+#[cfg(not(unix))]
+fn exec_watch_supervisor(_args: &[String]) -> Result<i32, String> {
+    Err("watch signal handling is unavailable on this platform".into())
+}
+
+fn render_native_stream(parsed: &RenderArgs) -> Result<i32, String> {
+    let connected = if io::stdout().is_terminal() {
+        match StdioTty::from_control_terminal() {
+            Ok(tty) => Some(connect_terminal_with(tty)?),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    match native_stream::run(parsed.content_width, parsed.font_size, connected) {
+        Ok(()) => Ok(0),
+        Err(error) => {
+            let record = serde_json::to_string(error.safe_record())
+                .map_err(|_| "serialize native stream error".to_string())?;
+            eprintln!("{record}");
+            Ok(1)
+        }
+    }
+}
+
 fn render_with_node(
     parsed: &RenderArgs,
     source: &str,
     connected: Option<(Terminal<StdioTty>, (u32, u32))>,
 ) -> Result<i32, String> {
-    let mut layout = serde_json::Map::new();
+    // The node engine is out of scope for terminal-fit auto layout (V3 native
+    // paths only); it keeps its own fixed-default behavior and only applies
+    // an explicit CLI override or the measured device pixel ratio.
+    let mut node_layout = serde_json::Map::new();
     if let Some(width) = parsed.content_width {
-        layout.insert("contentWidthPx".into(), json!(width));
+        node_layout.insert("contentWidthPx".into(), json!(width));
     }
     if let Some(size) = parsed.font_size {
-        layout.insert("fontSizePx".into(), json!(size));
+        node_layout.insert("fontSizePx".into(), json!(size));
     }
     if let Some((_, cell)) = &connected {
-        let scale = device_scale_factor(*cell);
-        layout.insert("deviceScaleFactor".into(), json!(scale));
+        let scale = layout::device_scale_factor(*cell);
+        node_layout.insert("deviceScaleFactor".into(), json!(scale));
     }
-    let options = (!layout.is_empty()).then_some(IpcRenderOptions {
+    let options = (!node_layout.is_empty()).then_some(IpcRenderOptions {
         limits: None,
-        layout: Some(serde_json::Value::Object(layout)),
+        layout: Some(serde_json::Value::Object(node_layout)),
     });
 
     match render_document_text(source, options)? {
@@ -252,14 +429,25 @@ fn render_with_native(
     source: &str,
     connected: Option<(Terminal<StdioTty>, (u32, u32))>,
 ) -> Result<i32, String> {
-    let scale = connected
-        .as_ref()
-        .map_or(1, |(_, cell)| device_scale_factor(*cell));
+    let fitted = layout::fitted_layout_for_connected(&connected);
+    let content_width_pt = layout::resolve_content_width_pt(parsed.content_width, fitted);
+    let font_config = config::config_path()
+        .map(|path| config::load(&path))
+        .unwrap_or_default();
+    let (font_size_pt, font_size_source) =
+        config::resolve_font_size_pt_with_source(parsed.font_size, &font_config, fitted);
+    eprintln!(
+        "tmath: font_size source={} value={font_size_pt}",
+        font_size_source.label()
+    );
+    let device_pixel_ratio = layout::resolve_device_pixel_ratio(fitted);
+    let cjk_font = config::resolve_cjk_font(&font_config);
     let result = native_render::render_document_native(
         source,
-        parsed.content_width.unwrap_or(480),
-        parsed.font_size.unwrap_or(14),
-        scale as u8,
+        content_width_pt.round() as u32,
+        font_size_pt.round() as u32,
+        device_pixel_ratio,
+        cjk_font,
     );
     let success = match result {
         Ok(success) => success,
@@ -286,20 +474,16 @@ fn render_with_native(
     }
 }
 
-/// Rounds the terminal's reported physical cell width against the assumed
-/// standard-density cell width, clamped to a sane HiDPI range, so PNGs are
-/// rasterized at the density the terminal will actually display them at.
-pub(crate) fn device_scale_factor(cell: (u32, u32)) -> u32 {
-    let ratio = f64::from(cell.0) / ASSUMED_CELL_WIDTH_PX;
-    (ratio.round() as u32).clamp(1, 4)
-}
-
 /// Connects to the real terminal, confirms Kitty graphics support, and
 /// measures the cell size, before any rendering happens so the renderer can
 /// rasterize at the terminal's actual pixel density.
 fn connect_terminal() -> Result<(Terminal<StdioTty>, (u32, u32)), String> {
-    let mut terminal = Terminal::new(StdioTty::default(), 1)
-        .map_err(|error| format!("initialize terminal: {error}"))?;
+    connect_terminal_with(StdioTty::default())
+}
+
+fn connect_terminal_with(tty: StdioTty) -> Result<(Terminal<StdioTty>, (u32, u32)), String> {
+    let mut terminal =
+        Terminal::new(tty, 1).map_err(|error| format!("initialize terminal: {error}"))?;
     // Inside tmux, capability queries cannot round-trip through passthrough,
     // so graphics support is assumed. Enable the window's passthrough option
     // so the forwarded image reaches the outer terminal; everywhere else the
@@ -600,19 +784,6 @@ mod tests {
     }
 
     #[test]
-    fn device_scale_factor_matches_standard_and_hidpi_cells() {
-        assert_eq!(device_scale_factor((8, 16)), 1, "standard-density cell");
-        assert_eq!(device_scale_factor((16, 32)), 2, "2x Retina cell");
-        assert_eq!(device_scale_factor((24, 48)), 3, "3x Retina cell");
-    }
-
-    #[test]
-    fn device_scale_factor_clamps_to_the_supported_range() {
-        assert_eq!(device_scale_factor((1, 2)), 1, "tiny cell clamps to 1x");
-        assert_eq!(device_scale_factor((200, 400)), 4, "huge cell clamps to 4x");
-    }
-
-    #[test]
     fn parses_render_arguments() {
         let parsed = parse_render_args(&args(&["doc.md"])).unwrap();
         assert_eq!(parsed.input, "doc.md");
@@ -667,6 +838,7 @@ mod tests {
     fn help_mentions_commands_and_options() {
         let help = help_text();
         assert!(help.contains("render"));
+        assert!(help.contains("watch"));
         assert!(help.contains("diagnose"));
         assert!(help.contains("agent"));
         assert!(help.contains("agent-viewer"));
@@ -677,5 +849,38 @@ mod tests {
         assert!(help.contains("--font-size"));
         assert!(help.contains("--engine"));
         assert!(help.contains("--source-pane"));
+        assert!(help.contains("--poll-ms"));
+    }
+
+    #[test]
+    fn parses_watch_arguments() {
+        let parsed = parse_watch_args(&args(&["doc.md"])).unwrap();
+        assert_eq!(parsed.input, "doc.md");
+        assert_eq!(parsed.engine, RenderEngine::Native);
+        assert_eq!(parsed.poll_ms, 250);
+
+        let parsed = parse_watch_args(&args(&[
+            "--content-width",
+            "800",
+            "--font-size",
+            "18",
+            "--engine",
+            "native",
+            "--poll-ms",
+            "100",
+            "doc.md",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.content_width, Some(800));
+        assert_eq!(parsed.font_size, Some(18));
+        assert_eq!(parsed.poll_ms, 100);
+    }
+
+    #[test]
+    fn rejects_invalid_watch_arguments() {
+        assert!(parse_watch_args(&args(&[])).is_err());
+        assert!(parse_watch_args(&args(&["--poll-ms", "0", "doc.md"])).is_err());
+        assert!(parse_watch_args(&args(&["--poll-ms", "abc", "doc.md"])).is_err());
+        assert!(parse_watch_args(&args(&["--bogus", "doc.md"])).is_err());
     }
 }

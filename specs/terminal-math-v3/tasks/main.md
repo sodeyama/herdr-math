@@ -60,35 +60,93 @@
 
 ## Phase 2 — Incremental pipeline
 
-- [ ] **T3-201** Streaming block splitter (chunk-safe, UTF-8-safe, unterminated
-      constructs as literal). (AT-3-401, AT-3-404)
-- [ ] **T3-202** Render cache: content hashing, bounded LRU, eviction.
-      (AT-3-304, AT-3-305)
-- [ ] **T3-203** Placement planner: prefix reuse, append, tail replace, interior
-      edit re-anchoring. (AT-3-301..303)
-- [ ] **T3-204** `tmath render -` stream mode with boundary-driven emission and
-      tail coalescing. (AT-3-402, AT-3-403)
-- [ ] **T3-205** `tmath watch <file>` (FS events, changed-block re-render).
-      (AT-3-405)
+- [x] **T3-201** Streaming block splitter (chunk-safe, UTF-8-safe, unterminated
+      constructs as literal). (AT-3-401/404 covered at crate level; commit
+      `a83734d`; 88 crate tests green)
+- [x] **T3-202** Render cache: content hashing, bounded LRU, eviction.
+      (AT-3-304/305 covered at crate level; commit `4a9d6b0`; 96 crate tests
+      green; errors never cached)
+- [x] **T3-203** Placement planner: prefix reuse, append, tail replace, interior
+      edit re-anchoring. (AT-3-301..303 op-level coverage; commit `26030fe`;
+      byte-level fake-tty assertions land with the T3-204 wiring)
+- [x] **T3-204** `tmath render -` stream mode with boundary-driven emission and
+      tail coalescing. (AT-3-402/403 PASS via hermetic event-line tests;
+      commit `e791f79`; interior in-place re-anchoring deferred to Phase 3)
+- [x] **T3-205** `tmath watch <file>` (FS events, changed-block re-render).
+      (AT-3-405 PASS via hermetic event-line tests; commit `33527c2`;
+      known gap: no dedicated SIGTERM-exit test yet — carried to Phase 6
+      hardening)
 
 ## Phase 3 — Viewer v2
 
-- [ ] **T3-301** Per-block placements in `agent-viewer`; delete composite RGBA
-      path. (AT-3-501, AT-3-505)
-- [ ] **T3-302** Follow mode + disengage/re-engage. (AT-3-502)
-- [ ] **T3-303** Visibility-driven scroll re-emission from cache. (AT-3-503)
-- [ ] **T3-304** Bounded history + re-render on scroll-back. (AT-3-504)
-- [ ] **T3-305** Recorded terminal evidence: many-placement behavior in Ghostty
-      (+ tmux route). (supports AT-3-501/503; evidence file)
+- [x] **T3-301** Per-block placements in `agent-viewer`; delete composite RGBA
+      path. (AT-3-501/505 covered at unit level plus shared stream-emitter
+      integration tests; commit `2e21aa4`; live run placed a 13-block answer
+      per-block. Includes T3-302 follow mode at basic level; AT-3-503
+      visibility-window scrolling deferred to T3-303. Terminal-fit auto
+      layout added alongside in `9e83de7`.)
+- [x] **T3-302** Follow mode + disengage/re-engage. (AT-3-502 covered by
+      hermetic unit tests: pure `Viewport` state machine, disengage-on-scroll /
+      End-`F` re-engage, offset stability across appends while disengaged;
+      commit `5754153`. Known placeholder: append/scroll trigger a full-window
+      redraw (emit-then-redraw) until T3-303's visibility-diff re-emission;
+      real-terminal evidence lands with T3-305.)
+- [x] **T3-303** Visibility-driven scroll re-emission from cache. (AT-3-503 PASS
+      at the hermetic byte level: id-based window sync deletes only departures,
+      re-places the window from retained PNGs, erases residual rows, and a
+      2,000-block-history scroll step costs byte-identical output to a 20-block
+      one; append writes are suppressed state-only while follow is disengaged.
+      Also fixes the placement budget acting as a de facto 64-block history cap
+      in viewer mode. Commit `25803cb`; AT-3-503 wording refined in
+      `tests/main.md` to record the whole-window re-placement policy;
+      real-terminal evidence lands with T3-305.)
+- [x] **T3-304** Bounded history + re-render on scroll-back. (AT-3-504 covered
+      hermetically: `Limits::retained_window_blocks` fixed-radius keep-alive
+      evicts retained PNGs on every append and window sync; scroll-back
+      restores via RenderCache hit or source re-render, fail-closed per block;
+      1,000-block session stays within the retained budget. Commit `d6629ee`.
+      Known gaps for Phase 6: the `TerminalSink` full flow is verified by
+      pure-function tests plus review (no fake-tty sink harness yet), and one
+      tmath-render lib test flaked once under heavy parallel load —
+      timing-sensitivity to audit in T3-602.)
+- [x] **T3-305** Recorded terminal evidence: many-placement behavior in Ghostty
+      (+ tmux route). (supports AT-3-501/503; evidence file
+      `docs/evidence/2026-08-05-v3-viewer-many-placements.md`. 45-block Ghostty
+      + tmux passthrough session: per-append bytes flat (~18-21 KB) across
+      growing history, per-scroll-step bytes flat (~234-237 KB/10 steps)
+      across two batches at different history depths, delete APCs target
+      single image IDs only (no full-buffer clear), and all 6,630 captured
+      RGBA payloads decompress to their declared dimensions with non-zero
+      glyph content. The visual tofu/overlap check was closed by a same-day
+      supervisor-run live screenshot review on the same commit — see the
+      evidence file's supervisor addendum; screenshots stay local-only per
+      privacy rules.)
 
 ## Phase 4 — Agent sources
 
-- [ ] **T3-401** Delta socket protocol (versioned document/append/replace-tail);
-      codec fixtures incl. malformed/out-of-order. (AT-3-601)
-- [ ] **T3-402** Claude Code transcript adapter with JSONL fixtures; graceful
-      degradation to capture. (AT-3-602)
-- [ ] **T3-403** Rewire capture adapter through the incremental pipeline.
-      (AT-3-604)
+- [x] **T3-401** Delta socket protocol (versioned document/append/replace-tail);
+      codec fixtures incl. malformed/out-of-order. (AT-3-601 PASS at codec
+      level: strict last+1 sequencing, invalidate-until-next-Document resync,
+      UTF-8 tail-boundary checks, aggregate reassembly cap at
+      IPC_MAX_REQUEST_BYTES, unconditional V2 Document acceptance; 28 codec
+      tests + viewer wiring tests. Commit `6c177dc`. Watcher-side delta
+      emission lands with T3-402/403.)
+- [x] **T3-402** Claude Code transcript adapter with JSONL fixtures; graceful
+      degradation to capture. (AT-3-602 PASS with synthesized inline JSONL
+      fixtures: EOF-start read-only tail, bounded per-poll reads, rotation and
+      truncation recovery, malformed-line skip, char-boundary-safe block
+      truncation, Document/Append delta emission with blank-line separators
+      verified at the reassembled-document level; I/O failures degrade to the
+      capture adapter. Commit `b8f0a8f`. ReplaceTail emission is an unused
+      seam until a transcript format rewrites tails in place.)
+- [x] **T3-403** Rewire capture adapter through the incremental pipeline.
+      (AT-3-604 PASS at the wire level: answers accumulate in a bounded
+      watcher-side history — content-free AnswerBoundary deltas freeze
+      completed answers, the current answer streams as ReplaceTail from the
+      frozen offset on both transcript and capture paths, and only the 8 MiB
+      soft-budget head-trim may drop old content, via a Document resync.
+      Commits `ddf056e`+`6476995`; D6 gained the cross-answer accumulation
+      paragraph. Resolves T3-401's unused ReplaceTail seam note.)
 - [ ] **T3-404** Streaming end-to-end replay evidence. (AT-3-603)
 - [ ] **T3-405** Privacy scan extension to the transcript path. (AT-3-605)
 

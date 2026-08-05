@@ -18,3 +18,4 @@ coverage/
 /target
 /engine/target
 *.rs.bk
+.claude/worktrees/

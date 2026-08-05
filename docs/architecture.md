@@ -185,11 +185,22 @@ pipeline to show a coding agent's finished answers in a separate tmux pane:
   source pane, debounces, and emits each answer document. It passes the
   renderer worker path to the viewer on the command line (tmux panes start
   with the server environment).
-- `tmath agent-viewer` (in the viewer pane) renders each document through the
-  one-shot renderer, replaces the previous placement by image id (clearing
-  stale placeholder cells when the new image is shorter), scrolls long answers
-  by cropping the RGBA viewport and replacing the placement, and closes on
-  `q`/Ctrl-C.
+- `tmath agent-viewer` (in the viewer pane) — **Phase 3 in-progress (V3
+  `specs/terminal-math-v3`, decision D6)**: each received document is split
+  into semantic blocks (`tmath_render::parse_blocks_limited`), rendered
+  per-block through the resident `RenderCache`, and diffed against the
+  previous document's blocks by a `PlacementPlanner` (`Keep`/`Append`/
+  `Replace`/`Remove`, never-reused block ids). Placement operations are
+  emitted through the same per-block Kitty-placement emitter stream mode
+  uses (`tmath::native_stream`): unchanged blocks are never re-rendered or
+  re-transmitted, and a shorter replacement answer removes its stale
+  trailing placements instead of leaving orphan placeholder cells. There is
+  no composite RGBA buffer. New blocks always append below the last
+  placement in flowing order (follow mode); a manual scroll input
+  disengages follow, and `End`/`F` re-engage it, but the viewer currently
+  relies on the pane's own scrollback for viewing earlier blocks rather than
+  re-anchoring a visibility window — a full visibility-driven re-emission
+  (AT-3-503) is not yet implemented. The viewer closes on `q`/Ctrl-C.
 - Under `$TMUX`, graphics and pane-local output are separate operations. The
   default route writes only Kitty APC commands to the validated visible client
   tty; cursor movement, terminal modes, color CSI, line breaks, and Unicode

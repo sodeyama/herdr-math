@@ -100,9 +100,66 @@ General guidance:
   `TMATH_TMUX_TRANSPORT=passthrough` to use individually wrapped, ESC-doubled
   DCS commands instead. Outside tmux, `tmath render` probes normally and fails
   closed when Kitty is missing.
+- **Blurry math on a Retina display, inside tmux**: also because queries
+  cannot round-trip inside tmux, the viewer falls back to the terminal's
+  reported window size to estimate the pixel density (device pixel ratio).
+  On some terminal/tmux combinations that fallback itself reports logical
+  pixels rather than physical ones, so the viewer under-estimates the ratio
+  and the terminal upscales the rendered image, producing soft, crushed
+  glyphs. If math looks blurry only inside a tmux-hosted `tmath agent-viewer`
+  pane (not in a directly-run `tmath render`), set `TMATH_DPR` to your
+  display's actual scale factor — `TMATH_DPR=2` for a standard Retina
+  display, `TMATH_DPR=3` for some higher-density laptop panels. `tmath agent`
+  forwards the variable to the viewer pane it spawns automatically, so
+  setting it once in the shell you run `tmath agent` from is enough. Values
+  outside `1`-`4`, or set outside tmux, are ignored and the automatic
+  estimate is used instead.
+- **Viewer diagnostic output**: `tmath agent-viewer`'s ongoing status/
+  diagnostic lines (connection status, fitted cell/dpr, the resolved font
+  size, per-answer placement counts) are off by default — the viewer pane
+  shows rendered content only. A startup failure (no graphics support, a
+  bad socket) still prints and exits non-zero regardless of this setting.
+  Set `TMATH_VIEWER_LOG=1` in the shell you run `tmath agent` from to turn
+  the diagnostics back on for an evidence run; `tmath agent` forwards it to
+  the viewer pane it spawns, the same way it forwards `TMATH_DPR` and
+  `TMATH_TMUX_TRANSPORT`. The watcher's own logs are unaffected — they
+  always go to the watcher's own pane/log, which is where operators look.
 - **Captured tool stdout**: a coding agent's shell tool may capture stdout, so
   an agent-launched `tmath render -` is not guaranteed to reach the visible
   terminal. The watcher + viewer pane is the standard agent workflow.
+- **Configuring font size and CJK font**: `tmath` reads `config.toml` from
+  the platform config directory (`$XDG_CONFIG_HOME/tmath/config.toml`, or
+  `$HOME/.config/tmath/config.toml` when `XDG_CONFIG_HOME` is unset) if
+  present. It currently has two keys:
+  ```toml
+  font_size_pt = 15.0
+  cjk_font = "m-plus-2"
+  ```
+  `font_size_pt` is a number (integer or float) in `[10, 24]`; a value
+  outside that range, or of the wrong type, is ignored with a warning and
+  the setting falls back to the next precedence level. Unrecognized keys
+  are ignored with a warning naming the key. The full precedence order,
+  highest first: the `--font-size` CLI flag (`tmath render`/`tmath watch`)
+  > the `TMATH_FONT_SIZE_PT` environment variable > `config.toml`'s
+  `font_size_pt` > the terminal auto-fit calculation > the fixed default.
+  `tmath agent-viewer` has no CLI flag of its own (it is spawned by `tmath
+  agent`), so its precedence is env > config > auto-fit > default; it reads
+  the config file itself at startup and logs the resolved source
+  (`agent-viewer: font_size source=<cli|env|config|auto-fit|default>
+  value=<pt>`) — never any other config content. A missing config file is
+  silent (not a warning); the file only ever holds small numeric settings,
+  never document content.
+
+  `cjk_font` selects which embedded CJK font renders Japanese/Chinese/Korean
+  prose; the only valid value today is `"m-plus-2"` (M PLUS 2, the current
+  default) — an unrecognized value is ignored with a warning naming the key
+  and falls back to the default. Unlike `font_size_pt`, `cjk_font` has no CLI
+  flag or environment variable: font size genuinely varies per run/terminal,
+  but there is currently exactly one font embedded in the binary to choose
+  from, so an extra override layer would have nothing else to select. Per
+  AGENTS.md's font-embedding constraint, `cjk_font` can only choose among
+  fonts already compiled into the binary — it never loads an arbitrary font
+  file or scans installed system fonts.
 
 ## Let an agent show math to you
 

@@ -490,6 +490,17 @@ pub(crate) const ROW_COLUMN_DIACRITICS: [char; 297] = [
 /// Upper bound on placeholder cells addressable by the diacritic alphabet.
 pub const MAX_PLACEHOLDER_CELLS: u32 = ROW_COLUMN_DIACRITICS.len() as u32;
 
+/// The row/column diacritic a placeholder cell at `index` uses (see
+/// [`ROW_COLUMN_DIACRITICS`]'s doc comment for the source table). Exposed as
+/// an accessor rather than the raw table so cross-crate callers (contract
+/// tests asserting a specific row/column was or was not drawn, e.g.
+/// `tmath`'s `scroll_region` module tests) can identify a specific
+/// placeholder cell's position without depending on the table's internal
+/// layout. Returns `None` for an out-of-range index rather than panicking.
+pub fn row_column_diacritic(index: u32) -> Option<char> {
+    ROW_COLUMN_DIACRITICS.get(index as usize).copied()
+}
+
 /// Builds the per-cell grid that keeps a virtual placement glued to real
 /// scrollback cells. Each cell holds the placeholder glyph plus two combining
 /// diacritics encoding the cell's row and column, and the image id is encoded
@@ -497,8 +508,17 @@ pub const MAX_PLACEHOLDER_CELLS: u32 = ROW_COLUMN_DIACRITICS.len() as u32;
 pub fn placeholder_grid(image_id: u32, cols: u32, rows: u32) -> Vec<u8> {
     let cols = cols.min(MAX_PLACEHOLDER_CELLS);
     let rows = rows.min(MAX_PLACEHOLDER_CELLS);
-    let (r, g, b) = (image_id >> 16 & 0xff, image_id >> 8 & 0xff, image_id & 0xff);
-    let mut out = format!("\x1b[38;2;{r};{g};{b}m");
+    // Ids up to 255 use the 256-indexed foreground form: terminal relays that
+    // re-render cells (observed with a session daemon between tmux and the
+    // outer terminal) can drop 24-bit foreground colors, which destroys the
+    // id association and leaves placeholder cells blank. The indexed form
+    // survives those relays and is equally valid per the Kitty spec.
+    let mut out = if image_id <= 0xff {
+        format!("\x1b[38;5;{image_id}m")
+    } else {
+        let (r, g, b) = (image_id >> 16 & 0xff, image_id >> 8 & 0xff, image_id & 0xff);
+        format!("\x1b[38;2;{r};{g};{b}m")
+    };
     for row in 0..rows {
         out.push_str(&format!("\x1b[{};1H", row + 1));
         for col in 0..cols {
@@ -642,6 +662,13 @@ mod tests {
     #[test]
     fn delete_is_deferred_to_a_later_delete_everything() {
         assert_eq!(kitty_delete(5), b"\x1b_Ga=d,d=A,q=2\x1b\\");
+    }
+
+    #[test]
+    fn placeholder_grid_uses_indexed_foreground_for_small_ids() {
+        let out = String::from_utf8(placeholder_grid(7, 1, 1)).unwrap();
+        assert!(out.starts_with("\x1b[38;5;7m"));
+        assert!(out.ends_with("\x1b[39m"));
     }
 
     #[test]

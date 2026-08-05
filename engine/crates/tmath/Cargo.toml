@@ -18,4 +18,14 @@ tmath-render = { path = "../tmath-render" }
 base64 = { workspace = true }
 png = { workspace = true }
 rustix = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+
+[dev-dependencies]
+# Cargo unions dependency features across `[dependencies]`/`[dev-dependencies]`
+# for the same crate, so this enables `tmath-core`'s `test-util` (FakeTty)
+# only for `cargo test`/`cargo build --tests` — never for a plain release
+# build of the `tmath` binary.
+tmath-core = { path = "../tmath-core", features = ["test-util"] }

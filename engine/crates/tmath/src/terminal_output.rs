@@ -64,9 +64,15 @@ pub(crate) fn selected_route() -> Result<Route, String> {
         }),
     );
     // #endregion
-    if !known_outer {
+    // An explicit TMATH_TMUX_TRANSPORT value is a user assertion that the
+    // outer terminal renders Kitty graphics (needed when the client tty is
+    // owned by a relay such as a terminal-session daemon, where neither the
+    // advertised termname nor the process ancestry can reach the real
+    // terminal). Without it, stay fail-closed on unverified outers.
+    if transport_env.is_none() && !known_outer {
         return Err(
-            "tmux outer terminal is not a verified Kitty target; refusing placeholder output"
+            "tmux outer terminal is not a verified Kitty target; refusing placeholder output \
+             (set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override)"
                 .into(),
         );
     }

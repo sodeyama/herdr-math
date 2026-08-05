@@ -1,25 +1,33 @@
 //! Native Markdown + LaTeX renderer for tmath (V3).
 
 mod block;
+mod cache;
 mod error;
 mod hash;
 mod limits;
 mod markdown;
 mod math;
 mod options;
+mod planner;
 mod prose;
 mod scanner;
+mod stream;
 mod typst_doc;
 
 pub use block::{Block, BlockKind};
+pub use cache::{CacheBudget, CacheStats, RenderCache};
 pub use error::{ErrorCode, RenderError, SafeErrorDetails, SafeErrorRecord, SafeLimitKind};
 pub use hash::content_hash;
 pub use limits::{Limits, ScaledLimits};
 pub use markdown::{parse_blocks, parse_blocks_limited};
 pub use math::{render_formula, MathImage};
-pub use options::{RenderOptions, RenderOptionsError, DARK_THEME_TEXT_COLOR};
+pub use options::{
+    CjkFont, RenderOptions, RenderOptionsError, DARK_THEME_TEXT_COLOR, TABLE_STROKE_COLOR,
+};
+pub use planner::{BlockId, PlacementPlanner, Plan, PlanOp, PlannedBlock};
 pub use prose::{render_prose_block, RenderedImage};
 pub use scanner::{scan_latex, Formula, ScannerLimits};
+pub use stream::{Revision, StreamSplitter};
 pub use typst_doc::{compose_block, TypstSource};
 
 /// A rendered block image and any formula-local safe errors.
@@ -74,9 +82,30 @@ fn render_block_with_deadline(
                 "display-math block did not contain one complete formula",
             )
         })?;
-    let image =
-        math::render_formula_with_deadline(&formula.latex, true, options, limits, deadline)?;
-    prose::render_display_math_block(block.index, image, options, limits, deadline)
+    match math::render_formula_with_deadline(&formula.latex, true, options, limits, deadline) {
+        Ok(image) => {
+            prose::render_display_math_block(block.index, image, options, limits, deadline)
+        }
+        // AT-3-103: invalid LaTeX fails closed PER FORMULA, not per run — a
+        // standalone display-math block IS one formula, so "the block
+        // renders with a bounded error badge" means the whole block
+        // becomes the badge (there is no sibling content to preserve
+        // inside this block the way an inline formula has surrounding
+        // prose). Every other failure kind (deadline exceeded, a limit
+        // rejection) is not "the LaTeX was bad" — it is a run-level
+        // condition that legitimately aborts the render, so only this one
+        // error code changes granularity; everything else still
+        // propagates as before.
+        Err(error) if error.safe_record().code == ErrorCode::InvalidLatex => {
+            prose::render_display_math_error_badge(
+                error.into_safe_record(),
+                options,
+                limits,
+                deadline,
+            )
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +145,78 @@ mod render_tests {
         assert_eq!(details.limit, Some(0));
         assert_eq!(details.actual, Some(0));
         assert_eq!(details.duration_ms, Some(0));
+    }
+
+    // --- AT-3-103: display-math invalid LaTeX fails closed PER FORMULA ---
+
+    /// Team-lead's exact repro: a standalone display-math block with
+    /// invalid LaTeX must render an `[invalid latex]` badge (bounded,
+    /// `formula_errors` incremented) rather than the whole render aborting
+    /// with a hard `Err`.
+    #[test]
+    fn invalid_display_math_renders_a_badge_instead_of_aborting() {
+        let block = Block {
+            index: 0,
+            kind: BlockKind::DisplayMath,
+            source: r"$$x \badcmdxyz$$".to_owned(),
+        };
+        let rendered = render_block(&block, &RenderOptions::default())
+            .expect("invalid display LaTeX must render a badge, not error");
+        assert!(!rendered.png.is_empty());
+        assert_eq!(rendered.formula_errors.len(), 1);
+        assert_eq!(rendered.formula_errors[0].code, ErrorCode::InvalidLatex);
+        // The error record carries no formula source (AGENTS.md: never
+        // persist/leak rejected content), matching the inline badge path's
+        // existing contract.
+        assert!(rendered.formula_errors[0].details.is_none());
+    }
+
+    /// A document containing a bad display formula followed by other
+    /// blocks must not have the bad formula's failure propagate — every
+    /// sibling block still renders normally. This is the actual guarantee
+    /// AT-3-103 asks for ("sibling formulas and all other blocks render
+    /// normally"), exercised across whole-document parsing + per-block
+    /// rendering rather than just the one bad block in isolation.
+    #[test]
+    fn a_bad_display_formula_does_not_block_sibling_blocks_in_the_same_document() {
+        let blocks =
+            parse_blocks("Before.\n\n$$x \\badcmdxyz$$\n\n$$y^2$$\n\nAfter the bad formula.\n")
+                .unwrap();
+        assert_eq!(blocks.len(), 4);
+        for block in &blocks {
+            let rendered = render_block(block, &RenderOptions::default())
+                .unwrap_or_else(|error| panic!("block {:?} failed: {error}", block.kind));
+            assert!(!rendered.png.is_empty());
+        }
+        // Specifically confirm the bad block is the one carrying the badge
+        // and its valid siblings are error-free.
+        let bad = render_block(&blocks[1], &RenderOptions::default()).unwrap();
+        assert_eq!(bad.formula_errors.len(), 1);
+        let good_display = render_block(&blocks[2], &RenderOptions::default()).unwrap();
+        assert!(good_display.formula_errors.is_empty());
+    }
+
+    /// The granularity change is scoped to `ErrorCode::InvalidLatex` only —
+    /// a genuinely run-level failure (deadline exceeded) for a display-math
+    /// block must still propagate as a hard `Err`, not get silently
+    /// downgraded to a badge. Reuses the same zero-duration-limit setup as
+    /// `zero_duration_limit_fails_at_the_first_checkpoint` above, applied
+    /// to a `DisplayMath` block instead of a prose block, to prove the
+    /// dispatch's `Err(error) => Err(error)` fallthrough arm is reachable
+    /// and correct for display math specifically.
+    #[test]
+    fn a_deadline_failure_for_display_math_still_propagates_as_a_hard_error() {
+        let block = Block {
+            index: 0,
+            kind: BlockKind::DisplayMath,
+            source: "$$x^2$$".to_owned(),
+        };
+        let limits = Limits {
+            render_duration_ms: 0,
+            ..Limits::default()
+        };
+        let error = render_block_limited(&block, &RenderOptions::default(), &limits).unwrap_err();
+        assert_eq!(error.safe_record().code, ErrorCode::RendererTimeout);
     }
 
     #[test]

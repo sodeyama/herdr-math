@@ -41,6 +41,30 @@ const RESET_MODES: &[u8] = b"\x1b[?2004l\x1b[?1016l\x1b[?1006l\x1b[?1003l";
 /// Maximum bytes collected for one report probe before giving up.
 const MAX_PROBE_BYTES: usize = 256;
 
+/// Builds `DECSTBM` (`CSI {top} ; {bottom} r`), which confines the terminal's
+/// own scroll behavior (index/reverse-index, and any write that scrolls the
+/// screen) to rows `top..=bottom` (1-indexed, inclusive both ends) until
+/// reset. Used by the agent-viewer's window-managed pane (stage 1 of the
+/// scroll-region viewer): row 1 stays the live status bar, and the scroll
+/// region covers `2..=pane_rows` so region-scroll operations never disturb
+/// it. Both `top` and `bottom` are clamped to at least 1, and `bottom` to at
+/// least `top`, so a degenerate call cannot emit a malformed or
+/// inverted-region sequence — DECSTBM's own behavior for `top >= bottom` is
+/// implementation-defined, so this never emits that shape.
+pub fn decstbm_set(top: u32, bottom: u32) -> Vec<u8> {
+    let top = top.max(1);
+    let bottom = bottom.max(top);
+    format!("\x1b[{top};{bottom}r").into_bytes()
+}
+
+/// Builds the DECSTBM reset sequence (`CSI r`, no parameters), which restores
+/// the scroll region to the full screen. Idempotent: sending it when no
+/// region is set, or more than once, is a no-op per the DECSTBM
+/// specification.
+pub fn decstbm_reset() -> Vec<u8> {
+    b"\x1b[r".to_vec()
+}
+
 /// The terminal-facing I/O surface. A real implementation drives stdin/stdout
 /// and termios; tests use a fake that records writes and queues reads.
 pub trait Tty {
@@ -66,6 +90,17 @@ pub struct Terminal<T: Tty> {
     cell: Option<(u32, u32)>,
     cell_query_unsupported: bool,
     image_id: u32,
+    /// Whether [`Terminal::set_scroll_region`] currently has a DECSTBM
+    /// region active, so [`Terminal::reset`] knows whether to emit
+    /// [`decstbm_reset`] — plain `tmath render`/`tmath watch` sessions never
+    /// call `set_scroll_region`, so this stays `false` for them and `reset`
+    /// never sends the extra bytes. `reset` sends it unconditionally when
+    /// `true`, on every call path (normal shutdown via
+    /// `StreamSink`/`TerminalSink::finish`, and the `Drop` impl below, which
+    /// also runs on an unwinding panic) — a scroll region left set on a
+    /// crashed viewer would corrupt scrolling in the user's real shell
+    /// afterward, so this must not depend on a clean exit path.
+    scroll_region_active: bool,
 }
 
 impl<T: Tty> Terminal<T> {
@@ -81,9 +116,36 @@ impl<T: Tty> Terminal<T> {
             cell: None,
             cell_query_unsupported: false,
             image_id,
+            scroll_region_active: false,
         };
         terminal.mouse_pixels = terminal.probe_mouse_pixels()?;
         Ok(terminal)
+    }
+
+    /// Confines the terminal's own scroll behavior to rows `top..=bottom`
+    /// (1-indexed) via DECSTBM (see [`decstbm_set`]) and remembers that a
+    /// region is now active, so [`Terminal::reset`] restores it later. Also
+    /// moves the cursor home (`CSI H`, absolute row 1) per the DECSTBM
+    /// specification's usual convention, so the region takes effect from a
+    /// known cursor position rather than wherever the cursor happened to be.
+    pub fn set_scroll_region(&mut self, top: u32, bottom: u32) -> io::Result<()> {
+        self.io.write_all(&decstbm_set(top, bottom))?;
+        self.io.write_all(b"\x1b[H")?;
+        self.io.flush()?;
+        self.scroll_region_active = true;
+        Ok(())
+    }
+
+    /// Restores the scroll region to the full screen (see [`decstbm_reset`]).
+    /// Safe to call when no region is active (a no-op write) or more than
+    /// once. Also called from [`Terminal::reset`] whenever
+    /// `scroll_region_active` is `true`, so callers do not need to remember
+    /// to pair this with `set_scroll_region` themselves.
+    pub fn reset_scroll_region(&mut self) -> io::Result<()> {
+        self.io.write_all(&decstbm_reset())?;
+        self.io.flush()?;
+        self.scroll_region_active = false;
+        Ok(())
     }
 
     /// Whether mouse reports carry pixel coordinates.
@@ -145,10 +207,18 @@ impl<T: Tty> Terminal<T> {
     /// terminal does not answer in time, so callers can fall back to a
     /// conservative default.
     pub fn cursor_column(&mut self) -> io::Result<Option<u32>> {
+        self.cursor_position()
+            .map(|report| report.map(|(_row, col)| col))
+    }
+
+    /// Queries the cursor's current row and column via `CSI 6n`.
+    ///
+    /// Streaming replacement uses the row to determine whether the previous
+    /// tail's placeholder rows are still reachable in the visible terminal.
+    pub fn cursor_position(&mut self) -> io::Result<Option<(u32, u32)>> {
         self.io.write_all(b"\x1b[6n")?;
         self.io.flush()?;
         self.read_report(Duration::from_millis(200), parse_cursor_position_report)
-            .map(|report| report.map(|(_row, col)| col))
     }
 
     /// Probes whether the terminal can display images. A `a=q` query with a
@@ -199,9 +269,17 @@ impl<T: Tty> Terminal<T> {
         }
     }
 
-    /// Restores the terminal: disables the reporting modes and restores the
-    /// saved termios state. Safe to call more than once.
+    /// Restores the terminal: releases an active DECSTBM scroll region (see
+    /// [`Terminal::set_scroll_region`]'s field doc — this runs unconditionally
+    /// on every path that reaches here, including the panic-unwinding `Drop`
+    /// impl below, since a scroll region left stuck on a crashed viewer would
+    /// corrupt the user's real shell scrolling afterward), disables the
+    /// reporting modes, and restores the saved termios state. Safe to call
+    /// more than once.
     pub fn reset(&mut self) -> io::Result<()> {
+        if self.scroll_region_active {
+            self.reset_scroll_region()?;
+        }
         self.io.write_all(RESET_MODES)?;
         self.io.flush()?;
         self.io.restore()
@@ -238,6 +316,32 @@ pub struct StdioTty {
 }
 
 impl StdioTty {
+    /// Creates terminal I/O for a process whose stdin is carrying document
+    /// bytes. Probe replies and input are read from a cloned stdout descriptor
+    /// when stdout is a terminal — on macOS a freshly opened `/dev/tty`
+    /// signals reply readiness as `POLLPRI`, which the `POLLIN` poll would
+    /// miss, while the original pty descriptor reports `POLLIN` — and only
+    /// falls back to `/dev/tty` when stdout is not a terminal.
+    ///
+    /// The control descriptor is used exclusively for replies, input, termios,
+    /// and window-size queries; the [`Tty`] writer always targets stdout.
+    pub fn from_control_terminal() -> io::Result<Self> {
+        if io::stdout().is_terminal() {
+            let stdout = io::stdout();
+            if let Ok(owned) = stdout.as_fd().try_clone_to_owned() {
+                return Ok(Self {
+                    saved: None,
+                    ctrl: Some(File::from(owned)),
+                });
+            }
+        }
+        let ctrl = std::fs::OpenOptions::new().read(true).open("/dev/tty")?;
+        Ok(Self {
+            saved: None,
+            ctrl: Some(ctrl),
+        })
+    }
+
     /// Runs `f` against the control device: the opened `/dev/tty` when stdin
     /// is not a terminal, otherwise stdin.
     fn with_ctrl_fd<R>(&self, f: impl FnOnce(&rustix::fd::BorrowedFd<'_>) -> R) -> R {
@@ -259,12 +363,11 @@ impl Default for StdioTty {
     }
 }
 
-/// Opens a control device for probes and input when stdin is not a terminal.
+/// Opens a control device for legacy callers when stdin is not a terminal.
 ///
-/// stdout is preferred: it is the original terminal descriptor, which `poll(2)`
-/// reports as `POLLIN` when the emulator answers a query. A freshly opened
-/// `/dev/tty` descriptor reports the readiness as `POLLPRI` on macOS instead of
-/// `POLLIN`, which readiness checks would miss. `/dev/tty` remains a fallback.
+/// Stream mode uses [`StdioTty::from_control_terminal`] explicitly. Other
+/// callers retain the existing stdout-first behavior because some terminals
+/// report probe readiness on that cloned descriptor more reliably.
 fn open_control_terminal() -> Option<File> {
     if io::stdin().is_terminal() {
         return None;
@@ -307,9 +410,13 @@ impl Tty for StdioTty {
             tv_nsec: duration.subsec_nanos() as _,
         });
         self.with_ctrl_fd(|fd| {
-            let mut fds = [rustix::event::PollFd::new(fd, PollFlags::IN)];
+            // A read-only `/dev/tty` can report terminal replies as POLLPRI on
+            // macOS, while cloned stdin/stdout descriptors normally use
+            // POLLIN. Accept both without changing the bounded read path.
+            let readable = PollFlags::IN | PollFlags::PRI;
+            let mut fds = [rustix::event::PollFd::new(fd, readable)];
             let ready = rustix::event::poll(&mut fds, timeout.as_ref()).map_err(io::Error::from)?;
-            Ok(ready > 0 && fds[0].revents().contains(PollFlags::IN))
+            Ok(ready > 0 && fds[0].revents().intersects(readable))
         })
     }
 
@@ -395,13 +502,20 @@ pub(crate) fn parse_graphics_probe(buf: &[u8]) -> Option<bool> {
     Some(rest.starts_with(b"OK"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Fake [`Tty`] test double, exposed cross-crate under the `test-util`
+/// feature (and always available to this crate's own `#[cfg(test)]` code)
+/// so hermetic Kitty-contract tests elsewhere in the workspace (e.g.
+/// `tmath`'s `TerminalSink` tests) can drive a real [`Terminal`] without a
+/// real terminal, per AGENTS.md's fake-tty-harness testing requirement.
+/// Never compiled into a release build: `test-util` is not a default
+/// feature and downstream crates enable it only as a dev-dependency.
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use super::{io, Duration, Tty, WindowSize};
 
     /// In-memory [`Tty`] that queues replies and records writes.
-    struct FakeTty {
-        writes: Vec<u8>,
+    pub struct FakeTty {
+        pub writes: Vec<u8>,
         reads: Vec<u8>,
         replies: Vec<(Vec<u8>, Vec<u8>)>,
         raw: usize,
@@ -410,7 +524,10 @@ mod tests {
     }
 
     impl FakeTty {
-        fn new(replies: &[(&[u8], &[u8])], winsize: WindowSize) -> Self {
+        /// `replies` pairs a query byte sequence (matched anywhere in a
+        /// single `write_all` call) with the bytes queued for the next
+        /// `read` once that query is seen.
+        pub fn new(replies: &[(&[u8], &[u8])], winsize: WindowSize) -> Self {
             Self {
                 writes: Vec::new(),
                 reads: Vec::new(),
@@ -422,6 +539,16 @@ mod tests {
                 restored: 0,
                 winsize,
             }
+        }
+
+        /// Number of times `set_raw` was called.
+        pub fn raw_calls(&self) -> usize {
+            self.raw
+        }
+
+        /// Number of times `restore` was called.
+        pub fn restore_calls(&self) -> usize {
+            self.restored
         }
     }
 
@@ -462,6 +589,12 @@ mod tests {
             Ok(self.winsize)
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use testing::FakeTty;
 
     #[test]
     fn init_writes_reporting_modes_without_the_alternate_screen() {
@@ -599,7 +732,137 @@ mod tests {
         assert!(out.contains("\x1b[?1016l"));
         assert!(out.contains("\x1b[?1006l"));
         assert!(out.contains("\x1b[?1003l"));
-        assert_eq!(term.io.restored, 1);
+        assert_eq!(term.io.restore_calls(), 1);
+    }
+
+    #[test]
+    fn decstbm_set_clamps_top_and_bottom_to_a_valid_non_inverted_region() {
+        assert_eq!(decstbm_set(2, 24), b"\x1b[2;24r".to_vec());
+        assert_eq!(
+            decstbm_set(0, 24),
+            b"\x1b[1;24r".to_vec(),
+            "top clamps up to row 1"
+        );
+        assert_eq!(
+            decstbm_set(10, 5),
+            b"\x1b[10;10r".to_vec(),
+            "an inverted request clamps bottom up to top rather than emitting \
+             a malformed/inverted region"
+        );
+    }
+
+    #[test]
+    fn decstbm_reset_is_the_bare_parameterless_sequence() {
+        assert_eq!(decstbm_reset(), b"\x1b[r".to_vec());
+    }
+
+    #[test]
+    fn set_scroll_region_writes_decstbm_and_homes_the_cursor() {
+        let tty = FakeTty::new(
+            &[],
+            WindowSize {
+                cols: 80,
+                rows: 24,
+                width_px: 800,
+                height_px: 240,
+            },
+        );
+        let mut term = Terminal::new(tty, 4).unwrap();
+        term.set_scroll_region(2, 24).unwrap();
+        let out = String::from_utf8(term.io.writes.clone()).unwrap();
+        assert!(out.contains("\x1b[2;24r"));
+        assert!(out.contains("\x1b[H"));
+        assert!(
+            out.find("\x1b[2;24r").unwrap() < out.find("\x1b[H").unwrap(),
+            "the region must be set before the cursor is homed"
+        );
+    }
+
+    /// The core shutdown-safety claim: once a scroll region is active,
+    /// `reset()` must release it, on every call path — including a second,
+    /// redundant `reset()` call (mirrors `Drop` firing after an explicit
+    /// `finish()` already called `reset()` once, which is the normal
+    /// shutdown shape per `TerminalSink::finish`).
+    #[test]
+    fn reset_releases_an_active_scroll_region_and_is_idempotent() {
+        let tty = FakeTty::new(
+            &[],
+            WindowSize {
+                cols: 80,
+                rows: 24,
+                width_px: 800,
+                height_px: 240,
+            },
+        );
+        let mut term = Terminal::new(tty, 4).unwrap();
+        term.set_scroll_region(2, 24).unwrap();
+        term.io.writes.clear();
+
+        term.reset().unwrap();
+        let out = String::from_utf8(term.io.writes.clone()).unwrap();
+        assert!(
+            out.contains("\x1b[r"),
+            "reset() must release the active scroll region: {out:?}"
+        );
+        assert!(
+            out.find("\x1b[r").unwrap() < out.find("\x1b[?2004l").unwrap_or(usize::MAX),
+            "the region reset must be sent before the other reset-mode bytes"
+        );
+
+        term.io.writes.clear();
+        term.reset().unwrap();
+        let second = String::from_utf8(term.io.writes.clone()).unwrap();
+        assert!(
+            !second.contains("\x1b[r"),
+            "a second reset() must not resend the region reset once it is no \
+             longer active: {second:?}"
+        );
+    }
+
+    /// A session that never calls `set_scroll_region` (plain `tmath
+    /// render`/`tmath watch`) must never emit ANY DECSTBM bytes on reset —
+    /// this is what keeps stage 1's scroll-region viewer from changing
+    /// behavior for sessions that never opted into it.
+    #[test]
+    fn reset_without_a_scroll_region_never_emits_decstbm() {
+        let tty = FakeTty::new(
+            &[],
+            WindowSize {
+                cols: 80,
+                rows: 24,
+                width_px: 800,
+                height_px: 240,
+            },
+        );
+        let mut term = Terminal::new(tty, 4).unwrap();
+        term.reset().unwrap();
+        let out = String::from_utf8(term.io.writes.clone()).unwrap();
+        assert!(!out.contains("\x1b[r"));
+        assert!(!out.contains(";24r"));
+    }
+
+    #[test]
+    fn reset_scroll_region_can_be_called_directly_and_is_idempotent() {
+        let tty = FakeTty::new(
+            &[],
+            WindowSize {
+                cols: 80,
+                rows: 24,
+                width_px: 800,
+                height_px: 240,
+            },
+        );
+        let mut term = Terminal::new(tty, 4).unwrap();
+        term.set_scroll_region(2, 24).unwrap();
+        term.io.writes.clear();
+        term.reset_scroll_region().unwrap();
+        term.reset_scroll_region().unwrap();
+        let out = String::from_utf8(term.io.writes.clone()).unwrap();
+        assert_eq!(
+            out.matches("\x1b[r").count(),
+            2,
+            "each direct call writes once"
+        );
     }
 
     #[test]

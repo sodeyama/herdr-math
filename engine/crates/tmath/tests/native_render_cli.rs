@@ -74,13 +74,14 @@ fn native_engine_renders_without_node_or_worker_environment() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let fields = stdout.split_whitespace().collect::<Vec<_>>();
-    assert_eq!(fields.first(), Some(&"ok"));
-    assert!(fields.iter().any(|field| field.starts_with("width=")));
-    assert!(fields.iter().any(|field| field.starts_with("height=")));
-    assert!(fields.iter().any(|field| field.starts_with("bytes=")));
-    assert!(fields.contains(&"renderer=native"));
-    assert!(fields.contains(&"formula_errors=0"));
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("event=append id=")),
+        "native stream must append at least one block: {stdout}"
+    );
+    assert_eq!(lines.last(), Some(&"event=done blocks=3 formula_errors=0"));
 }
 
 #[test]

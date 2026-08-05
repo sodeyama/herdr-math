@@ -71,6 +71,19 @@ pub fn display_pane(source: &PaneId) -> Vec<String> {
     ]
 }
 
+/// Asks tmux to print the pane's current working directory (D5's transcript
+/// adapter uses this to locate the Claude Code project directory the
+/// watched pane belongs to).
+pub fn pane_current_path(source: &PaneId) -> Vec<String> {
+    vec![
+        "display-message".into(),
+        "-p".into(),
+        "-t".into(),
+        source.as_str().into(),
+        "#{pane_current_path}".into(),
+    ]
+}
+
 /// Kills a viewer pane by id.
 pub fn kill_pane(pane: &PaneId) -> Vec<String> {
     vec!["kill-pane".into(), "-t".into(), pane.as_str().into()]
@@ -143,6 +156,15 @@ mod tests {
             vec!["display-message", "-p", "-t", "%5", "#{pane_id}"]
         );
         assert_eq!(kill_pane(&pane), vec!["kill-pane", "-t", "%5"]);
+    }
+
+    #[test]
+    fn pane_current_path_is_scoped_to_the_pane() {
+        let pane = PaneId::new("%5").unwrap();
+        assert_eq!(
+            pane_current_path(&pane),
+            vec!["display-message", "-p", "-t", "%5", "#{pane_current_path}"]
+        );
     }
 
     #[test]

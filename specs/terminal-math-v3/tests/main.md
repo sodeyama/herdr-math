@@ -42,7 +42,9 @@ Test id scheme: `AT-3-<group><nn>` — groups: 0 feasibility, 1 fidelity, 2 engi
 - **AT-3-103** Invalid LaTeX in one formula fails closed per formula: the block
   renders with a bounded error badge for that formula, sibling formulas and all
   other blocks render normally, and the error record carries only allowlisted
-  fields.
+  fields. For a standalone display-math block, which has no sibling content of
+  its own, the whole block renders as the badge; deadline and limit failures
+  keep their run-level granularity.
 - **AT-3-104** Transparency + dpr: output PNGs have a transparent background at
   dpr 1–4; glyph raster density matches the requested dpr (probe: stroke width in
   device pixels scales with dpr).
@@ -108,9 +110,12 @@ Test id scheme: `AT-3-<group><nn>` — groups: 0 feasibility, 1 fidelity, 2 engi
   transmitted (asserted on the byte stream).
 - **AT-3-502** Follow mode: with follow engaged, appended blocks auto-scroll into
   view; any manual scroll disengages follow; `End` re-engages it.
-- **AT-3-503** Scroll re-emission: scrolling re-emits only placements whose
-  visibility changed, from cached PNGs; total bytes transmitted per scroll step are
-  bounded by the visible-block budget, independent of history length.
+- **AT-3-503** Scroll re-emission: scrolling deletes only the placements that left
+  the window and re-emits from cached PNGs only blocks inside the visible window
+  (blocks staying in the window are re-placed too, because their window-relative
+  rows shift and Kitty placements do not move on their own); no block is
+  re-rendered, and total bytes transmitted per scroll step are bounded by the
+  visible-block budget, independent of history length.
 - **AT-3-504** Bounded history: blocks beyond the history budget lose their
   placements and are re-rendered on scroll-back; memory stays within the cache
   budget during a 1,000-block session.
