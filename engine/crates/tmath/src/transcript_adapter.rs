@@ -20,16 +20,16 @@
 //! transcripts (never persisted as fixtures — synthesized JSONL is used for
 //! tests instead, per `AGENTS.md`'s privacy rules):
 //!
-//! - `{"type": "user", ...}` — NOT always a human turn: Claude Code also
-//!   writes a tool call's result back into the transcript as a
-//!   `type: "user"` line, so a single assistant turn that interleaves text
-//!   with tool calls produces `type: "user"` lines mid-turn. Only a line
-//!   carrying genuine user-authored content (`message.content` a bare
-//!   string, or an array with at least one non-`tool_result` block — see
-//!   [`is_genuine_user_text`]) marks the end of whatever assistant answer
-//!   was accumulating; a tool-result-only line (`message.content` is
-//!   exclusively `tool_result` blocks, the shape observed for every
-//!   real tool result) changes nothing.
+//! - `{"type": "user", ...}` — its content is never read (AT-3-604): answers
+//!   accumulate across turns per the user's explicit chat-log requirement,
+//!   so this adapter does not reset on a human turn, and it does not try to
+//!   distinguish a genuine human turn from Claude Code writing a tool call's
+//!   result back into the transcript as the same `type: "user"` shape (a
+//!   single assistant turn interleaving text with tool calls produces
+//!   `type: "user"` lines mid-turn) — both shapes emit the same
+//!   content-free [`TranscriptDelta::AnswerBoundary`], and the watcher
+//!   (`agent_watcher.rs`'s history model), not this adapter, decides
+//!   whether that boundary actually ends an answer worth freezing.
 //! - `{"type": "assistant", "message": {"content": [...]}}` — one assistant
 //!   turn fragment. `content` is a list of blocks; this adapter only reads
 //!   blocks shaped `{"type": "text", "text": "..."}` and ignores every other
@@ -71,12 +71,23 @@ const TRANSCRIPT_MAX_LINE_BYTES: usize = 12 * 1024 * 1024;
 /// One assistant Markdown delta extracted from newly read transcript lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TranscriptDelta {
-    /// A new answer began: replace the current document with this text
-    /// (mirrors a `Document` frame).
+    /// This adapter instance has no in-progress answer of its own (right
+    /// after `open`, or right after a rotation reopen): replace the whole
+    /// document with this text (mirrors a `Document` frame/resync).
     Reset(String),
-    /// The current answer grew: append this text (mirrors an `Append`
-    /// frame).
+    /// The current answer grew: append this text to it (mirrors an
+    /// `Append` frame).
     Append(String),
+    /// AT-3-604: a `type: "user"` line was observed. Carries no text — this
+    /// adapter never reads or forwards human/tool-result content — only the
+    /// fact that a turn boundary happened. The watcher (`agent_watcher.rs`)
+    /// uses this to freeze whatever answer text has accumulated so far into
+    /// its bounded history; the next `Append` after a boundary starts a new
+    /// current answer on top of that frozen history. A boundary with no
+    /// `Append` ever following it (e.g. the line was actually a tool-result
+    /// carrier mid-turn) is harmless: the watcher only freezes non-empty,
+    /// changed current-answer text.
+    AnswerBoundary,
 }
 
 /// Why a transcript adapter could not be used, causing the watcher to fall
@@ -107,8 +118,11 @@ pub(crate) struct TranscriptAdapter {
     /// first `text` block this adapter instance ever sees (right after
     /// `open`, or right after a rotation reopen) is always a `Reset`, since
     /// there is no in-progress answer yet from this instance's point of
-    /// view. Set `true` again after a `user` turn and consumed by the next
-    /// `text` block seen afterward.
+    /// view. AT-3-604: a `user` turn no longer sets this (it emits
+    /// `AnswerBoundary` instead, see that variant's doc comment) — the only
+    /// two places this ever becomes `true` again are `open` and a rotation
+    /// reopen, both genuine "this instance has no in-progress answer"
+    /// resyncs.
     awaiting_new_answer: bool,
 }
 
@@ -189,51 +203,6 @@ impl TranscriptAdapter {
     }
 }
 
-/// Whether a `{"type": "user"}` transcript line carries genuine
-/// user-authored content, as opposed to a tool-call result Claude Code logs
-/// back as the same `type: "user"` shape (observed live: a
-/// text -> tool_use -> tool_result -> text sequence within one assistant
-/// turn writes the tool_result as its own `type: "user"` line).
-///
-/// Rule (fail toward "not genuine" — i.e. toward not resetting — whenever
-/// the shape is ambiguous or unrecognized, since a false reset visibly
-/// breaks streaming while a missed reset only delays it to the next
-/// genuine turn):
-/// - `message.content` as a bare string: genuine (the plain-text user-input
-///   shape observed in real transcripts).
-/// - `message.content` as an array: genuine only if at least one block's
-///   `type` is present and is not `"tool_result"` — a block list that is
-///   empty, entirely `tool_result` blocks, or has no readable `type` at
-///   all, is not genuine. (Live transcripts show tool-result lines as
-///   `content: [{"type": "tool_result", ...}]`, always alone; a real user
-///   turn with e.g. `[{"type": "text", ...}]` or
-///   `[{"type": "image", ...}, {"type": "text", ...}]` never mixes in a
-///   `tool_result` block, so "any non-tool_result block present" is
-///   equivalent to "not exclusively tool results" for every shape seen so
-///   far, and is the more conservative of the two for a shape that isn't.)
-/// - Any other `message.content` shape (missing, not a string/array): not
-///   genuine.
-fn is_genuine_user_text(value: &serde_json::Value) -> bool {
-    let Some(content) = value
-        .get("message")
-        .and_then(|message| message.get("content"))
-    else {
-        return false;
-    };
-    if content.is_string() {
-        return true;
-    }
-    let Some(blocks) = content.as_array() else {
-        return false;
-    };
-    blocks.iter().any(|block| {
-        block
-            .get("type")
-            .and_then(|kind| kind.as_str())
-            .is_some_and(|kind| kind != "tool_result")
-    })
-}
-
 /// Parses one complete JSONL line (without its trailing newline) into at
 /// most one delta. Fails closed: malformed JSON, an unrecognized shape, or
 /// a block over the size cap all yield `None` rather than an error — a bad
@@ -247,22 +216,18 @@ fn parse_transcript_line(line: &[u8], awaiting_new_answer: &mut bool) -> Option<
     let kind = value.get("type")?.as_str()?;
 
     if kind == "user" {
-        // Claude Code writes tool-call results back as `type: "user"` lines
-        // too (the transcript is a single interleaved turn log, not
-        // separate "user" and "tool" streams) — a text -> tool_use ->
-        // tool_result -> text sequence within ONE assistant turn produces a
-        // `type: "user"` line for the tool_result. Treating every such line
-        // as a real answer boundary reset every chunk instead of appending,
-        // so only a line that carries genuine user-authored content marks a
-        // new answer; a line whose `message.content` is exclusively
-        // tool-result blocks (the common shape — a bare string `content` or
-        // any block that is not `tool_result` counts as genuine) changes
-        // nothing and is otherwise ignored, same as any other unrecognized
-        // shape.
-        if is_genuine_user_text(&value) {
-            *awaiting_new_answer = true;
-        }
-        return None;
+        // AT-3-604: a `type: "user"` line — genuine or a tool-result
+        // carrier alike (see the module doc and `is_genuine_user_text`'s
+        // history in git blame for why tool-result lines needed
+        // discriminating in the first place) — no longer arms a reset, and
+        // this adapter still never reads or forwards its content. It does
+        // signal the boundary itself (content-free) so the watcher can
+        // freeze the answer accumulated so far into its bounded history;
+        // see `TranscriptDelta::AnswerBoundary`. `awaiting_new_answer` is
+        // untouched here — it is set only by `open`/rotation reopen, the
+        // only cases where this ADAPTER INSTANCE has no in-progress answer
+        // of its own to append to.
+        return Some(TranscriptDelta::AnswerBoundary);
     }
     if kind != "assistant" {
         return None;
@@ -488,8 +453,13 @@ mod tests {
         );
     }
 
+    /// AT-3-604: a `user` line no longer causes the reset here — the first
+    /// `text` block this fresh `open()`ed adapter ever sees is a `Reset`
+    /// regardless (no in-progress answer to append to yet), whether or not
+    /// a user turn happened to precede it. The pre-existing history
+    /// (`"Old answer."`) is never re-read (`open` starts at EOF).
     #[test]
-    fn a_user_turn_resets_the_next_assistant_text_to_a_new_answer() {
+    fn the_first_text_block_after_open_is_a_reset_even_with_a_user_turn_first() {
         let path = temp_path("t.jsonl");
         write_jsonl(&path, &[&assistant_text_line("Old answer.")]);
         let mut adapter = TranscriptAdapter::open(&path).unwrap();
@@ -504,9 +474,10 @@ mod tests {
         );
         assert_eq!(
             adapter.poll().unwrap(),
-            vec![TranscriptDelta::Reset(
-                "New answer starts here.".to_string()
-            )]
+            vec![
+                TranscriptDelta::AnswerBoundary,
+                TranscriptDelta::Reset("New answer starts here.".to_string()),
+            ]
         );
     }
 
@@ -515,9 +486,11 @@ mod tests {
     /// The exact failure mode reported live: a single assistant turn
     /// interleaves text with a tool call, so the transcript is
     /// text -> tool_use -> tool_result -> text, where the tool_result is
-    /// its own `type: "user"` line. Before the fix this produced two
-    /// Resets (full-document replacements); it must produce Reset then
-    /// Append, since the whole sequence is one answer.
+    /// its own `type: "user"` line. Before the AT-3-604 boundary signal
+    /// existed, this produced two Resets (full-document replacements); it
+    /// must produce Reset, a content-free boundary, then Append — the
+    /// tool_result's boundary is harmless noise the watcher discards
+    /// because no answer text changed since the last one it froze.
     #[test]
     fn text_tool_result_text_within_one_turn_is_reset_then_append_not_two_resets() {
         let path = temp_path("t.jsonl");
@@ -534,17 +507,21 @@ mod tests {
             adapter.poll().unwrap(),
             vec![
                 TranscriptDelta::Reset("Before the tool call.".to_string()),
+                TranscriptDelta::AnswerBoundary,
                 TranscriptDelta::Append("\n\nAfter the tool call.".to_string()),
             ],
             "the tool_result line must not force a second Reset"
         );
     }
 
-    /// A genuine user turn between two answers must still reset, even
-    /// though it now shares the discrimination path with tool-result
-    /// lines — the fix must not overcorrect into ignoring real user turns.
+    /// AT-3-604: a genuine user turn between two answers no longer resets —
+    /// it emits a content-free boundary, and the next assistant text still
+    /// appends (with the usual blank-line separator) at the
+    /// `TranscriptDelta` level. Whether the *watcher* freezes "First
+    /// answer." into history at that boundary is `agent_watcher.rs`'s
+    /// concern, not this adapter's.
     #[test]
-    fn a_genuine_user_turn_between_answers_still_resets() {
+    fn a_genuine_user_turn_between_answers_no_longer_resets() {
         let path = temp_path("t.jsonl");
         write_jsonl(&path, &[&assistant_text_line("First answer.")]);
         let mut adapter = reopen_from_start(&path);
@@ -559,16 +536,19 @@ mod tests {
         );
         assert_eq!(
             adapter.poll().unwrap(),
-            vec![TranscriptDelta::Reset("Second answer.".to_string())]
+            vec![
+                TranscriptDelta::AnswerBoundary,
+                TranscriptDelta::Append("\n\nSecond answer.".to_string()),
+            ]
         );
     }
 
-    /// A tool_result-only `type: "user"` line changes nothing on its own:
-    /// polling right after it (before any assistant text follows) yields no
-    /// delta at all, proving it is fully ignored rather than merely
-    /// deferred.
+    /// A tool_result-only `type: "user"` line emits only its content-free
+    /// boundary — polling right after it (before any assistant text
+    /// follows) yields exactly `AnswerBoundary`, and it does not arm a
+    /// `Reset` on the following assistant text either.
     #[test]
-    fn a_lone_tool_result_line_produces_no_delta_and_does_not_arm_a_reset() {
+    fn a_lone_tool_result_line_produces_only_a_boundary_and_does_not_arm_a_reset() {
         let path = temp_path("t.jsonl");
         write_jsonl(&path, &[&assistant_text_line("Answer so far.")]);
         let mut adapter = reopen_from_start(&path);
@@ -580,8 +560,8 @@ mod tests {
         append_jsonl(&path, &[&tool_result_line()]);
         assert_eq!(
             adapter.poll().unwrap(),
-            Vec::new(),
-            "a tool_result line alone must not itself emit or arm anything"
+            vec![TranscriptDelta::AnswerBoundary],
+            "a tool_result line alone must emit only the boundary, no text"
         );
 
         append_jsonl(&path, &[&assistant_text_line("Continues.")]);
@@ -593,47 +573,47 @@ mod tests {
         );
     }
 
-    /// Mixed/ambiguous `message.content` shapes: fail toward "not genuine"
-    /// (no reset) unless a block is clearly not a tool_result. A block
-    /// mixing `tool_result` with an unrecognized block type still counts as
-    /// genuine (the non-tool_result block is enough), matching
-    /// `is_genuine_user_text`'s stated rule; a content list whose blocks
-    /// have no readable `type` at all does not.
+    /// AT-3-604: every `type: "user"` line shape — mixed tool_result plus
+    /// an unrecognized block, and a content list whose blocks have no
+    /// readable `type` at all — behaves identically now: none of them arm
+    /// a reset, and all of them emit exactly the same content-free
+    /// `AnswerBoundary`, since user lines' content is never read regardless
+    /// of shape.
     #[test]
-    fn mixed_or_typeless_user_content_follows_the_documented_fail_toward_ignore_rule() {
+    fn every_user_line_shape_is_ignored_regardless_of_content() {
         let path = temp_path("t.jsonl");
         write_jsonl(&path, &[&assistant_text_line("Answer so far.")]);
         let mut adapter = reopen_from_start(&path);
         adapter.poll().unwrap();
 
-        // A non-tool_result block present alongside a tool_result block is
-        // genuine (Reset armed): the next assistant text resets.
         append_jsonl(
             &path,
             &[
                 &mixed_unknown_user_line(),
-                &assistant_text_line("Reset one."),
+                &assistant_text_line("Appended one."),
             ],
         );
         assert_eq!(
             adapter.poll().unwrap(),
-            vec![TranscriptDelta::Reset("Reset one.".to_string())],
-            "a mixed tool_result + unrecognized-block content counts as genuine"
+            vec![
+                TranscriptDelta::AnswerBoundary,
+                TranscriptDelta::Append("\n\nAppended one.".to_string()),
+            ]
         );
 
-        // A content list whose blocks carry no `type` at all is NOT
-        // genuine: the next assistant text still appends.
         append_jsonl(
             &path,
             &[
                 &typeless_block_user_line(),
-                &assistant_text_line("Still appended."),
+                &assistant_text_line("Appended two."),
             ],
         );
         assert_eq!(
             adapter.poll().unwrap(),
-            vec![TranscriptDelta::Append("\n\nStill appended.".to_string())],
-            "content blocks with no readable type must not arm a reset"
+            vec![
+                TranscriptDelta::AnswerBoundary,
+                TranscriptDelta::Append("\n\nAppended two.".to_string()),
+            ]
         );
     }
 
