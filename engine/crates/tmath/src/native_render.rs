@@ -4,7 +4,7 @@ use std::io::Cursor;
 
 use tmath_core::placement::decode_png;
 use tmath_render::{
-    parse_blocks_limited, render_block, ErrorCode, Limits, RenderError, RenderOptions,
+    parse_blocks_limited, render_block, CjkFont, ErrorCode, Limits, RenderError, RenderOptions,
     RenderedBlock, SafeErrorDetails, SafeErrorRecord, SafeLimitKind,
 };
 
@@ -48,6 +48,7 @@ pub(crate) fn render_document_native(
     content_width: u32,
     font_size: u32,
     device_pixel_ratio: u8,
+    cjk_font: CjkFont,
 ) -> Result<NativeRenderSuccess, RenderError> {
     // The node renderer treats CLI pixels as CSS pixels. Use the same numeric
     // value as Typst points here so both engines receive the same layout input.
@@ -56,7 +57,8 @@ pub(crate) fn render_document_native(
         f64::from(font_size),
         device_pixel_ratio,
     )
-    .map_err(|_| internal_error("native render options were invalid"))?;
+    .map_err(|_| internal_error("native render options were invalid"))?
+    .with_cjk_font(cjk_font);
     let limits = Limits::default();
     let blocks = parse_blocks_limited(source, &limits)?;
     let mut decoded = Vec::with_capacity(blocks.len());

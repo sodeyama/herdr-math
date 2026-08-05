@@ -440,11 +440,13 @@ fn render_with_native(
         font_size_source.label()
     );
     let device_pixel_ratio = layout::resolve_device_pixel_ratio(fitted);
+    let cjk_font = config::resolve_cjk_font(&font_config);
     let result = native_render::render_document_native(
         source,
         content_width_pt.round() as u32,
         font_size_pt.round() as u32,
         device_pixel_ratio,
+        cjk_font,
     );
     let success = match result {
         Ok(success) => success,

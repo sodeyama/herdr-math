@@ -127,12 +127,13 @@ General guidance:
 - **Captured tool stdout**: a coding agent's shell tool may capture stdout, so
   an agent-launched `tmath render -` is not guaranteed to reach the visible
   terminal. The watcher + viewer pane is the standard agent workflow.
-- **Configuring font size**: `tmath` reads `config.toml` from the platform
-  config directory (`$XDG_CONFIG_HOME/tmath/config.toml`, or
+- **Configuring font size and CJK font**: `tmath` reads `config.toml` from
+  the platform config directory (`$XDG_CONFIG_HOME/tmath/config.toml`, or
   `$HOME/.config/tmath/config.toml` when `XDG_CONFIG_HOME` is unset) if
-  present. It currently has one key:
+  present. It currently has two keys:
   ```toml
   font_size_pt = 15.0
+  cjk_font = "m-plus-2"
   ```
   `font_size_pt` is a number (integer or float) in `[10, 24]`; a value
   outside that range, or of the wrong type, is ignored with a warning and
@@ -148,6 +149,17 @@ General guidance:
   value=<pt>`) — never any other config content. A missing config file is
   silent (not a warning); the file only ever holds small numeric settings,
   never document content.
+
+  `cjk_font` selects which embedded CJK font renders Japanese/Chinese/Korean
+  prose; the only valid value today is `"m-plus-2"` (M PLUS 2, the current
+  default) — an unrecognized value is ignored with a warning naming the key
+  and falls back to the default. Unlike `font_size_pt`, `cjk_font` has no CLI
+  flag or environment variable: font size genuinely varies per run/terminal,
+  but there is currently exactly one font embedded in the binary to choose
+  from, so an extra override layer would have nothing else to select. Per
+  AGENTS.md's font-embedding constraint, `cjk_font` can only choose among
+  fonts already compiled into the binary — it never loads an arbitrary font
+  file or scans installed system fonts.
 
 ## Let an agent show math to you
 

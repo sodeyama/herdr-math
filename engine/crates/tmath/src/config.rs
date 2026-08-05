@@ -1,5 +1,6 @@
-//! User-facing configuration file (D-CONFIG, phase 1): `font_size_pt`,
-//! loaded from `config.toml` in the platform config directory.
+//! User-facing configuration file: `font_size_pt` (D-CONFIG phase 1) and
+//! `cjk_font` (D-CONFIG phase 2), loaded from `config.toml` in the platform
+//! config directory.
 //!
 //! Follows the exact directory pattern `agent_allowlist.rs` already uses for
 //! its own state file (`XDG_CONFIG_HOME`, falling back to `$HOME/.config`) —
@@ -9,15 +10,25 @@
 //! (never document text, formula source, or rendered bytes), matching
 //! AGENTS.md's privacy invariants.
 //!
-//! Precedence (highest first): CLI flag > environment variable > config
-//! file > terminal auto-fit > fixed default. Implemented once in
-//! [`resolve_font_size_pt_with_source`] and reused by every entry point
-//! (`tmath render`, `tmath watch`, `tmath agent-viewer`) so they cannot
-//! drift from each other.
+//! `font_size_pt` precedence (highest first): CLI flag > environment
+//! variable > config file > terminal auto-fit > fixed default. Implemented
+//! once in [`resolve_font_size_pt_with_source`] and reused by every entry
+//! point (`tmath render`, `tmath watch`, `tmath agent-viewer`) so they
+//! cannot drift from each other.
+//!
+//! `cjk_font` precedence: config file > the embedded default
+//! (`tmath_render::CjkFont::default()`). No CLI flag or environment
+//! variable — unlike font size, which genuinely varies per run/terminal,
+//! there is currently exactly one embedded CJK family to choose from, so an
+//! extra override layer would have nothing to override *to*. Add one only
+//! when a second embedded family exists and per-run selection becomes a
+//! real use case.
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use tmath_render::CjkFont;
 
 use crate::layout::{MAX_FONT_SIZE_PT, MIN_FONT_SIZE_PT};
 
@@ -31,6 +42,7 @@ const FONT_SIZE_ENV_VAR: &str = "TMATH_FONT_SIZE_PT";
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Config {
     pub(crate) font_size_pt: Option<f64>,
+    pub(crate) cjk_font: Option<CjkFont>,
 }
 
 /// Where the config file resolution and precedence decisions get their
@@ -110,10 +122,22 @@ pub(crate) fn load(path: &Path) -> Config {
                 }
                 _ => log_warning("config_value_invalid", Some(key)),
             },
+            "cjk_font" => match value.as_str().and_then(CjkFont::from_slug) {
+                Some(font) => config.cjk_font = Some(font),
+                None => log_warning("config_value_invalid", Some(key)),
+            },
             _ => log_warning("config_key_unknown", Some(key)),
         }
     }
     config
+}
+
+/// Resolves the effective CJK font: the config file's `cjk_font` when
+/// present and valid, otherwise the embedded default. No CLI/env layer — see
+/// the module doc for why `font_size_pt`'s 4-level precedence does not apply
+/// here yet.
+pub(crate) fn resolve_cjk_font(config: &Config) -> CjkFont {
+    config.cjk_font.unwrap_or_default()
 }
 
 /// Logs one bounded, content-free warning event to stderr: an event name
@@ -253,10 +277,55 @@ mod tests {
         assert_eq!(load(&path).font_size_pt, Some(24.0));
     }
 
+    // --- D-CONFIG phase 2: cjk_font ---
+
+    #[test]
+    fn valid_cjk_font_slug_is_applied() {
+        let path = temp_config_path(Some("cjk_font = \"m-plus-2\"\n"));
+        let config = load(&path);
+        assert_eq!(config.cjk_font, Some(CjkFont::MPlus2));
+    }
+
+    #[test]
+    fn unknown_cjk_font_slug_is_rejected_and_falls_back_to_the_embedded_default() {
+        let path = temp_config_path(Some("cjk_font = \"noto-sans-jp\"\n"));
+        let config = load(&path);
+        assert_eq!(
+            config.cjk_font, None,
+            "an unrecognized slug leaves the field unset"
+        );
+        assert_eq!(
+            resolve_cjk_font(&config),
+            CjkFont::default(),
+            "resolve_cjk_font falls back to the embedded default"
+        );
+    }
+
+    #[test]
+    fn wrong_type_cjk_font_value_is_rejected() {
+        let path = temp_config_path(Some("cjk_font = 2\n"));
+        let config = load(&path);
+        assert_eq!(config.cjk_font, None);
+    }
+
+    #[test]
+    fn cjk_font_and_font_size_pt_can_both_be_set_together() {
+        let path = temp_config_path(Some("font_size_pt = 16.0\ncjk_font = \"m-plus-2\"\n"));
+        let config = load(&path);
+        assert_eq!(config.font_size_pt, Some(16.0));
+        assert_eq!(config.cjk_font, Some(CjkFont::MPlus2));
+    }
+
+    #[test]
+    fn resolve_cjk_font_uses_the_embedded_default_when_unset() {
+        assert_eq!(resolve_cjk_font(&Config::default()), CjkFont::default());
+    }
+
     #[test]
     fn precedence_cli_beats_everything() {
         let config = Config {
             font_size_pt: Some(18.0),
+            cjk_font: None,
         };
         let (value, source) =
             resolve_font_size_pt_with_source(Some(20), &config, Some(fitted(15.0)));
@@ -268,6 +337,7 @@ mod tests {
     fn precedence_config_beats_auto_fit() {
         let config = Config {
             font_size_pt: Some(18.0),
+            cjk_font: None,
         };
         let (value, source) = resolve_font_size_pt_with_source(None, &config, Some(fitted(15.0)));
         assert_eq!(value, 18.0);

@@ -271,7 +271,8 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         font_size_pt,
         fitted.device_pixel_ratio,
     )
-    .map_err(|_| "invalid agent-viewer render options".to_string())?;
+    .map_err(|_| "invalid agent-viewer render options".to_string())?
+    .with_cjk_font(crate::config::resolve_cjk_font(&font_config));
     let device_pixel_ratio = fitted.device_pixel_ratio;
     let limits = Limits::default();
     let scaled = limits.scaled(device_pixel_ratio);

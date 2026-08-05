@@ -73,7 +73,8 @@ pub(crate) fn run(
         font_size_pt,
         device_pixel_ratio,
     )
-    .map_err(|_| "invalid native watch render options".to_string())?;
+    .map_err(|_| "invalid native watch render options".to_string())?
+    .with_cjk_font(crate::config::resolve_cjk_font(&config));
     let limits = Limits::default();
     let scaled = limits.scaled(device_pixel_ratio);
     let max_entries = usize::try_from(limits.blocks_per_document)

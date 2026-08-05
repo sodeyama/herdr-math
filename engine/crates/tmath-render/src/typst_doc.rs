@@ -54,6 +54,25 @@ const TEXT_BOTTOM_EDGE_EM: f64 = -0.3;
 /// exactly `TARGET_LINE_ADVANCE_EM`.
 const PAR_LEADING_EM: f64 = TARGET_LINE_ADVANCE_EM - TEXT_TOP_EDGE_EM + TEXT_BOTTOM_EDGE_EM;
 
+/// The primary (Latin/math) prose font. Fixed — `RenderOptions` only ever
+/// selects among embedded CJK families (`CjkFont`); Latin coverage does not
+/// vary per session.
+const PRIMARY_FONT: &str = "NewCM10";
+
+/// Builds the exact `#set text(font: (...))` fallback-list argument for
+/// `options.cjk_font` — the ONE place this list is constructed (D-CONFIG
+/// phase 2), so every block's composed Typst source and any future
+/// multi-family selection stay derived from a single source of truth
+/// instead of a second hard-coded family name drifting out of sync.
+fn font_fallback_list(cjk_font: crate::CjkFont) -> String {
+    let mut list = String::from("(\"");
+    escape_typst_string_into(PRIMARY_FONT, &mut list);
+    list.push_str("\", \"");
+    escape_typst_string_into(cjk_font.typst_family_name(), &mut list);
+    list.push_str("\")");
+    list
+}
+
 /// Inter-block vertical margin (D-LINE, uniform inter-block spacing): each
 /// semantic block (heading, paragraph, list, standalone display-math, ...)
 /// renders as its own `#set page(margin: 0pt, height: auto, ...)` Typst
@@ -147,12 +166,13 @@ pub(crate) fn compose_block_with_deadline(
         source: format!(
             "#set page(width: {width}pt, height: auto, \
              margin: (top: {block_margin}pt, bottom: {block_margin}pt, x: 0pt), fill: none)\n\
-             #set text(font: (\"NewCM10\", \"M PLUS 2\"), size: {font_size}pt, \
+             #set text(font: {fonts}, size: {font_size}pt, \
              fill: rgb(\"{color}\"), top-edge: {top_edge}em, bottom-edge: {bottom_edge}em)\n\
              #set par(leading: {leading}em)\n\
              {body}\n",
             width = options.content_width_pt,
             block_margin = block_margin_pt,
+            fonts = font_fallback_list(options.cjk_font),
             font_size = options.font_size_pt,
             color = DARK_THEME_TEXT_COLOR,
             top_edge = TEXT_TOP_EDGE_EM,
@@ -791,6 +811,31 @@ mod tests {
         assert_eq!(
             error.safe_record().details.as_ref().unwrap().limit_kind,
             Some(crate::SafeLimitKind::ResponseDocumentBytes)
+        );
+    }
+
+    // --- D-CONFIG phase 2: cjk_font selection ---
+
+    #[test]
+    fn font_fallback_list_always_starts_with_the_primary_latin_font() {
+        let list = font_fallback_list(crate::CjkFont::MPlus2);
+        assert_eq!(list, "(\"NewCM10\", \"M PLUS 2\")");
+    }
+
+    /// The resolved fallback list must carry the SELECTED family's exact
+    /// Typst name, not a hard-coded one — this is the render-level proof
+    /// `RenderOptions::cjk_font` actually reaches the composed Typst
+    /// source's `#set text(font: ...)` rule (the only place it can matter).
+    #[test]
+    fn composed_source_carries_the_selected_cjk_font_family_name() {
+        let options = RenderOptions::default().with_cjk_font(crate::CjkFont::MPlus2);
+        let source = compose_block(&block("hello"), &options).unwrap();
+        assert!(
+            source
+                .source
+                .contains("#set text(font: (\"NewCM10\", \"M PLUS 2\")"),
+            "{}",
+            source.source
         );
     }
 }
