@@ -75,10 +75,21 @@ reference. Do not treat it as current product guidance.
 - The Rust `tmath` binary owns the terminal: raw mode, Kitty negotiation, mouse/keyboard input,
   scroll state machine, and scrollback-anchored placement in the main screen buffer (never the
   alternate screen).
-- The TypeScript `tmath-render` subprocess is one-shot: it reads one bounded JSON request on
-  stdin, renders with KaTeX/Chromium/sharp, writes one bounded JSON response on stdout, and exits.
-- Use the versioned JSON IPC (`tmath-render/1`) between Rust and the renderer; enforce size,
-  timeout, and trust limits at that boundary.
+- Two render engines coexist during the V3 migration
+  (`specs/terminal-math-v3/plans/main.md`):
+  - **Node engine (default)**: the TypeScript `tmath-render` subprocess is one-shot: it reads
+    one bounded JSON request on stdin, renders with KaTeX/Chromium/sharp, writes one bounded
+    JSON response on stdout, and exits. It uses the versioned JSON IPC (`tmath-render/1`)
+    between Rust and the renderer; enforce size, timeout, and trust limits at that boundary.
+  - **Native engine (opt-in, `tmath render --engine native`)**: the Rust
+    `engine/crates/tmath-render` crate renders in-process (RaTeX for math, Typst as a library
+    for the Markdown subset) with no subprocess and no IPC. It must use only fonts embedded in
+    the binary (no system font scan), must disable Typst package resolution and all network
+    and filesystem capabilities, must pass user text into Typst only through escaped string
+    literals (never as markup), and must enforce the per-block limit, deadline, and
+    fail-closed error contracts inside the crate. The default flips to native only after the
+    V3 fidelity and performance gates (AT-3-206) pass; the Node engine is then removed per
+    the V3 plan.
 - Keep the parser, renderer transport, placement tracker, input decoder, scroll driver, and CLI
   as separate modules with narrow interfaces.
 - Never store durable state in the repository; runtime artifacts live in a platform state

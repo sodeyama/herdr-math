@@ -1,0 +1,22 @@
+[package]
+name = "tmath-render"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ratex-render = { version = "=0.1.14", features = ["embed-fonts"] }
+ratex-parser = "=0.1.14"
+ratex-layout = "=0.1.14"
+ratex-svg = "=0.1.14"
+ratex-types = "=0.1.14"
+typst-as-lib = { version = "=0.14.4", features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
+typst = "0.13"
+typst-render = "0.13"
+pulldown-cmark = { version = "0.13", default-features = false }
+png = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

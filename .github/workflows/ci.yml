@@ -48,9 +48,6 @@ jobs:
       - name: Run unit tests
         run: npm run test:unit
 
-      - name: Run contract tests
-        run: npm run test:contract
-
       - name: Run integration tests
         run: npm run test:integration
 

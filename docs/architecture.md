@@ -143,8 +143,29 @@ input, delimiter-run, formula-count, and formula-character limits.
 
 ### 8. CLI (`engine/crates/tmath/src/main.rs`)
 
-Parses commands and options, reads the bounded document, drives the render subprocess, places in
-a terminal or prints a summary, and reports diagnostics.
+Parses commands and options, reads the bounded document, drives the selected render engine,
+places in a terminal or prints a summary, and reports diagnostics. `tmath render` accepts
+`--engine node|native` (default `node`).
+
+### 8b. Native render engine (V3, opt-in, experimental)
+
+`engine/crates/tmath-render` is the in-process V3 renderer selected by
+`tmath render --engine native` (see `specs/terminal-math-v3/plans/main.md`):
+
+- Splits Markdown into semantic blocks (pulldown-cmark, offset-based), scans math with a Rust
+  port of the V2 scanner (V2 fixture corpus retained), renders math with RaTeX and prose with
+  Typst as a library, and embeds inline formulas on the text baseline through a static file
+  resolver.
+- Uses only fonts embedded in the binary; Typst package resolution, network, and filesystem
+  access are structurally unavailable. User text enters Typst exclusively as escaped string
+  literals, verified by an injection-corpus test.
+- Enforces per-block limits (source bytes, image dimensions/pixels/bytes scaled by dpr², and a
+  checkpoint-based render deadline) and per-formula fail-closed error badges; error records
+  carry no input text. Rendering is byte-deterministic per (block, options), which makes
+  content-hash caching sound.
+- Currently composes one image per document for the existing placement path; per-block
+  placements, streaming, and caching are Phase 2/3 work. The engine spawns no subprocess and
+  ignores `TMATH_RENDER_WORKER` (asserted by hermetic empty-PATH tests).
 
 ### 9. Agent integration (P1, experimental)
 

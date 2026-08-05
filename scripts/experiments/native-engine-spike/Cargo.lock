@@ -518,16 +518,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
-name = "errno"
-version = "0.3.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
-dependencies = [
- "libc",
- "windows-sys",
-]
-
-[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1161,12 +1151,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
 
 [[package]]
-name = "linux-raw-sys"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
-
-[[package]]
 name = "lipsum"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1268,6 +1252,22 @@ name = "mutate_once"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13d2233c9842d08cfe13f9eac96e207ca6a2ea10b80259ebe8ad0268be27d2af"
+
+[[package]]
+name = "native-engine-spike"
+version = "0.1.0"
+dependencies = [
+ "png 0.18.1",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-render",
+ "ratex-svg",
+ "ratex-types",
+ "serde_json",
+ "typst",
+ "typst-as-lib",
+ "typst-render",
+]
 
 [[package]]
 name = "num-bigint"
@@ -1568,17 +1568,6 @@ checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
 dependencies = [
  "ar_archive_writer",
  "cc",
-]
-
-[[package]]
-name = "pulldown-cmark"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
-dependencies = [
- "bitflags 2.13.1",
- "memchr",
- "unicase",
 ]
 
 [[package]]
@@ -1924,19 +1913,6 @@ checksum = "be2a24f50780bc85f09cc6ac299bdf1424302742d77221106859c9d8b102126a"
 dependencies = [
  "arrayvec",
  "num-traits",
-]
-
-[[package]]
-name = "rustix"
-version = "1.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
-dependencies = [
- "bitflags 2.13.1",
- "errno",
- "libc",
- "linux-raw-sys",
- "windows-sys",
 ]
 
 [[package]]
@@ -2396,48 +2372,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "tmath"
-version = "0.2.0"
-dependencies = [
- "base64",
- "png 0.18.1",
- "rustix",
- "serde_json",
- "tmath-core",
- "tmath-render",
-]
-
-[[package]]
-name = "tmath-core"
-version = "0.2.0"
-dependencies = [
- "base64",
- "miniz_oxide",
- "png 0.18.1",
- "rustix",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "tmath-render"
-version = "0.2.0"
-dependencies = [
- "png 0.18.1",
- "pulldown-cmark",
- "ratex-layout",
- "ratex-parser",
- "ratex-render",
- "ratex-svg",
- "ratex-types",
- "serde",
- "serde_json",
- "typst",
- "typst-as-lib",
- "typst-render",
-]
 
 [[package]]
 name = "toml"
