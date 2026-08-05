@@ -510,4 +510,60 @@ mod tests {
             parse_blocks_limited("Prose.\n\n$$a+b", &Limits::default()).unwrap()
         );
     }
+
+    #[test]
+    fn adversarial_chunk_streams_never_panic_or_diverge_from_one_shot_parse() {
+        // AT-3-601: deterministic fuzz over chunk boundaries and markdown
+        // tokens. The splitter must always terminate, stay within limits, and
+        // either match the one-shot parser or fail closed with the same limit.
+        let mut seed = 0x57EA_0001_u64;
+        let tokens = [
+            "# ", "## ", "- ", "1. ", "> ", "| A | B |\n| - | - |\n| 1 | 2 |\n", "```\n",
+            "\n```\n", "$", "$$", "\n\n", " ", "x", "🦀", "a+b", "\\(", "\\)", "plain",
+        ];
+
+        for iteration in 0..256u64 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let length = 1 + (iteration as usize % 48);
+            let mut document = String::new();
+            for _ in 0..length {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                document.push_str(tokens[(seed as usize) % tokens.len()]);
+            }
+
+            let limits = Limits::default();
+            let expected = parse_blocks_limited(&document, &limits);
+            let stride = 1 + ((seed >> 16) as usize % 11);
+            let mut splitter = StreamSplitter::new(limits);
+            let mut push_result = Ok(());
+            for chunk in document.as_bytes().chunks(stride) {
+                push_result = splitter.push(chunk).map(|_| ());
+            }
+            let finish_result = splitter.finish();
+
+            match (expected, push_result, finish_result) {
+                (Ok(blocks), Ok(()), Ok(revision)) => {
+                    assert_eq!(revision.blocks, blocks, "iteration {iteration}");
+                    assert!(
+                        !revision
+                            .blocks
+                            .iter()
+                            .any(|block| block.source.contains('\u{fffd}')),
+                        "valid UTF-8 input must not pick up replacement chars"
+                    );
+                }
+                (Err(expected_error), Err(push_error), _) => {
+                    assert_eq!(push_error, expected_error);
+                }
+                (Err(expected_error), Ok(()), Err(finish_error)) => {
+                    assert_eq!(finish_error, expected_error);
+                }
+                other => panic!("splitter/one-shot mismatch at iteration {iteration}: {other:?}"),
+            }
+        }
+    }
 }

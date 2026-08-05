@@ -351,14 +351,12 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
 
         std::thread::sleep(Duration::from_millis(parsed.poll_ms));
         poll_tick += 1;
-        if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) {
-            if transcript.is_none() {
-                if let Some(dir) = transcript_project_dir.as_deref() {
-                    transcript = open_transcript_in(dir, watcher_started);
-                    if transcript.is_some() {
-                        eprintln!("tmath agent: source=transcript");
-                        transcript_idle_polls = 0;
-                    }
+        if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) && transcript.is_none() {
+            if let Some(dir) = transcript_project_dir.as_deref() {
+                transcript = open_transcript_in(dir, watcher_started);
+                if transcript.is_some() {
+                    eprintln!("tmath agent: source=transcript");
+                    transcript_idle_polls = 0;
                 }
             }
         }

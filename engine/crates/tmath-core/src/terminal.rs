@@ -656,6 +656,9 @@ mod tests {
 
     #[test]
     fn cell_size_parses_the_query_report() {
+        let tmux = std::env::var_os("TMUX");
+        std::env::remove_var("TMUX");
+
         let tty = FakeTty::new(
             &[(b"\x1b[16t".as_slice(), b"\x1b[6;24;80t")],
             WindowSize {
@@ -669,6 +672,10 @@ mod tests {
         assert_eq!(term.cell_size().unwrap(), Some((80, 24)));
         let out = String::from_utf8(term.io.writes.clone()).unwrap();
         assert!(out.contains("\x1b[16t"), "cell-size query is written");
+
+        if let Some(value) = tmux {
+            std::env::set_var("TMUX", value);
+        }
     }
 
     #[test]

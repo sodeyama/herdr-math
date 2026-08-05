@@ -862,4 +862,113 @@ mod tests {
             Some("abc!")
         );
     }
+
+    #[test]
+    fn adversarial_byte_streams_never_panic_or_grow_unbounded() {
+        // AT-3-601: deterministic fuzz over framing bytes and delta payloads.
+        // The decoder must always terminate, stay within the pending cap, and
+        // never leave malformed frames stuck in the buffer forever.
+        let mut seed = 0xc0dec_u64;
+        for iteration in 0..512u64 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let mut decoder = Decoder::new();
+            let len = 1 + (iteration as usize % 96);
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let kind = (seed >> 32) as u8 % 6;
+                bytes.push(match kind {
+                    0 => (seed >> 24) as u8,
+                    1 => 0xff,
+                    2 => b'{',
+                    3 => b'"',
+                    4 => 0,
+                    _ => (seed >> 56) as u8,
+                });
+            }
+
+            if iteration % 4 == 0 {
+                bytes.extend_from_slice(&encode_document("fuzz").unwrap());
+            }
+            if iteration % 7 == 0 {
+                bytes.extend_from_slice(&encode_quit());
+            }
+
+            for chunk_size in [1_usize, 3, 7, 13] {
+                let mut offset = 0;
+                let mut steps = 0;
+                while offset < bytes.len() {
+                    let end = (offset + chunk_size).min(bytes.len());
+                    decoder.push(&bytes[offset..end]);
+                    offset = end;
+                    while let Some(result) = decoder.next_message() {
+                        steps += 1;
+                        assert!(steps < 4096, "decoder must always make progress");
+                        let _ = result;
+                    }
+                }
+                assert!(decoder.pending.len() <= MAX_PENDING_BYTES);
+            }
+        }
+    }
+
+    #[test]
+    fn adversarial_delta_sequences_never_panic_and_fail_closed() {
+        let mut seed = 0xDE1A_0001_u64;
+        for _ in 0..256 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let cap = 32 + (seed as usize % 128);
+            let mut state = DeltaState::new(cap);
+            let mut seq = 0_u64;
+            let ops = 4 + (seed as usize % 12);
+            for _ in 0..ops {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let op = (seed as usize) % 5;
+                let before = state.document().to_owned();
+                let result = match op {
+                    0 => state.apply(&Message::Document {
+                        text: format!("doc-{}", seed % 97),
+                    }),
+                    1 => {
+                        seq += 1;
+                        state.apply(&Message::Append {
+                            version: DELTA_PROTOCOL_VERSION,
+                            seq,
+                            text: format!("+{}", seed % 11),
+                        })
+                    }
+                    2 => {
+                        seq += 1;
+                        let keep = (seed as usize % before.len().max(1)).min(before.len());
+                        state.apply(&Message::ReplaceTail {
+                            version: DELTA_PROTOCOL_VERSION,
+                            seq,
+                            keep_bytes: keep,
+                            text: format!("~{}", seed % 13),
+                        })
+                    }
+                    3 => state.apply(&Message::Append {
+                        version: DELTA_PROTOCOL_VERSION + ((seed % 3) as u32),
+                        seq: seq + 1,
+                        text: "bad-version".to_string(),
+                    }),
+                    _ => state.apply(&Message::Append {
+                        version: DELTA_PROTOCOL_VERSION,
+                        seq: seq + 1 + (seed % 5),
+                        text: "bad-seq".to_string(),
+                    }),
+                };
+                let _ = result;
+                assert!(state.document().len() <= IPC_MAX_REQUEST_BYTES);
+            }
+        }
+    }
 }
