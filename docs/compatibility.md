@@ -40,16 +40,18 @@ release matrix is repeated. A future compatibility claim must include clean inst
 rendering, placement, scrollback scroll, mouse and keyboard scrolling, failure preservation, and
 clean-exit evidence.
 
-## Agent integration (P1, experimental)
+## Agent integration
 
-`tmath agent` / `tmath agent-viewer` (Phase 8) run inside tmux and require a
-Kitty-capable outer terminal plus a valid graphics route. Controlled pixels
-were observed with Ghostty 1.3.1 + tmux 3.5a and cmux 0.64.12 + tmux 3.5a
-through the default validated client-tty route. Corrected DCS passthrough also
-displayed pixels in Ghostty. A controlled Ghostty viewer rendered and scrolled
-a long synthetic answer. These are narrow P1 observations, not full support
-claims: resize, detach/attach, multiple clients, and the complete live-agent
-matrix remain unverified.
+`tmath agent` / `tmath agent-viewer` run inside tmux and require a
+Kitty-capable outer terminal plus a valid graphics route. As of 0.3.0 the
+default route is tmux passthrough (requires `allow-passthrough on`; serialized
+against other pane output), with client-tty available as an explicit
+`TMATH_TMUX_TRANSPORT=client-tty` opt-in for terminals whose passthrough relay
+is broken. Live evidence: Ghostty + tmux 3.5a renders and scrolls streamed
+answers over passthrough (2026-08-05 scroll-lab session, runtime-reliability-v1
+close-out); earlier controlled pixels were also observed via client-tty on
+Ghostty 1.3.1 and cmux 0.64.12. Resize, detach/attach, multiple clients, and
+the complete live-agent matrix remain unverified.
 
 ## Evidence
 

@@ -18,8 +18,8 @@ to find a pane id by hand.
 ## Setup once (tmux)
 
 ```sh
-# Optional: only needed when forcing the DCS passthrough route
-tmux set-option -t <window> -w allow-passthrough on   # requires 3.3+
+# Required for the default passthrough graphics route (usually already on):
+tmux set-option -g allow-passthrough on               # requires 3.3+
 which tmath && tmath diagnose                         # verify install
 ```
 
@@ -96,12 +96,14 @@ General guidance:
   fails closed and logs `boundary_failed`; it re-anchors on the next stable
   answer rather than rendering a broken split.
 - **Terminals**: inside tmux, queries cannot round-trip reliably. The default
-  route sends only Kitty graphics commands to the attached client tty while
-  cursor movement and placeholder cells stay in tmux. This works around DCS
-  relay differences in Ghostty and cmux. Set
-  `TMATH_TMUX_TRANSPORT=passthrough` to use individually wrapped, ESC-doubled
-  DCS commands instead. Outside tmux, `tmath render` probes normally and fails
-  closed when Kitty is missing.
+  route DCS-wraps each Kitty graphics command as tmux passthrough (requires
+  `allow-passthrough on`; checked automatically), so graphics writes are
+  serialized against every other pane's output. Set
+  `TMATH_TMUX_TRANSPORT=client-tty` to instead write graphics directly to the
+  attached client's tty — only for terminals whose passthrough relay is
+  broken, since direct writes can tear against tmux's own output under heavy
+  streaming. Outside tmux, `tmath render` probes normally and fails closed
+  when Kitty is missing.
 - **Blurry math on a Retina display, inside tmux**: also because queries
   cannot round-trip inside tmux, the viewer falls back to the terminal's
   reported window size to estimate the pixel density (device pixel ratio).
@@ -180,8 +182,9 @@ readable image next to the conversation. If the terminal lacks Kitty support
 - `tmath: renderer subprocess not found` — re-run the installer, or set
   `TMATH_RENDER_WORKER=/abs/path/dist/renderer/subprocess.js`.
 - Viewer pane opens then closes — run `tmath diagnose` inside the source tmux
-  session and confirm that a visible client tty and a known Kitty terminal are
-  reported. For forced DCS passthrough, also confirm `allow-passthrough on`.
+  session; it prints the gate inputs (attached client count, outer termname,
+  `allow-passthrough`, transport env) and the full refusal reason. The default
+  route requires `allow-passthrough on` and a Kitty-capable outer terminal.
 - Nothing updates — the agent repainted the whole pane (boundary reset); wait
   for the next finished answer, and check the watcher stderr for
   `boundary_failed`.
