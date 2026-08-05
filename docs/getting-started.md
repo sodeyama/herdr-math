@@ -162,6 +162,13 @@ Common results:
   text summary).
 - `kitty graphics: unsupported`: the attached terminal does not support the Kitty graphics
   protocol.
+- `path launcher: broken (exit <code>)`: the `tmath` found on `PATH` cannot run. On macOS,
+  `exit 137` (SIGKILL with no output) usually means the file was overwritten in place — for
+  example by copying a freshly built binary over `~/.local/bin/tmath` — which invalidates the
+  kernel's code-signature cache for that inode. Never `cp` a binary over the launcher; re-run
+  `scripts/install.sh`, which replaces it atomically at a fresh inode.
+- `path launcher: version skew (...)`: the `tmath` on `PATH` is a different version than the
+  binary you are running; re-run `scripts/install.sh` to update the install.
 
 ## Help and version
 

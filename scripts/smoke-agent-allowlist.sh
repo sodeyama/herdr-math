@@ -83,8 +83,46 @@ run_tmath agent-disable "$TARGET_DIR" >/dev/null 2>&1
 check "disabling an unregistered directory is a no-op success" "$?" 0
 set -e
 
+# --- AT-R-201/202: wrapper distinguishes policy from breakage ----------------
+WRAPPER_SH="$ROOT/scripts/shell/tmath-agent.sh"
+STUB_DIR="$TMP_HOME/wrapper-stub-bin"
+mkdir -p "$STUB_DIR"
+
+write_stub_tmath() {
+  local exit_code="$1"
+  printf '%s\n' '#!/bin/sh' "exit $exit_code" > "$STUB_DIR/tmath"
+  chmod 755 "$STUB_DIR/tmath"
+}
+
+write_stub_tmath 137
+STDERR_FILE="$TMP_HOME/wrapper-137.stderr"
+set +e
+OUT="$(PATH="$STUB_DIR:$PATH" bash -c "source '$WRAPPER_SH' && __tmath_wrap_agent /bin/echo hello world" 2>"$STDERR_FILE")"
+WRAPPER_RC=$?
+set -e
+
+check "AT-R-202: wrapped stdout unchanged (stub exit 137)" "$OUT" "hello world"
+check "AT-R-202: wrapper rc equals wrapped command (stub exit 137)" "$WRAPPER_RC" 0
+STDERR_137="$(cat "$STDERR_FILE")"
+STDERR_137_LINES="$([ -z "$STDERR_137" ] && echo 0 || printf '%s\n' "$STDERR_137" | wc -l | tr -d ' ')"
+check "AT-R-202: stderr is exactly one line (stub exit 137)" "$STDERR_137_LINES" 1
+STDERR_137_MATCH="$(printf '%s\n' "$STDERR_137" | grep -c 'agent-allowed failed (exit 137)' || true)"
+check "AT-R-202: stderr matches failure line (stub exit 137)" "$STDERR_137_MATCH" 1
+
+write_stub_tmath 1
+STDERR_FILE="$TMP_HOME/wrapper-1.stderr"
+set +e
+OUT="$(PATH="$STUB_DIR:$PATH" bash -c "source '$WRAPPER_SH' && __tmath_wrap_agent /bin/echo hello world" 2>"$STDERR_FILE")"
+WRAPPER_RC=$?
+set -e
+
+check "AT-R-201: silent passthrough stdout (stub exit 1)" "$OUT" "hello world"
+check "AT-R-201: silent passthrough rc (stub exit 1)" "$WRAPPER_RC" 0
+STDERR_1="$(cat "$STDERR_FILE")"
+check "AT-R-201: silent passthrough stderr empty (stub exit 1)" "${#STDERR_1}" 0
+
 if [ "$pass" = 1 ]; then
-  echo "PASS: allowlist enable/disable/allowed behave per AT-2-812/AT-2-813"
+  echo "PASS: allowlist enable/disable/allowed behave per AT-2-812/AT-2-813; wrapper per AT-R-201/AT-R-202"
   exit 0
 fi
 exit 1

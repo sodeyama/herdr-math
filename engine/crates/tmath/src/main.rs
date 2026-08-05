@@ -9,9 +9,11 @@
 //! agent and shows each finished answer (with its math) in a split viewer pane.
 
 use std::env;
-use std::fs::File;
+use std::ffi::OsStr;
+use std::fs::{self, File};
 use std::io::{self, IsTerminal as _, Read as _};
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -509,14 +511,10 @@ fn connect_terminal_with(tty: StdioTty) -> Result<(Terminal<StdioTty>, (u32, u32
         let graphics_supported = terminal
             .probe_graphics_support()
             .map_err(|error| format!("probe graphics: {error}"))?;
-        // #region agent log
-        terminal_output::debug_log(
-            "F,H,I",
-            "main.rs:connect_terminal",
-            "direct Kitty graphics probe completed",
+        terminal_output::write_debug_event(
+            "graphics_probe_completed",
             serde_json::json!({"graphicsSupported": graphics_supported}),
         );
-        // #endregion
         if !graphics_supported {
             return Err("this terminal reports no Kitty graphics support".into());
         }
@@ -554,37 +552,13 @@ fn place_in_terminal(
             },
         )
         .map_err(|error: PlacementError| format!("place image: {error}"))?;
-    // #region agent log
-    terminal_output::debug_log(
-        "F,I",
-        "main.rs:place_in_terminal",
-        "computed image and placeholder geometry",
+    terminal_output::write_debug_event(
+        "placement_geometry_computed",
         serde_json::json!({
-            "imageWidth": width,
-            "imageHeight": height,
-            "cellWidth": cell.0,
-            "cellHeight": cell.1,
             "placeholderCols": block.cols,
-            "placeholderRows": block.rows,
-            "imageId": block.image_id
+            "placeholderRows": block.rows
         }),
     );
-    // #endregion
-    // #region agent log
-    terminal_output::debug_log_current(
-        "H15,H17,H18,H19",
-        "main.rs:place_in_terminal",
-        "placing cursor-relative render",
-        serde_json::json!({
-            "imageWidth": width,
-            "imageHeight": height,
-            "placementCols": block.cols,
-            "placementRows": block.rows,
-            "stdinIsTerminal": io::stdin().is_terminal(),
-            "tmuxPane": std::env::var("TMUX_PANE").unwrap_or_else(|_| "<unset>".into())
-        }),
-    );
-    // #endregion
     // Inside tmux, `CSI 6n` is answered with the pane-relative cursor, not the
     // outer terminal's, so it cannot tell us whether the *outer* line already
     // starts at column 1; keep the conservative always-advance behavior there.
@@ -621,17 +595,6 @@ fn place_in_terminal(
     terminal
         .reset()
         .map_err(|error| format!("reset terminal: {error}"))?;
-    // #region agent log
-    terminal_output::debug_log_current(
-        "H18",
-        "main.rs:place_in_terminal",
-        "placement command completed",
-        serde_json::json!({
-            "pipedInput": !io::stdin().is_terminal(),
-            "imageId": block.image_id
-        }),
-    );
-    // #endregion
     println!();
     Ok(0)
 }
@@ -706,6 +669,125 @@ fn read_document(path: &str) -> Result<String, String> {
     Ok(text)
 }
 
+/// Resolves the first executable regular file named `tmath` on `path`.
+fn resolve_path_launcher(path: &OsStr) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for dir in env::split_paths(path) {
+        let candidate = dir.join("tmath");
+        let Ok(metadata) = fs::metadata(&candidate) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        if metadata.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        return Some(candidate);
+    }
+    None
+}
+
+fn exit_status_code(status: ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    use std::os::unix::process::ExitStatusExt;
+    128 + status.signal().unwrap_or(0)
+}
+
+fn parse_tmath_version_line(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix("tmath ")?;
+    let version = rest.split_whitespace().next()?;
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
+/// Runs `launcher --version` with a 5 s timeout; returns stdout on success.
+fn run_path_launcher_version(launcher: &Path) -> Result<String, String> {
+    let mut child = Command::new(launcher)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| "spawn".to_string())?;
+
+    let timeout = Duration::from_secs(5);
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_string(&mut stdout);
+                }
+                if status.success() {
+                    return Ok(stdout);
+                }
+                return Err(format!("exit {}", exit_status_code(status)));
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("timeout".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return Err("wait".to_string()),
+        }
+    }
+}
+
+/// Reports PATH-launcher health for the given search path.
+fn path_launcher_report_for(path: &OsStr) -> (String, bool) {
+    let Some(launcher) = resolve_path_launcher(path) else {
+        return ("path launcher: not found on PATH".to_string(), false);
+    };
+
+    match run_path_launcher_version(&launcher) {
+        Ok(stdout) => {
+            let first_line = stdout.lines().next().unwrap_or("");
+            let Some(version) = parse_tmath_version_line(first_line) else {
+                return (
+                    "path launcher: broken (unexpected --version output)".to_string(),
+                    false,
+                );
+            };
+            let this_version = env!("CARGO_PKG_VERSION");
+            if version == this_version {
+                (format!("path launcher: ok (tmath {version})"), true)
+            } else {
+                (
+                    format!(
+                        "path launcher: version skew (path {version}, this binary {this_version})"
+                    ),
+                    true,
+                )
+            }
+        }
+        Err(reason) => {
+            if reason == "timeout" {
+                ("path launcher: broken (timeout)".to_string(), false)
+            } else {
+                (format!("path launcher: broken ({reason})"), false)
+            }
+        }
+    }
+}
+
+fn path_launcher_report() -> (String, bool) {
+    match env::var_os("PATH") {
+        None => ("path launcher: skipped (no PATH)".to_string(), true),
+        Some(path) => path_launcher_report_for(&path),
+    }
+}
+
 /// Reports local capabilities with a stable status per check and a non-zero
 /// exit when a required capability is missing.
 fn diagnose(args: &[String]) -> Result<i32, String> {
@@ -760,6 +842,12 @@ fn diagnose(args: &[String]) -> Result<i32, String> {
             problems += 1;
         }
         None => println!("kitty graphics: not probed (no stdin terminal)"),
+    }
+
+    let (path_line, path_ok) = path_launcher_report();
+    println!("{path_line}");
+    if !path_ok {
+        problems += 1;
     }
 
     if problems == 0 {
@@ -890,5 +978,63 @@ mod tests {
         assert!(parse_watch_args(&args(&["--poll-ms", "0", "doc.md"])).is_err());
         assert!(parse_watch_args(&args(&["--poll-ms", "abc", "doc.md"])).is_err());
         assert!(parse_watch_args(&args(&["--bogus", "doc.md"])).is_err());
+    }
+
+    fn with_temp_path_dir<F, R>(f: F) -> R
+    where
+        F: FnOnce(&Path) -> R,
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("tmath-path-launcher-test-{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        let result = f(&dir);
+        let _ = fs::remove_dir_all(&dir);
+        result
+    }
+
+    fn write_executable_script(dir: &Path, name: &str, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join(name);
+        fs::write(&path, contents).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).unwrap();
+    }
+
+    #[test]
+    fn path_launcher_report_version_skew_is_healthy() {
+        with_temp_path_dir(|dir| {
+            write_executable_script(dir, "tmath", "#!/bin/sh\necho 'tmath 9.9.9'\n");
+            let (line, ok) = path_launcher_report_for(dir.as_os_str());
+            assert!(ok, "version skew is a warning, not a failure");
+            assert!(line.contains("version skew"));
+            assert!(line.contains("9.9.9"));
+            assert!(line.contains(env!("CARGO_PKG_VERSION")));
+        });
+    }
+
+    #[test]
+    fn path_launcher_report_broken_exit() {
+        with_temp_path_dir(|dir| {
+            write_executable_script(dir, "tmath", "#!/bin/sh\nexit 7\n");
+            let (line, ok) = path_launcher_report_for(dir.as_os_str());
+            assert!(!ok);
+            assert_eq!(line, "path launcher: broken (exit 7)");
+        });
+    }
+
+    #[test]
+    fn path_launcher_report_not_found_on_empty_path() {
+        with_temp_path_dir(|dir| {
+            let (line, ok) = path_launcher_report_for(dir.as_os_str());
+            assert!(!ok);
+            assert_eq!(line, "path launcher: not found on PATH");
+        });
     }
 }

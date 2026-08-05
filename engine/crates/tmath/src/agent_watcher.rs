@@ -234,54 +234,10 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
             if let Some(answer) = find_answer("", &baseline) {
                 remember_answer(&mut seen_answers, answer.text);
             }
-            // #region agent log
-            debug_log(
-                "H2",
-                "agent_watcher.rs:initialize_baseline",
-                "initialized watcher baseline without emitting",
-                serde_json::json!({"baselineBytes": baseline.len()}),
-            );
-            // #endregion
         } else if snapshot != baseline {
-            // #region agent log
-            debug_log(
-                "H1,H2",
-                "agent_watcher.rs:changed_snapshot",
-                "source snapshot changed",
-                serde_json::json!({
-                    "baselineBytes": baseline.len(),
-                    "snapshotBytes": snapshot.len(),
-                    "pending": pending.is_some()
-                }),
-            );
-            // #endregion
             match find_answer(&baseline, &snapshot) {
                 Some(answer) => {
-                    // #region agent log
-                    debug_log(
-                        "H1,H2",
-                        "agent_watcher.rs:answer_candidate",
-                        "boundary produced answer candidate",
-                        serde_json::json!({
-                            "answerBytes": answer.text.len(),
-                            "baselineBytes": baseline.len(),
-                            "snapshotBytes": snapshot.len(),
-                            "pendingBytes": pending.as_ref().map(|value| value.0.len())
-                        }),
-                    );
-                    // #endregion
                     if seen_answers.contains(&answer.text) {
-                        // #region agent log
-                        debug_log(
-                            "H12",
-                            "agent_watcher.rs:duplicate_answer",
-                            "ignored previously observed answer repaint",
-                            serde_json::json!({
-                                "answerBytes": answer.text.len(),
-                                "seenCount": seen_answers.len()
-                            }),
-                        );
-                        // #endregion
                         pending = None;
                         baseline = snapshot;
                     } else {
@@ -315,19 +271,6 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
             if held >= Duration::from_millis(parsed.wait_ms)
                 || held >= Duration::from_millis(MAX_HOLD_MS)
             {
-                // #region agent log
-                debug_log(
-                    "H1,H2",
-                    "agent_watcher.rs:emit_document",
-                    "emitting settled document",
-                    serde_json::json!({
-                        "documentBytes": text.len(),
-                        "snapshotBytes": snapshot_for_emit.len(),
-                        "heldMs": held.as_millis(),
-                        "baselineBytesBefore": baseline.len()
-                    }),
-                );
-                // #endregion
                 // The capture path has no explicit turn-boundary signal
                 // (unlike the transcript adapter's `AnswerBoundary`), so
                 // "is this the same answer continuing, or a new one
@@ -844,25 +787,6 @@ fn finish(peer: &mut Option<UnixStream>, viewer_pane: &PaneId) -> Result<i32, St
     let _ =
         fs::remove_file(env::temp_dir().join(format!("tmath-agent-{}.sock", std::process::id())));
     Ok(0)
-}
-
-fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let payload = serde_json::json!({
-        "sessionId": "f945c2",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": timestamp
-    });
-    crate::terminal_output::write_debug_line(&payload);
 }
 
 #[cfg(test)]

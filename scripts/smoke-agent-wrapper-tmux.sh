@@ -2,10 +2,11 @@
 #
 # smoke-agent-wrapper-tmux: headless check of scripts/shell/tmath-agent.sh —
 # the shell wrapper that auto-starts `tmath agent` for allowlisted
-# directories. Runs inside a detached tmux session (no Kitty-capable outer
-# client), proving the wrapper -> lock -> watcher pipeline. Covers AT-2-815
-# (passthrough when not allowlisted), AT-2-816 (in-tmux auto-start), and
-# AT-2-817 (duplicate watcher prevention with stale-lock reclaim).
+# directories. Runs inside a detached tmux session on a private socket (no
+# Kitty-capable outer client), proving the wrapper -> lock -> watcher pipeline.
+# Covers AT-2-815 (passthrough when not allowlisted), AT-2-816 (in-tmux
+# auto-start), AT-2-817 (duplicate watcher prevention with stale-lock reclaim),
+# and AT-R-301 (__tmath_env_prefix transport propagation).
 #
 # `tmath agent` itself fails closed (exits immediately) whenever the outer
 # tmux client is not a verified Kitty-capable terminal (see
@@ -17,8 +18,20 @@
 
 set -euo pipefail
 
+# `set -e` exits are otherwise silent for commands whose output is
+# redirected — on CI this smoke once died in 0.2s with no clue which line
+# failed. Name the line and command on the way out.
+trap 'echo "FAIL: line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMATH="$ROOT/target/debug/tmath"
+
+SOCKET="tmath-smoke-$$"
+SESSION="tmath-wrapper-smoke-$$"
+REAL_TMUX="$(command -v tmux)"
+tm() { "$REAL_TMUX" -L "$SOCKET" "$@"; }
+
+DEFAULT_SESSIONS_BEFORE="$("$REAL_TMUX" ls 2>/dev/null || true)"
 
 if [ ! -x "$TMATH" ]; then
   (cd "$ROOT" && cargo build --workspace >/dev/null)
@@ -29,8 +42,18 @@ fi
 
 TMP_HOME="$(mktemp -d)"
 BIN_DIR="$TMP_HOME/bin"
+SHIM_DIR="$TMP_HOME/tmux-shim"
 WATCHER_LOG="$TMP_HOME/watcher.log"
-mkdir -p "$BIN_DIR" "$TMP_HOME/proj"
+mkdir -p "$BIN_DIR" "$TMP_HOME/proj" "$SHIM_DIR"
+
+# Resolve the real tmux binary by absolute path at generation time (never
+# `command tmux` / bare `tmux`): under some PATH orderings the lookup can
+# re-resolve to this very shim, causing unbounded self-recursion.
+cat > "$SHIM_DIR/tmux" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_TMUX" -L "$SOCKET" "\$@"
+EOF
+chmod +x "$SHIM_DIR/tmux"
 
 # A copy of the wrapper with the watcher's stderr redirected to a log file
 # instead of /dev/null, so this test can assert on *why* the watcher exited
@@ -60,24 +83,28 @@ mkdir -p "$NOT_ALLOWED_DIR"
 RENDER_WORKER="$ROOT/dist/renderer/subprocess.js"
 HOME="$TMP_HOME" "$BIN_DIR/tmath" agent-enable "$TARGET_DIR" >/dev/null
 
-SESSION="tmath-wrapper-smoke-$$"
 LOG="$(mktemp -t tmath-wrapper-smoke.XXXXXX)"
 cleanup() {
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
-  pkill -f "tmath agent --source-pane" 2>/dev/null || true
+  # Only tear down what this run itself started: `tm kill-server` destroys
+  # the private-socket tmux server, which kills every pane (and therefore
+  # every watcher process) it launched. A machine-wide `pkill -f "tmath
+  # agent --source-pane"` here would also kill unrelated `tmath agent`
+  # watchers the operator or another session has running against the
+  # default tmux server — never do that.
+  tm kill-server 2>/dev/null || true
   rm -f "$LOG"
   rm -rf "$TMP_HOME"
 }
 trap cleanup EXIT
 
-tmux new-session -d -s "$SESSION" -x 100 -y 30 'zsh -f' >/dev/null
-tmux set-option -t "$SESSION" -w allow-passthrough on >/dev/null
-SRC_PANE="$(tmux display-message -p -t "$SESSION" '#{pane_id}')"
+tm new-session -d -s "$SESSION" -x 100 -y 30 'zsh -f' >/dev/null
+tm set-option -t "$SESSION" -w allow-passthrough on >/dev/null
+SRC_PANE="$(tm display-message -p -t "$SESSION" '#{pane_id}')"
 
 setup_shell() {
-  tmux send-keys -l -t "$SRC_PANE" \
-    "export HOME='$TMP_HOME'; export PATH='$BIN_DIR:/usr/bin:/bin:/opt/homebrew/bin'; export TMATH_RENDER_WORKER='$RENDER_WORKER'; hash -r; source '$WRAPPER'"
-  tmux send-keys -t "$SRC_PANE" Enter
+  tm send-keys -l -t "$SRC_PANE" \
+    "export HOME='$TMP_HOME'; export PATH='$SHIM_DIR:$BIN_DIR:/usr/bin:/bin:/opt/homebrew/bin'; export TMATH_RENDER_WORKER='$RENDER_WORKER'; hash -r; source '$WRAPPER'"
+  tm send-keys -t "$SRC_PANE" Enter
 }
 
 wait_for() {
@@ -92,11 +119,11 @@ wait_for() {
 }
 
 setup_shell
-tmux send-keys -l -t "$SRC_PANE" 'echo TMATH_SMOKE_READY'
-tmux send-keys -t "$SRC_PANE" Enter
-if ! wait_for 'tmux capture-pane -p -t "$SRC_PANE" 2>/dev/null | grep -q TMATH_SMOKE_READY'; then
+tm send-keys -l -t "$SRC_PANE" 'echo TMATH_SMOKE_READY'
+tm send-keys -t "$SRC_PANE" Enter
+if ! wait_for 'tm capture-pane -p -t "$SRC_PANE" 2>/dev/null | grep -q TMATH_SMOKE_READY'; then
   echo "FAIL: shell setup did not settle"
-  tmux capture-pane -p -t "$SRC_PANE" || true
+  tm capture-pane -p -t "$SRC_PANE" || true
   exit 1
 fi
 
@@ -111,36 +138,80 @@ check() {
   fi
 }
 
+# --- AT-R-301/TR-302(b): transport env prefix on the real watcher pane -----
+# __tmath_start_in_new_tmux_session ends in a blocking `tmux attach`, which
+# fights any tmux client already attached to the pane running this test (it
+# corrupts that pane's display and hangs later assertions). Verify the same
+# `new-session` + `split-window` sequence the function issues, run from a
+# plain (non-pane) subshell against the private socket instead of inside
+# $SRC_PANE, and stop short of the attach call. This still exercises the
+# real tmux binary (via the SHIM_DIR wrapper, resolved to REAL_TMUX by
+# absolute path — see above) and the real __tmath_env_prefix/
+# __tmath_shell_quote_args helpers — only the terminal-taking `attach` step
+# is skipped. PATH is restricted to SHIM_DIR only (no BIN_DIR) so the
+# `tmath agent ...` command embedded in the resulting pane_start_command is
+# never actually invoked here; only its literal text is asserted on.
+NESTED_SESSION="tmath-probe-$$"
+# `bash -x` trace: this block once failed only on CI, silently — keep the
+# trace so a regression names the exact nested command instead of leaving
+# an empty pane_start_command with no clue.
+PATH="$SHIM_DIR:/usr/bin:/bin" TMATH_TMUX_TRANSPORT=passthrough bash -x -c "
+  source '$WRAPPER'
+  quoted=\$(__tmath_shell_quote_args /bin/sleep 30)
+  tmux new-session -d -s '$NESTED_SESSION' \"\$quoted\"
+  # The split pane's command resolves against the TMUX SERVER's PATH, not
+  # this restricted subshell's. Where no tmath is installed (CI), the pane
+  # command dies instantly and tmux reaps the pane before the assertion
+  # below can read its start command — keep dead panes so the assertion is
+  # about command CONSTRUCTION on every machine, never about whether a
+  # locally installed tmath happened to keep the pane alive.
+  tmux set-option -t '$NESTED_SESSION' -w remain-on-exit on
+  agent_pane=\$(tmux list-panes -t '$NESTED_SESSION' -F '#{pane_id}' | head -1)
+  env_prefix=\$(__tmath_env_prefix)
+  tmux split-window -h -p 35 -t '$NESTED_SESSION' \"\${env_prefix}tmath agent --source-pane \$agent_pane\"
+" 2> >(sed 's/^/nested-trace: /' >&2) || echo "nested block failed (exit $?)" >&2
+
+PANE_START_CMD="$(tm list-panes -t "$NESTED_SESSION" -F '#{pane_start_command}' 2>/dev/null | grep 'tmath agent' | head -1)"
+if printf '%s' "$PANE_START_CMD" | grep -q 'TMATH_TMUX_TRANSPORT='; then
+  check "AT-R-301/TR-302(b): watcher pane_start_command includes TMATH_TMUX_TRANSPORT=" 1
+else
+  check "AT-R-301/TR-302(b): watcher pane_start_command includes TMATH_TMUX_TRANSPORT=" 0
+  echo "  pane_start_command was: ${PANE_START_CMD:-<empty>}"
+fi
+tm kill-session -t "$NESTED_SESSION" 2>/dev/null || true
+
 # --- AT-2-815: not allowlisted -> passthrough, no watcher -------------------
-tmux send-keys -l -t "$SRC_PANE" "cd '$NOT_ALLOWED_DIR' && claude not-allowed-run"
-tmux send-keys -t "$SRC_PANE" Enter
-wait_for 'tmux capture-pane -p -t "$SRC_PANE" 2>/dev/null | grep -q "fake claude running"' 20 || true
+tm send-keys -l -t "$SRC_PANE" "cd '$NOT_ALLOWED_DIR' && claude not-allowed-run"
+tm send-keys -t "$SRC_PANE" Enter
+wait_for 'tm capture-pane -p -t "$SRC_PANE" 2>/dev/null | grep -q "fake claude running"' 20 || true
 sleep 0.5
 if [ -f "$WATCHER_LOG" ]; then
   check "not-allowlisted directory: no watcher started" 0
 else
   check "not-allowlisted directory: no watcher started" 1
 fi
-if tmux capture-pane -p -t "$SRC_PANE" | grep -q "fake claude running"; then
+if tm capture-pane -p -t "$SRC_PANE" | grep -q "fake claude running"; then
   check "not-allowlisted directory: wrapped command still ran" 1
 else
   check "not-allowlisted directory: wrapped command still ran" 0
 fi
 
 # A watcher attempt is proven by either the "watching" banner (Kitty-verified
-# outer terminal) or the known fail-closed diagnostic (unverified outer
-# terminal, expected in this headless session) landing in the log — both
-# prove the wrapper invoked `tmath agent` for this pane.
+# outer terminal) or one of the two fail-closed gate diagnostics from
+# terminal_output.rs::selected_route() (TR-202): "not a verified Kitty
+# target" (an unverified but attached client) or "no attached client"
+# (expected in this headless, detached-session smoke run). Any of the three
+# landing in the log proves the wrapper invoked `tmath agent` for this pane.
 watcher_attempted() {
-  [ -f "$WATCHER_LOG" ] && grep -qE 'watching %|not a verified Kitty target' "$WATCHER_LOG"
+  [ -f "$WATCHER_LOG" ] && grep -qE 'watching %|not a verified Kitty target|no attached client' "$WATCHER_LOG"
 }
 attempt_count() {
-  grep -cE 'watching %|not a verified Kitty target' "$WATCHER_LOG" 2>/dev/null || echo 0
+  grep -cE 'watching %|not a verified Kitty target|no attached client' "$WATCHER_LOG" 2>/dev/null || echo 0
 }
 
 # --- AT-2-816: allowlisted + in-tmux -> watcher auto-starts -----------------
-tmux send-keys -l -t "$SRC_PANE" "cd '$TARGET_DIR' && claude hello"
-tmux send-keys -t "$SRC_PANE" Enter
+tm send-keys -l -t "$SRC_PANE" "cd '$TARGET_DIR' && claude hello"
+tm send-keys -t "$SRC_PANE" Enter
 STARTED=0
 if wait_for "watcher_attempted"; then
   STARTED=1
@@ -158,16 +229,16 @@ fi
 # The watcher already exited (fail-closed, see header note) by the time we
 # get here, but its lock file is still held: nothing has reclaimed it yet, so
 # a second launch in the same pane must not attempt a second watcher.
-tmux send-keys -l -t "$SRC_PANE" 'claude again'
-tmux send-keys -t "$SRC_PANE" Enter
+tm send-keys -l -t "$SRC_PANE" 'claude again'
+tm send-keys -t "$SRC_PANE" Enter
 sleep 1
 ATTEMPTS_AFTER_REPEAT="$(attempt_count | tr -d '[:space:]')"
 check "no duplicate watcher for an already-watched pane" "$([ "$ATTEMPTS_AFTER_REPEAT" = 1 ] && echo 1 || echo 0)"
 
 # --- AT-2-817: stale lock is reclaimed once it no longer names a live PID --
 rm -f "$LOCK"
-tmux send-keys -l -t "$SRC_PANE" 'claude yet-again'
-tmux send-keys -t "$SRC_PANE" Enter
+tm send-keys -l -t "$SRC_PANE" 'claude yet-again'
+tm send-keys -t "$SRC_PANE" Enter
 RECLAIMED=0
 if wait_for '[ "$(attempt_count)" -ge 2 ]'; then
   RECLAIMED=1
@@ -175,7 +246,15 @@ fi
 check "stale lock reclaimed, new watcher starts after old one dies" "$RECLAIMED"
 
 echo "wrapper session pane:"
-tmux capture-pane -p -t "$SRC_PANE" | sed 's/^/  /'
+tm capture-pane -p -t "$SRC_PANE" | sed 's/^/  /'
+
+DEFAULT_SESSIONS_AFTER="$("$REAL_TMUX" ls 2>/dev/null || true)"
+if [ "$DEFAULT_SESSIONS_BEFORE" != "$DEFAULT_SESSIONS_AFTER" ]; then
+  echo "FAIL: default tmux server session list changed"
+  echo "  before: ${DEFAULT_SESSIONS_BEFORE:-<empty>}"
+  echo "  after:  ${DEFAULT_SESSIONS_AFTER:-<empty>}"
+  exit 1
+fi
 
 if [ "$pass" = 1 ]; then
   echo "PASS: wrapper auto-start/passthrough/lock behavior matches AT-2-815/816/817"

@@ -15,6 +15,16 @@ use tmath_core::placement::TerminalOp;
 
 const TRANSPORT_ENV: &str = "TMATH_TMUX_TRANSPORT";
 
+const REFUSAL_NO_CLIENT: &str =
+    "tmux has no attached client; graphics need an attached Kitty-capable terminal";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OuterTerminal {
+    Verified,
+    Unverified(String),
+    NoClient,
+}
+
 const REFUSAL_PIPED_STDIN: &str =
     "skipped Kitty graphics on stdout for piped input; use `tmath agent` and the viewer pane";
 const REFUSAL_EMBEDDED_TERMINAL: &str = "skipped Kitty graphics in the embedded coding-agent terminal; use `tmath agent` and the viewer pane";
@@ -37,59 +47,51 @@ impl Route {
 }
 
 pub(crate) fn selected_route() -> Result<Route, String> {
+    selected_route_detailed().map_err(|(_, message)| message)
+}
+
+pub(crate) fn selected_route_detailed() -> Result<Route, (OuterTerminal, String)> {
     if !tmath_core::kitty::inside_tmux() {
-        // #region agent log
-        debug_log(
-            "E,H",
-            "terminal_output.rs:selected_route",
-            "selected direct graphics route",
-            serde_json::json!({
-                "tmuxPresent": false,
-                "term": env::var("TERM").unwrap_or_else(|_| "<unset>".into()),
-                "termProgram": env::var("TERM_PROGRAM").unwrap_or_else(|_| "<unset>".into()),
-                "termProgramVersion": env::var("TERM_PROGRAM_VERSION").unwrap_or_else(|_| "<unset>".into())
-            }),
-        );
-        // #endregion
+        write_debug_event("route_selected", serde_json::json!({"route": "direct"}));
         return Ok(Route::Direct);
     }
     let transport_env = env::var(TRANSPORT_ENV).ok();
-    let known_outer = known_outer_terminal();
-    // #region agent log
-    debug_log(
-        "A,B",
-        "terminal_output.rs:selected_route",
-        "selecting tmux graphics route",
+    let outer = outer_terminal();
+    write_debug_event(
+        "route_selecting",
         serde_json::json!({
-            "transportEnv": transport_env.as_deref().unwrap_or("<unset>"),
-            "knownOuter": known_outer,
-            "clientTermname": tmux_value(&["display-message", "-p", "#{client_termname}"]).unwrap_or_else(|| "unknown".into()),
-            "allowPassthrough": tmux_value(&["show-options", "-w", "-v", "allow-passthrough"]).unwrap_or_else(|| "unknown".into())
+            "transportEnvSet": transport_env.is_some(),
+            "outerTerminal": match &outer {
+                OuterTerminal::Verified => "verified",
+                OuterTerminal::Unverified(_) => "unverified",
+                OuterTerminal::NoClient => "no_client",
+            }
         }),
     );
-    // #endregion
     // An explicit TMATH_TMUX_TRANSPORT value is a user assertion that the
     // outer terminal renders Kitty graphics (needed when the client tty is
     // owned by a relay such as a terminal-session daemon, where neither the
     // advertised termname nor the process ancestry can reach the real
     // terminal). Without it, stay fail-closed on unverified outers.
-    if transport_env.is_none() && !known_outer {
-        return Err(
-            "tmux outer terminal is not a verified Kitty target; refusing placeholder output \
-             (set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override)"
-                .into(),
-        );
+    if transport_env.is_none() {
+        if let Some(message) = outer_terminal_refusal(&outer) {
+            return Err((outer, message));
+        }
     }
     let route = route_from_transport_env(transport_env.as_deref());
-    // #region agent log
-    debug_log(
-        "A",
-        "terminal_output.rs:selected_route",
-        "tmux graphics route selected",
+    // The defaulted passthrough route only works when tmux actually relays
+    // passthrough content; an explicit TMATH_TMUX_TRANSPORT value skips this
+    // check (same user-assertion contract as the outer-terminal override).
+    if transport_env.is_none() {
+        if let (Ok(Route::TmuxPassthrough), Some(message)) = (&route, passthrough_refusal()) {
+            return Err((outer, message));
+        }
+    }
+    write_debug_event(
+        "route_selected",
         serde_json::json!({"route": route.as_ref().map(|value| value.label()).unwrap_or("error")}),
     );
-    // #endregion
-    route
+    route.map_err(|message| (OuterTerminal::Verified, message))
 }
 
 /// Returns a refusal reason when Kitty graphics would be written to stdout in
@@ -124,11 +126,56 @@ fn route_from_transport_env(value: Option<&str>) -> Result<Route, String> {
         Some(value) => Err(format!(
             "{TRANSPORT_ENV} must be 'passthrough' or 'client-tty', got {value:?}"
         )),
-        // A direct write of graphics-only APCs to the attached client's tty
-        // avoids terminal-specific DCS relay bugs in both Ghostty and cmux.
-        // Pane-local bytes still go through tmux on stdout.
-        None => Ok(Route::TmuxClientTty),
+        // Default to passthrough: its bytes flow through tmux's own output
+        // queue, so graphics writes are serialized against every other
+        // pane's output. The previous client-tty default wrote graphics
+        // APCs directly to the attached client's tty, and a write landing
+        // between two chunks of tmux's own stream desynced the outer
+        // terminal's escape parser — observed live on 2026-08-05 as raw
+        // base64 payload sprayed across the window while another pane was
+        // streaming heavily. client-tty remains available as an explicit
+        // opt-in for terminals with broken passthrough relays.
+        None => Ok(Route::TmuxPassthrough),
     }
+}
+
+/// Whether a tmux `allow-passthrough` option value permits passthrough
+/// writes. Empty/unset and `off` both mean tmux silently DISCARDS
+/// passthrough content, which would present as "no images, no error" — so
+/// the defaulted passthrough route refuses instead (fail closed with an
+/// actionable message, matching the outer-terminal gate's style).
+fn passthrough_option_allows(value: Option<&str>) -> bool {
+    matches!(value, Some("on") | Some("all"))
+}
+
+fn passthrough_refusal() -> Option<String> {
+    let value = tmux_value(&["show-options", "-w", "-A", "-v", "allow-passthrough"]);
+    if passthrough_option_allows(value.as_deref().map(str::trim).filter(|v| !v.is_empty())) {
+        None
+    } else {
+        Some(format!(
+            "tmux allow-passthrough is not enabled ({}); run 'tmux set-option -g allow-passthrough on' or set {TRANSPORT_ENV}=client-tty",
+            value.as_deref().filter(|v| !v.is_empty()).unwrap_or("unset")
+        ))
+    }
+}
+
+fn format_graphics_route_line(route: Result<Route, String>) -> String {
+    match route {
+        Ok(route) => format!("tmux graphics route: {}", route.label()),
+        Err(message) => format!("tmux graphics route: unavailable ({message})"),
+    }
+}
+
+fn format_transport_env_line(value: Option<&str>) -> String {
+    let display = value.unwrap_or("<unset>");
+    format!("tmux transport env: {display}")
+}
+
+fn tmux_attached_client_count() -> String {
+    tmux_lines(&["list-clients", "-F", "x"])
+        .map(|lines| lines.len().to_string())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 pub(crate) fn tmux_diagnostics() -> Vec<String> {
@@ -137,17 +184,20 @@ pub(crate) fn tmux_diagnostics() -> Vec<String> {
     }
     let version =
         tmux_value(&["display-message", "-p", "#{version}"]).unwrap_or_else(|| "unknown".into());
+    let attached_clients = tmux_attached_client_count();
     let termname = tmux_value(&["display-message", "-p", "#{client_termname}"])
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".into());
     let passthrough = tmux_value(&["show-options", "-w", "-v", "allow-passthrough"])
         .unwrap_or_else(|| "unknown".into());
-    let route = selected_route().map(Route::label).unwrap_or("unavailable");
+    let transport = env::var(TRANSPORT_ENV).ok();
     vec![
         format!("tmux: {version}"),
+        format!("tmux attached clients: {attached_clients}"),
         format!("tmux client terminal: {termname}"),
         format!("tmux allow-passthrough: {passthrough}"),
-        format!("tmux graphics route: {route}"),
+        format_transport_env_line(transport.as_deref()),
+        format_graphics_route_line(selected_route()),
     ]
 }
 
@@ -172,79 +222,15 @@ pub(crate) fn write_operations(operations: &[TerminalOp]) -> Result<(), String> 
             TerminalOp::Local(_) => None,
         })
         .collect();
-    // #region agent log
-    debug_log(
-        "C,D",
-        "terminal_output.rs:write_operations",
-        "writing structured terminal operations",
+    write_debug_event(
+        "writing_terminal_operations",
         serde_json::json!({
             "route": route.label(),
             "operationCount": operations.len(),
             "localCount": local_count,
-            "graphicsCount": graphics.len(),
-            "graphicsBytes": graphics.iter().map(|bytes| bytes.len()).sum::<usize>(),
-            "allGraphicsAreApc": graphics.iter().all(|bytes| bytes.starts_with(b"\x1b_G") && bytes.ends_with(b"\x1b\\")),
-            "embeddedEscapes": graphics.iter().map(|bytes| bytes.iter().filter(|byte| **byte == 0x1b).count()).sum::<usize>()
+            "graphicsCount": graphics.len()
         }),
     );
-    // #endregion
-    // #region agent log
-    debug_log_current(
-        "H15,H16,H17,H18,H19",
-        "terminal_output.rs:write_operations",
-        "preparing terminal operation streams",
-        serde_json::json!({
-            "route": route.label(),
-            "tmuxPane": env::var("TMUX_PANE").unwrap_or_else(|_| "<unset>".into()),
-            "operationKinds": operations.iter().map(|operation| match operation {
-                TerminalOp::Local(_) => "local",
-                TerminalOp::Graphics(_) => "graphics"
-            }).collect::<Vec<_>>(),
-            "localBytes": operations.iter().filter_map(|operation| match operation {
-                TerminalOp::Local(bytes) => Some(bytes.len()),
-                TerminalOp::Graphics(_) => None
-            }).sum::<usize>(),
-            "graphicsBytes": graphics.iter().map(|bytes| bytes.len()).sum::<usize>()
-        }),
-    );
-    // #endregion
-    let placeholder_cells = operations
-        .iter()
-        .filter_map(|operation| match operation {
-            TerminalOp::Local(bytes) => Some(bytes.as_slice()),
-            TerminalOp::Graphics(_) => None,
-        })
-        .map(|bytes| {
-            bytes
-                .windows(4)
-                .filter(|window| *window == [0xf4, 0x8e, 0xbb, 0xae])
-                .count()
-        })
-        .sum::<usize>();
-    // #region agent log
-    debug_log(
-        "F,I",
-        "terminal_output.rs:write_operations",
-        "validated virtual placement pairing",
-        serde_json::json!({
-            "placeholderCells": placeholder_cells,
-            "graphicsHaveVirtualPlacement": graphics.iter().all(|bytes| bytes.windows(4).any(|window| window == b"U=1,")),
-            "graphicsHaveImageId": graphics.iter().all(|bytes| bytes.windows(2).any(|window| window == b"i="))
-        }),
-    );
-    // #endregion
-    // #region agent log
-    debug_log(
-        "K",
-        "terminal_output.rs:write_operations",
-        "classified Kitty graphics actions",
-        serde_json::json!({
-            "transmitActions": graphics.iter().filter(|bytes| bytes.windows(4).any(|window| window == b"Ga=T")).count(),
-            "placementActions": graphics.iter().filter(|bytes| bytes.windows(4).any(|window| window == b"Ga=p")).count(),
-            "unicodePlacementCommands": graphics.iter().filter(|bytes| bytes.windows(4).any(|window| window == b"U=1,")).count()
-        }),
-    );
-    // #endregion
     let mut stdout = io::stdout().lock();
     match route {
         Route::Direct => write_same_stream(&mut stdout, operations, false),
@@ -266,23 +252,13 @@ pub(crate) fn write_operations(operations: &[TerminalOp]) -> Result<(), String> 
             } else {
                 -1
             };
-            // #region agent log
-            debug_log_current(
-                "H15,H17,H19",
-                "terminal_output.rs:client_tty_write",
-                "writing split local and graphics streams",
+            write_debug_event(
+                "client_tty_write_start",
                 serde_json::json!({
-                    "clientTtyAvailable": true,
                     "paneActive": pane_value(&pane, "#{pane_active}"),
-                    "paneLeft": pane_left,
-                    "paneTop": pane_top,
-                    "cursorX": cursor_x,
-                    "cursorY": cursor_y,
-                    "outerCursorCol": outer_cursor_col,
-                    "outerCursorRow": outer_cursor_row
+                    "outerCursorKnown": outer_cursor_col >= 1 && outer_cursor_row >= 1
                 }),
             );
-            // #endregion
             let mut cursor_row = cursor_y;
             let mut cursor_col = cursor_x;
             let mut cursor_synced = false;
@@ -314,19 +290,10 @@ pub(crate) fn write_operations(operations: &[TerminalOp]) -> Result<(), String> 
                             } else {
                                 -1
                             };
-                            // #region agent log
-                            debug_log_current(
-                                "H17",
-                                "terminal_output.rs:client_tty_write",
-                                "syncing outer cursor before graphics APC",
-                                serde_json::json!({
-                                    "paneCursorCol": cursor_col,
-                                    "paneCursorRow": cursor_row,
-                                    "outerCursorCol": target_col,
-                                    "outerCursorRow": target_row
-                                }),
+                            write_debug_event(
+                                "client_tty_cursor_sync",
+                                serde_json::json!({"resolved": target_row >= 1 && target_col >= 1}),
                             );
-                            // #endregion
                             if target_row >= 1 && target_col >= 1 {
                                 graphics
                                     .write_all(
@@ -359,14 +326,6 @@ fn write_same_stream(
     operations: &[TerminalOp],
     tmux_passthrough: bool,
 ) -> Result<(), String> {
-    // #region agent log
-    debug_log(
-        "C",
-        "terminal_output.rs:write_same_stream",
-        "writing graphics through stdout stream",
-        serde_json::json!({"tmuxPassthrough": tmux_passthrough}),
-    );
-    // #endregion
     tmath_core::placement::write_terminal_ops(writer, operations, tmux_passthrough)
         .map_err(|error| format!("write terminal output: {error}"))?;
     writer
@@ -374,18 +333,50 @@ fn write_same_stream(
         .map_err(|error| format!("flush terminal output: {error}"))
 }
 
-fn known_outer_terminal() -> bool {
-    let advertised = tmux_value(&["display-message", "-p", "#{client_termname}"])
-        .map(|name| {
-            let name = name.to_ascii_lowercase();
-            name.contains("ghostty") || name.contains("kitty") || name.contains("wezterm")
-        })
+fn is_absent_or_empty(value: Option<&str>) -> bool {
+    value.map(|value| value.is_empty()).unwrap_or(true)
+}
+
+fn classify_outer_terminal(
+    client_termname: Option<&str>,
+    client_tty_path: Option<&str>,
+    tty_owner_is_known: bool,
+) -> OuterTerminal {
+    if is_absent_or_empty(client_termname) && is_absent_or_empty(client_tty_path) {
+        return OuterTerminal::NoClient;
+    }
+    if tty_owner_is_known {
+        return OuterTerminal::Verified;
+    }
+    if let Some(name) = client_termname.filter(|name| !name.is_empty()) {
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("ghostty") || lower.contains("kitty") || lower.contains("wezterm") {
+            return OuterTerminal::Verified;
+        }
+        return OuterTerminal::Unverified(name.to_string());
+    }
+    OuterTerminal::Unverified("unknown".into())
+}
+
+fn outer_terminal_refusal(outer: &OuterTerminal) -> Option<String> {
+    match outer {
+        OuterTerminal::NoClient => Some(REFUSAL_NO_CLIENT.into()),
+        OuterTerminal::Unverified(name) => Some(format!(
+            "tmux outer terminal '{name}' is not a verified Kitty target; set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override"
+        )),
+        OuterTerminal::Verified => None,
+    }
+}
+
+fn outer_terminal() -> OuterTerminal {
+    let termname = tmux_value(&["display-message", "-p", "#{client_termname}"])
+        .filter(|name| !name.is_empty());
+    let tty_path = query_client_tty_path();
+    let owner_known = tty_path
+        .as_deref()
+        .map(client_owner_is_known)
         .unwrap_or(false);
-    advertised
-        || query_client_tty_path()
-            .as_deref()
-            .map(client_owner_is_known)
-            .unwrap_or(false)
+    classify_outer_terminal(termname.as_deref(), tty_path.as_deref(), owner_known)
 }
 
 fn tmux_value(args: &[&str]) -> Option<String> {
@@ -399,6 +390,22 @@ fn tmux_value(args: &[&str]) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn tmux_lines(args: &[&str]) -> Option<Vec<String>> {
+    let output = Command::new("tmux")
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
 }
 
 fn tmux_int(pane: &str, format: &str) -> i64 {
@@ -426,17 +433,6 @@ fn cursor_after_local(bytes: &[u8], row: &mut i64, col: &mut i64) {
 
 fn open_client_tty() -> Result<File, String> {
     let path = query_client_tty_path().ok_or("tmux did not report a client tty")?;
-    // #region agent log
-    debug_log(
-        "B",
-        "terminal_output.rs:open_client_tty",
-        "validating tmux client tty",
-        serde_json::json!({
-            "hasDevTtyPrefix": path.starts_with("/dev/tty"),
-            "ownerKnown": client_owner_is_known(&path)
-        }),
-    );
-    // #endregion
     if !path.starts_with("/dev/tty")
         || path
             .bytes()
@@ -466,18 +462,7 @@ fn open_client_tty() -> Result<File, String> {
     {
         return Err("opened client tty changed during validation".into());
     }
-    // #region agent log
-    debug_log(
-        "B,D",
-        "terminal_output.rs:open_client_tty",
-        "tmux client tty opened",
-        serde_json::json!({
-            "characterDevice": after.file_type().is_char_device(),
-            "sameDevice": after.dev() == before.dev(),
-            "sameInode": after.ino() == before.ino()
-        }),
-    );
-    // #endregion
+    write_debug_event("client_tty_opened", serde_json::json!({}));
     Ok(file)
 }
 
@@ -539,12 +524,13 @@ fn known_process(pid: u32) -> bool {
         || command.contains("/kitty")
 }
 
-pub(crate) fn debug_log(
-    hypothesis_id: &str,
-    location: &str,
-    message: &str,
-    data: serde_json::Value,
-) {
+/// Appends one bounded diagnostic line to the file named by `TMATH_DEBUG_LOG`
+/// when that environment variable is set. `event` is a stable, static event
+/// name; `data` must carry only counts, sizes, booleans, or other
+/// non-reversible facts — never raw content, paths, or session identifiers.
+/// The write is disabled by default and never uses an absolute path from the
+/// source, keeping logs out of the repository.
+pub(crate) fn write_debug_event(event: &'static str, data: serde_json::Value) {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let timestamp = SystemTime::now()
@@ -552,35 +538,7 @@ pub(crate) fn debug_log(
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
     let payload = serde_json::json!({
-        "sessionId": "c276a1",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": timestamp
-    });
-    write_debug_line(&payload);
-}
-
-pub(crate) fn debug_log_current(
-    hypothesis_id: &str,
-    location: &str,
-    message: &str,
-    data: serde_json::Value,
-) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let payload = serde_json::json!({
-        "sessionId": "f945c2",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
+        "event": event,
         "data": data,
         "timestamp": timestamp
     });
@@ -618,9 +576,11 @@ mod tests {
 
     #[test]
     fn transport_env_selects_the_tmux_route() {
+        // Defaulting to passthrough (serialized through tmux's own output
+        // queue) is the 2026-08-05 torn-escape fix; client-tty is opt-in.
         assert_eq!(
             route_from_transport_env(None).unwrap(),
-            Route::TmuxClientTty
+            Route::TmuxPassthrough
         );
         assert_eq!(
             route_from_transport_env(Some("client-tty")).unwrap(),
@@ -634,6 +594,15 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_option_gate_accepts_only_on_and_all() {
+        assert!(passthrough_option_allows(Some("on")));
+        assert!(passthrough_option_allows(Some("all")));
+        assert!(!passthrough_option_allows(Some("off")));
+        assert!(!passthrough_option_allows(Some("")));
+        assert!(!passthrough_option_allows(None));
+    }
+
+    #[test]
     fn cursor_after_local_advances_carriage_return_and_newline() {
         let mut row = 4i64;
         let mut col = 6i64;
@@ -644,6 +613,114 @@ mod tests {
     #[test]
     fn stdout_graphics_refusal_allows_client_tty_even_with_piped_stdin() {
         assert!(stdout_graphics_refusal(Route::TmuxClientTty).is_none());
+    }
+
+    #[test]
+    fn classify_outer_terminal_detects_no_client() {
+        assert_eq!(
+            classify_outer_terminal(None, None, false),
+            OuterTerminal::NoClient
+        );
+        assert_eq!(
+            classify_outer_terminal(Some(""), None, false),
+            OuterTerminal::NoClient
+        );
+        assert_eq!(
+            classify_outer_terminal(None, Some(""), false),
+            OuterTerminal::NoClient
+        );
+    }
+
+    #[test]
+    fn classify_outer_terminal_detects_empty_termname_with_tty() {
+        assert_eq!(
+            classify_outer_terminal(None, Some("/dev/ttys001"), false),
+            OuterTerminal::Unverified("unknown".into())
+        );
+        assert_eq!(
+            classify_outer_terminal(Some(""), Some("/dev/ttys001"), false),
+            OuterTerminal::Unverified("unknown".into())
+        );
+        assert_eq!(
+            classify_outer_terminal(None, Some("/dev/ttys001"), true),
+            OuterTerminal::Verified
+        );
+    }
+
+    #[test]
+    fn classify_outer_terminal_verifies_known_terminals_case_insensitively() {
+        for name in [
+            "ghostty",
+            "Ghostty",
+            "xterm-ghostty",
+            "kitty",
+            "KITTY",
+            "wezterm",
+        ] {
+            assert_eq!(
+                classify_outer_terminal(Some(name), None, false),
+                OuterTerminal::Verified,
+                "expected {name} to verify"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_outer_terminal_marks_unrelated_names_unverified() {
+        assert_eq!(
+            classify_outer_terminal(Some("xterm-256color"), Some("/dev/ttys001"), false),
+            OuterTerminal::Unverified("xterm-256color".into())
+        );
+    }
+
+    #[test]
+    fn format_graphics_route_line_shows_label_or_full_refusal() {
+        assert_eq!(
+            format_graphics_route_line(Ok(Route::TmuxClientTty)),
+            "tmux graphics route: tmux-client-tty"
+        );
+        assert_eq!(
+            format_graphics_route_line(Err(REFUSAL_NO_CLIENT.into())),
+            format!("tmux graphics route: unavailable ({REFUSAL_NO_CLIENT})")
+        );
+        let unverified = "tmux outer terminal 'xterm-256color' is not a verified Kitty target; set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override";
+        assert_eq!(
+            format_graphics_route_line(Err(unverified.into())),
+            format!("tmux graphics route: unavailable ({unverified})")
+        );
+    }
+
+    #[test]
+    fn format_transport_env_line_shows_value_or_unset() {
+        assert_eq!(
+            format_transport_env_line(None),
+            "tmux transport env: <unset>"
+        );
+        assert_eq!(
+            format_transport_env_line(Some("client-tty")),
+            "tmux transport env: client-tty"
+        );
+        assert_eq!(
+            format_transport_env_line(Some("passthrough")),
+            "tmux transport env: passthrough"
+        );
+    }
+
+    #[test]
+    fn outer_terminal_refusal_messages_match_spec() {
+        assert_eq!(
+            outer_terminal_refusal(&OuterTerminal::NoClient).unwrap(),
+            REFUSAL_NO_CLIENT
+        );
+        assert_eq!(
+            outer_terminal_refusal(&OuterTerminal::Unverified("xterm-256color".into())).unwrap(),
+            "tmux outer terminal 'xterm-256color' is not a verified Kitty target; set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override"
+        );
+        assert_eq!(
+            outer_terminal_refusal(&OuterTerminal::Unverified("unknown".into())).unwrap(),
+            "tmux outer terminal 'unknown' is not a verified Kitty target; set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override"
+        );
+        assert!(outer_terminal_refusal(&OuterTerminal::Verified).is_none());
     }
 
     #[test]

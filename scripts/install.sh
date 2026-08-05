@@ -108,12 +108,20 @@ mv "$APP.new" "$APP"
 # Launcher on PATH
 # ----------------------------------------------------------------------------
 mkdir -p "$BIN_HOME"
-cat > "$BIN_HOME/tmath" <<EOF
+if [ -f "$BIN_HOME/tmath" ] && [ "$(head -c 2 "$BIN_HOME/tmath")" != "#!" ]; then
+  echo "tmath: replacing non-launcher file at $BIN_HOME/tmath" >&2
+fi
+# Atomic install: overwriting an already-executed file in place poisons the
+# macOS kernel code-signature cache for that inode and later executions die
+# with SIGKILL.
+LAUNCHER_TMP="$BIN_HOME/.tmath.launcher.$$"
+cat > "$LAUNCHER_TMP" <<EOF
 #!/bin/sh
 # tmath launcher (install: $APP)
 exec "$APP/bin/tmath" "\$@"
 EOF
-chmod +x "$BIN_HOME/tmath"
+chmod +x "$LAUNCHER_TMP"
+mv -f "$LAUNCHER_TMP" "$BIN_HOME/tmath"
 
 # ----------------------------------------------------------------------------
 # Skill for coding agents (Claude Code, Codex, Cursor, opencode, pi, ...)

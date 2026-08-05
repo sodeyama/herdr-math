@@ -12,7 +12,15 @@ __tmath_wrap_agent() {
   # tmath itself missing, or the directory is not allowlisted: pure
   # passthrough, never block or alter the wrapped command.
   command -v tmath >/dev/null 2>&1 || { command "$cmd" "$@"; return $?; }
-  tmath agent-allowed >/dev/null 2>&1 || { command "$cmd" "$@"; return $?; }
+  tmath agent-allowed >/dev/null 2>&1
+  local allowed_status=$?
+  case "$allowed_status" in
+    0) ;;
+    1) command "$cmd" "$@"; return $? ;;
+    *)
+      echo "tmath: agent-allowed failed (exit $allowed_status); run 'tmath diagnose'" >&2
+      command "$cmd" "$@"; return $? ;;
+  esac
 
   if [ -n "${TMUX:-}" ]; then
     __tmath_start_watcher_for_pane "${TMUX_PANE:-}"
@@ -50,6 +58,7 @@ __tmath_start_watcher_for_pane() {
   fi
   ( set -o noclobber; : > "$lock" ) 2>/dev/null || return 0
 
+  # Background job inherits the current shell environment; no env prefix needed.
   ( tmath agent --source-pane "$pane" >/dev/null 2>&1 & echo $! > "$lock"; wait ) &
   disown 2>/dev/null || true
 }
@@ -64,11 +73,23 @@ __tmath_start_in_new_tmux_session() {
   local quoted
   quoted="$(__tmath_shell_quote_args "$cmd" "$@")"
   tmux new-session -d -s "$session" "$quoted"
-  local agent_pane
+  local agent_pane env_prefix
   agent_pane="$(tmux list-panes -t "$session" -F '#{pane_id}' | head -1)"
+  env_prefix="$(__tmath_env_prefix)"
   tmux split-window -h -p 35 -t "$session" \
-    "tmath agent --source-pane $agent_pane; exec \$SHELL"
+    "${env_prefix}tmath agent --source-pane $agent_pane"
   tmux attach -t "$session"
+}
+
+__tmath_env_prefix() {
+  local pairs="" name value
+  for name in TMATH_TMUX_TRANSPORT TMATH_DPR TMATH_DEBUG_LOG; do
+    value="$(printenv "$name" 2>/dev/null || true)"
+    [ -n "$value" ] || continue
+    pairs="$pairs $name=$(printf '%q' "$value")"
+  done
+  [ -n "$pairs" ] || return 0
+  printf 'env%s ' "$pairs"
 }
 
 __tmath_shell_quote_args() {

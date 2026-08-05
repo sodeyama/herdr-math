@@ -202,12 +202,21 @@ pipeline to show a coding agent's finished answers in a separate tmux pane:
   re-anchoring a visibility window — a full visibility-driven re-emission
   (AT-3-503) is not yet implemented. The viewer closes on `q`/Ctrl-C.
 - Under `$TMUX`, graphics and pane-local output are separate operations. The
-  default route writes only Kitty APC commands to the validated visible client
-  tty; cursor movement, terminal modes, color CSI, line breaks, and Unicode
-  placeholders remain normal tmux pane output. The optional stable-tmux route
-  independently DCS-wraps each Kitty APC with every embedded `ESC` doubled.
-  Graphics probes are skipped because replies cannot be routed reliably, and
-  cell size comes from winsize; outside tmux probing stays mandatory.
+  default route DCS-wraps each Kitty APC (every embedded `ESC` doubled) as
+  tmux passthrough, so graphics bytes are serialized through tmux's own
+  output queue against every other pane's output; it requires
+  `allow-passthrough on` (checked when the route is defaulted, refused with
+  an actionable message otherwise). The optional client-tty route
+  (`TMATH_TMUX_TRANSPORT=client-tty`) writes Kitty APC commands directly to
+  the validated visible client tty; it bypasses tmux relay quirks but its
+  writes are NOT serialized against tmux's own output — concurrent heavy
+  pane output can tear an escape mid-sequence and desync the outer
+  terminal's parser (observed live 2026-08-05 as raw base64 sprayed over the
+  window), which is why it is no longer the default. Cursor movement,
+  terminal modes, color CSI, line breaks, and Unicode placeholders remain
+  normal tmux pane output on both routes. Graphics probes are skipped
+  because replies cannot be routed reliably, and cell size comes from
+  winsize; outside tmux probing stays mandatory.
 
 Recorded behavior (P1): controlled image pixels display in Ghostty 1.3.1 and
 cmux 0.64.12 through tmux 3.5a using the client-tty graphics route. The corrected
@@ -215,6 +224,20 @@ DCS passthrough route also displays controlled pixels in Ghostty 1.3.1. The
 client tty is accepted only when tmux reports a `/dev/tty*` character device
 owned by the current user and the opened descriptor retains the same identity.
 No screenshot or rendered bytes are retained.
+
+Outer-terminal gate: inside tmux with `TMATH_TMUX_TRANSPORT` unset, the route
+is selected only after classifying the outer terminal as Verified (advertised
+termname contains ghostty/kitty/wezterm, or the validated client tty's process
+ancestry reaches a known terminal), Unverified (named in the refusal message),
+or NoClient (no attached client). The two refusal states carry distinct
+bounded messages, and `tmath diagnose` prints the gate inputs (attached client
+count, termname, allow-passthrough, transport env) plus the full refusal
+reason. Because tmux-spawned commands inherit the tmux server's environment,
+the shell wrapper forwards `TMATH_TMUX_TRANSPORT`/`TMATH_DPR`/`TMATH_DEBUG_LOG`
+as an explicit `env` prefix on watcher command lines, and the watcher forwards
+them again to the viewer pane. A viewer that has emitted successfully treats a
+NoClient refusal as transient: it skips emissions (placements stay intact) and
+exits only after 30 consecutive unavailable emissions.
 
 ## Concurrency and Atomicity
 
