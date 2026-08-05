@@ -5,6 +5,29 @@ All notable changes to Terminal Math will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - Unreleased
+
+### Added
+
+- Native engine as the default render path (`tmath render` without `--engine node`).
+- Agent streaming hardening: transcript re-resolution, idle capture fallback, and
+  streaming replay tests (T3-404/405).
+- Phase 6 hardening: deterministic fuzz coverage for the stream splitter and delta
+  codec, pathological limit tests (AT-3-703), and a `cargo test`-based performance
+  suite (`engine/crates/tmath/tests/performance.rs`).
+- Rust CI gates: `cargo test`, `cargo clippy`, and `cargo fmt --check` on macOS arm64.
+
+### Changed
+
+- V2 specification triad marked superseded; V3 is the current acceptance contract.
+- `npm run test:performance` now runs the Rust performance suite instead of a missing
+  Vitest spec.
+
+### Notes
+
+- Phase 5 removal tasks (T3-502..505) remain open; do not publish `v0.3.0` until the
+  Node stack removal and single-binary install gates pass.
+
 ## [0.2.0] - Unreleased
 
 ### Added

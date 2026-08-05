@@ -1,6 +1,6 @@
 {
   "name": "terminal-math",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Render Markdown and LaTeX as scrollable terminal images.",
   "private": true,
   "type": "module",
@@ -44,7 +44,7 @@
     "security:check": "node scripts/security-check.mjs",
     "test": "vitest run",
     "test:integration": "vitest run tests/integration",
-    "test:performance": "vitest run tests/integration/performance.spec.ts --reporter=verbose",
+    "test:performance": "cargo test -p tmath performance -- --ignored",
     "test:unit": "vitest run tests/unit",
     "typecheck": "tsc --noEmit",
     "smoke:render": "vitest run tests/integration/renderer.spec.ts --reporter=verbose"

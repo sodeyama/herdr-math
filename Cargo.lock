@@ -2463,7 +2463,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tmath"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "notify",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "tmath-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "miniz_oxide",
@@ -2490,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "tmath-render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "png 0.18.1",
  "pulldown-cmark",

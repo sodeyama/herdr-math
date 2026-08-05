@@ -1,3 +1,8 @@
+> **SUPERSEDED**: V2 describes the Node-subprocess renderer architecture shipped as
+> `0.2.0`. The current product direction is V3 (`specs/terminal-math-v3/`): native
+> in-process rendering with streaming agent integration. Keep this spec as historical
+> reference for the V2 release gate; do not treat it as current product guidance.
+
 # Terminal Math V2 Refactor Plan
 
 ## Status

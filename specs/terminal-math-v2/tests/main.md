@@ -1,3 +1,7 @@
+> **SUPERSEDED**: V2 acceptance tests governed the Node-subprocess `0.2.0` release.
+> V3 (`specs/terminal-math-v3/tests/main.md`) is the current acceptance contract.
+> This document remains as historical reference only.
+
 # Terminal Math V2 Acceptance Tests
 
 ## Status

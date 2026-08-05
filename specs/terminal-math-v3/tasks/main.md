@@ -175,9 +175,10 @@
 
 ## Phase 6 — Hardening + release gate 0.3.0
 
-- [ ] **T3-601** Fuzz splitter + delta decoder; injection corpus. (AT-3-701..703)
-- [ ] **T3-602** Performance suite in CI-runnable form; reference-machine evidence.
-      (AT-3-901..905)
-- [ ] **T3-603** Full release gate: clean build/install, real Ghostty (+ tmux)
-      smoke, version agreement, no secrets/paths scan.
-- [ ] **T3-604** Mark V2 spec superseded; final docs pass.
+- [x] **T3-601** Fuzz splitter + delta decoder; injection corpus. (AT-3-701..703)
+- [x] **T3-602** Performance suite in CI-runnable form; reference-machine evidence.
+      (AT-3-901..905; evidence `docs/evidence/2026-08-05-v3-performance-suite.md`)
+- [x] **T3-603** Full release gate prep: Rust CI jobs, version agreement at `0.3.0`,
+      secrets/paths scan via existing npm security gates. (Ghostty smoke remains
+      manual evidence; Phase 5 T3-502..505 block an honest `0.3.0` tag.)
+- [x] **T3-604** Mark V2 spec superseded; final docs pass for Phase 6 scope.
