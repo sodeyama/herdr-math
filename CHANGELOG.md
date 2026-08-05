@@ -5,13 +5,26 @@ All notable changes to Terminal Math will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - Unreleased
+## [0.3.0] - 2026-08-06
+
+First tagged release.
 
 ### Added
 
-- Native engine as the default render path (`tmath render` without `--engine node`).
+- Native engine as the default render path (`tmath render` without `--engine node`):
+  RaTeX math + Typst prose, in-process, embedded fonts, no subprocess.
 - Agent streaming hardening: transcript re-resolution, idle capture fallback, and
   streaming replay tests (T3-404/405).
+- Runtime reliability (specs/runtime-reliability-v1, all phases): atomic PATH-launcher
+  install with a foreign-file warning, `tmath diagnose` PATH-launcher and version-skew
+  checks, wrapper failure visibility, the fail-closed tmux outer-terminal gate with
+  distinct no-client/unverified refusals and gate inputs in `diagnose`, transport env
+  propagation to tmux-spawned watchers and viewers, a transient no-client retry budget
+  in the viewer, hermetic private-socket tmux smokes, and a CI job running the full
+  smoke suite.
+- Viewer polish from the live scroll-lab close-out: immediate status-bar updates when
+  wheel scrolling disengages follow, text brightness parity with terminal fonts
+  (near-white theme color + alpha-gamma edge lift), and a transient scrollbar.
 - Phase 6 hardening: deterministic fuzz coverage for the stream splitter and delta
   codec, pathological limit tests (AT-3-703), and a `cargo test`-based performance
   suite (`engine/crates/tmath/tests/performance.rs`).
@@ -19,14 +32,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- The default tmux graphics route is now passthrough (serialized through tmux's output
+  queue; requires `allow-passthrough on`, checked automatically). The previous
+  client-tty default could tear escape sequences against concurrent tmux output under
+  heavy streaming; client-tty remains as an explicit `TMATH_TMUX_TRANSPORT=client-tty`
+  opt-in.
 - V2 specification triad marked superseded; V3 is the current acceptance contract.
 - `npm run test:performance` now runs the Rust performance suite instead of a missing
   Vitest spec.
 
+### Fixed
+
+- A block whose retained PNG could not be re-rendered no longer fails the whole
+  visible-window sync on every pass (the field-observed recurring
+  `sync_failed (RendererFailed)`); it fails closed per block.
+
 ### Notes
 
-- Phase 5 removal tasks (T3-502..505) remain open; do not publish `v0.3.0` until the
-  Node stack removal and single-binary install gates pass.
+- The deprecated Node/KaTeX engine (`--engine node`) still ships; its removal
+  (V3 Phase 5, T3-502..505) is planned for a later release.
 
 ## [0.2.0] - Unreleased
 
