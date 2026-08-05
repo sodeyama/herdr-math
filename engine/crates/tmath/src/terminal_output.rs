@@ -144,23 +144,44 @@ fn route_from_transport_env(value: Option<&str>) -> Result<Route, String> {
     }
 }
 
+fn format_graphics_route_line(route: Result<Route, String>) -> String {
+    match route {
+        Ok(route) => format!("tmux graphics route: {}", route.label()),
+        Err(message) => format!("tmux graphics route: unavailable ({message})"),
+    }
+}
+
+fn format_transport_env_line(value: Option<&str>) -> String {
+    let display = value.unwrap_or("<unset>");
+    format!("tmux transport env: {display}")
+}
+
+fn tmux_attached_client_count() -> String {
+    tmux_lines(&["list-clients", "-F", "x"])
+        .map(|lines| lines.len().to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
+
 pub(crate) fn tmux_diagnostics() -> Vec<String> {
     if !tmath_core::kitty::inside_tmux() {
         return Vec::new();
     }
     let version =
         tmux_value(&["display-message", "-p", "#{version}"]).unwrap_or_else(|| "unknown".into());
+    let attached_clients = tmux_attached_client_count();
     let termname = tmux_value(&["display-message", "-p", "#{client_termname}"])
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".into());
     let passthrough = tmux_value(&["show-options", "-w", "-v", "allow-passthrough"])
         .unwrap_or_else(|| "unknown".into());
-    let route = selected_route().map(Route::label).unwrap_or("unavailable");
+    let transport = env::var(TRANSPORT_ENV).ok();
     vec![
         format!("tmux: {version}"),
+        format!("tmux attached clients: {attached_clients}"),
         format!("tmux client terminal: {termname}"),
         format!("tmux allow-passthrough: {passthrough}"),
-        format!("tmux graphics route: {route}"),
+        format_transport_env_line(transport.as_deref()),
+        format_graphics_route_line(selected_route()),
     ]
 }
 
@@ -444,6 +465,22 @@ fn tmux_value(args: &[&str]) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn tmux_lines(args: &[&str]) -> Option<Vec<String>> {
+    let output = Command::new("tmux")
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
 }
 
 fn tmux_int(pane: &str, format: &str) -> i64 {
@@ -746,6 +783,39 @@ mod tests {
         assert_eq!(
             classify_outer_terminal(Some("xterm-256color"), Some("/dev/ttys001"), false),
             OuterTerminal::Unverified("xterm-256color".into())
+        );
+    }
+
+    #[test]
+    fn format_graphics_route_line_shows_label_or_full_refusal() {
+        assert_eq!(
+            format_graphics_route_line(Ok(Route::TmuxClientTty)),
+            "tmux graphics route: tmux-client-tty"
+        );
+        assert_eq!(
+            format_graphics_route_line(Err(REFUSAL_NO_CLIENT.into())),
+            format!("tmux graphics route: unavailable ({REFUSAL_NO_CLIENT})")
+        );
+        let unverified = "tmux outer terminal 'xterm-256color' is not a verified Kitty target; set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override";
+        assert_eq!(
+            format_graphics_route_line(Err(unverified.into())),
+            format!("tmux graphics route: unavailable ({unverified})")
+        );
+    }
+
+    #[test]
+    fn format_transport_env_line_shows_value_or_unset() {
+        assert_eq!(
+            format_transport_env_line(None),
+            "tmux transport env: <unset>"
+        );
+        assert_eq!(
+            format_transport_env_line(Some("client-tty")),
+            "tmux transport env: client-tty"
+        );
+        assert_eq!(
+            format_transport_env_line(Some("passthrough")),
+            "tmux transport env: passthrough"
         );
     }
 
