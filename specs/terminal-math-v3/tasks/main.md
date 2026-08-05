@@ -147,8 +147,15 @@
       soft-budget head-trim may drop old content, via a Document resync.
       Commits `ddf056e`+`6476995`; D6 gained the cross-answer accumulation
       paragraph. Resolves T3-401's unused ReplaceTail seam note.)
-- [ ] **T3-404** Streaming end-to-end replay evidence. (AT-3-603)
-- [ ] **T3-405** Privacy scan extension to the transcript path. (AT-3-605)
+- [x] **T3-404** Streaming end-to-end replay evidence. (AT-3-603)
+      (Hermetic replay tests in `agent_watcher` + `agent_viewer`; synthesized
+      fixture `tests/fixtures/agents/streaming-transcript.jsonl`; evidence
+      `docs/evidence/2026-08-05-v3-agent-streaming-replay.md`. Includes
+      transcript file-resolution fix for Claude Code blank viewer: prefer live
+      session JSONL, periodic re-resolve, idle capture fallback.)
+- [x] **T3-405** Privacy scan extension to the transcript path. (AT-3-605)
+      (`privacy_gates.rs`: no logging in `transcript_adapter` production code,
+      no content interpolation in `agent_watcher` stderr, no transcript writes.)
 
 ## Phase 5 — Node removal + portability
 
