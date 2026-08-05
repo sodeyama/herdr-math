@@ -52,37 +52,22 @@ pub(crate) fn selected_route() -> Result<Route, String> {
 
 pub(crate) fn selected_route_detailed() -> Result<Route, (OuterTerminal, String)> {
     if !tmath_core::kitty::inside_tmux() {
-        // #region agent log
-        debug_log(
-            "E,H",
-            "terminal_output.rs:selected_route",
-            "selected direct graphics route",
-            serde_json::json!({
-                "tmuxPresent": false,
-                "term": env::var("TERM").unwrap_or_else(|_| "<unset>".into()),
-                "termProgram": env::var("TERM_PROGRAM").unwrap_or_else(|_| "<unset>".into()),
-                "termProgramVersion": env::var("TERM_PROGRAM_VERSION").unwrap_or_else(|_| "<unset>".into())
-            }),
-        );
-        // #endregion
+        write_debug_event("route_selected", serde_json::json!({"route": "direct"}));
         return Ok(Route::Direct);
     }
     let transport_env = env::var(TRANSPORT_ENV).ok();
     let outer = outer_terminal();
-    // #region agent log
-    debug_log(
-        "A,B",
-        "terminal_output.rs:selected_route",
-        "selecting tmux graphics route",
+    write_debug_event(
+        "route_selecting",
         serde_json::json!({
-            "transportEnv": transport_env.as_deref().unwrap_or("<unset>"),
-            "knownOuter": matches!(outer, OuterTerminal::Verified),
-            "outerTerminal": format!("{outer:?}"),
-            "clientTermname": tmux_value(&["display-message", "-p", "#{client_termname}"]).unwrap_or_else(|| "unknown".into()),
-            "allowPassthrough": tmux_value(&["show-options", "-w", "-v", "allow-passthrough"]).unwrap_or_else(|| "unknown".into())
+            "transportEnvSet": transport_env.is_some(),
+            "outerTerminal": match &outer {
+                OuterTerminal::Verified => "verified",
+                OuterTerminal::Unverified(_) => "unverified",
+                OuterTerminal::NoClient => "no_client",
+            }
         }),
     );
-    // #endregion
     // An explicit TMATH_TMUX_TRANSPORT value is a user assertion that the
     // outer terminal renders Kitty graphics (needed when the client tty is
     // owned by a relay such as a terminal-session daemon, where neither the
@@ -94,14 +79,10 @@ pub(crate) fn selected_route_detailed() -> Result<Route, (OuterTerminal, String)
         }
     }
     let route = route_from_transport_env(transport_env.as_deref());
-    // #region agent log
-    debug_log(
-        "A",
-        "terminal_output.rs:selected_route",
-        "tmux graphics route selected",
+    write_debug_event(
+        "route_selected",
         serde_json::json!({"route": route.as_ref().map(|value| value.label()).unwrap_or("error")}),
     );
-    // #endregion
     route.map_err(|message| (OuterTerminal::Verified, message))
 }
 
@@ -206,79 +187,15 @@ pub(crate) fn write_operations(operations: &[TerminalOp]) -> Result<(), String> 
             TerminalOp::Local(_) => None,
         })
         .collect();
-    // #region agent log
-    debug_log(
-        "C,D",
-        "terminal_output.rs:write_operations",
-        "writing structured terminal operations",
+    write_debug_event(
+        "writing_terminal_operations",
         serde_json::json!({
             "route": route.label(),
             "operationCount": operations.len(),
             "localCount": local_count,
-            "graphicsCount": graphics.len(),
-            "graphicsBytes": graphics.iter().map(|bytes| bytes.len()).sum::<usize>(),
-            "allGraphicsAreApc": graphics.iter().all(|bytes| bytes.starts_with(b"\x1b_G") && bytes.ends_with(b"\x1b\\")),
-            "embeddedEscapes": graphics.iter().map(|bytes| bytes.iter().filter(|byte| **byte == 0x1b).count()).sum::<usize>()
+            "graphicsCount": graphics.len()
         }),
     );
-    // #endregion
-    // #region agent log
-    debug_log_current(
-        "H15,H16,H17,H18,H19",
-        "terminal_output.rs:write_operations",
-        "preparing terminal operation streams",
-        serde_json::json!({
-            "route": route.label(),
-            "tmuxPane": env::var("TMUX_PANE").unwrap_or_else(|_| "<unset>".into()),
-            "operationKinds": operations.iter().map(|operation| match operation {
-                TerminalOp::Local(_) => "local",
-                TerminalOp::Graphics(_) => "graphics"
-            }).collect::<Vec<_>>(),
-            "localBytes": operations.iter().filter_map(|operation| match operation {
-                TerminalOp::Local(bytes) => Some(bytes.len()),
-                TerminalOp::Graphics(_) => None
-            }).sum::<usize>(),
-            "graphicsBytes": graphics.iter().map(|bytes| bytes.len()).sum::<usize>()
-        }),
-    );
-    // #endregion
-    let placeholder_cells = operations
-        .iter()
-        .filter_map(|operation| match operation {
-            TerminalOp::Local(bytes) => Some(bytes.as_slice()),
-            TerminalOp::Graphics(_) => None,
-        })
-        .map(|bytes| {
-            bytes
-                .windows(4)
-                .filter(|window| *window == [0xf4, 0x8e, 0xbb, 0xae])
-                .count()
-        })
-        .sum::<usize>();
-    // #region agent log
-    debug_log(
-        "F,I",
-        "terminal_output.rs:write_operations",
-        "validated virtual placement pairing",
-        serde_json::json!({
-            "placeholderCells": placeholder_cells,
-            "graphicsHaveVirtualPlacement": graphics.iter().all(|bytes| bytes.windows(4).any(|window| window == b"U=1,")),
-            "graphicsHaveImageId": graphics.iter().all(|bytes| bytes.windows(2).any(|window| window == b"i="))
-        }),
-    );
-    // #endregion
-    // #region agent log
-    debug_log(
-        "K",
-        "terminal_output.rs:write_operations",
-        "classified Kitty graphics actions",
-        serde_json::json!({
-            "transmitActions": graphics.iter().filter(|bytes| bytes.windows(4).any(|window| window == b"Ga=T")).count(),
-            "placementActions": graphics.iter().filter(|bytes| bytes.windows(4).any(|window| window == b"Ga=p")).count(),
-            "unicodePlacementCommands": graphics.iter().filter(|bytes| bytes.windows(4).any(|window| window == b"U=1,")).count()
-        }),
-    );
-    // #endregion
     let mut stdout = io::stdout().lock();
     match route {
         Route::Direct => write_same_stream(&mut stdout, operations, false),
@@ -300,23 +217,13 @@ pub(crate) fn write_operations(operations: &[TerminalOp]) -> Result<(), String> 
             } else {
                 -1
             };
-            // #region agent log
-            debug_log_current(
-                "H15,H17,H19",
-                "terminal_output.rs:client_tty_write",
-                "writing split local and graphics streams",
+            write_debug_event(
+                "client_tty_write_start",
                 serde_json::json!({
-                    "clientTtyAvailable": true,
                     "paneActive": pane_value(&pane, "#{pane_active}"),
-                    "paneLeft": pane_left,
-                    "paneTop": pane_top,
-                    "cursorX": cursor_x,
-                    "cursorY": cursor_y,
-                    "outerCursorCol": outer_cursor_col,
-                    "outerCursorRow": outer_cursor_row
+                    "outerCursorKnown": outer_cursor_col >= 1 && outer_cursor_row >= 1
                 }),
             );
-            // #endregion
             let mut cursor_row = cursor_y;
             let mut cursor_col = cursor_x;
             let mut cursor_synced = false;
@@ -348,19 +255,10 @@ pub(crate) fn write_operations(operations: &[TerminalOp]) -> Result<(), String> 
                             } else {
                                 -1
                             };
-                            // #region agent log
-                            debug_log_current(
-                                "H17",
-                                "terminal_output.rs:client_tty_write",
-                                "syncing outer cursor before graphics APC",
-                                serde_json::json!({
-                                    "paneCursorCol": cursor_col,
-                                    "paneCursorRow": cursor_row,
-                                    "outerCursorCol": target_col,
-                                    "outerCursorRow": target_row
-                                }),
+                            write_debug_event(
+                                "client_tty_cursor_sync",
+                                serde_json::json!({"resolved": target_row >= 1 && target_col >= 1}),
                             );
-                            // #endregion
                             if target_row >= 1 && target_col >= 1 {
                                 graphics
                                     .write_all(
@@ -393,14 +291,6 @@ fn write_same_stream(
     operations: &[TerminalOp],
     tmux_passthrough: bool,
 ) -> Result<(), String> {
-    // #region agent log
-    debug_log(
-        "C",
-        "terminal_output.rs:write_same_stream",
-        "writing graphics through stdout stream",
-        serde_json::json!({"tmuxPassthrough": tmux_passthrough}),
-    );
-    // #endregion
     tmath_core::placement::write_terminal_ops(writer, operations, tmux_passthrough)
         .map_err(|error| format!("write terminal output: {error}"))?;
     writer
@@ -508,17 +398,6 @@ fn cursor_after_local(bytes: &[u8], row: &mut i64, col: &mut i64) {
 
 fn open_client_tty() -> Result<File, String> {
     let path = query_client_tty_path().ok_or("tmux did not report a client tty")?;
-    // #region agent log
-    debug_log(
-        "B",
-        "terminal_output.rs:open_client_tty",
-        "validating tmux client tty",
-        serde_json::json!({
-            "hasDevTtyPrefix": path.starts_with("/dev/tty"),
-            "ownerKnown": client_owner_is_known(&path)
-        }),
-    );
-    // #endregion
     if !path.starts_with("/dev/tty")
         || path
             .bytes()
@@ -548,18 +427,7 @@ fn open_client_tty() -> Result<File, String> {
     {
         return Err("opened client tty changed during validation".into());
     }
-    // #region agent log
-    debug_log(
-        "B,D",
-        "terminal_output.rs:open_client_tty",
-        "tmux client tty opened",
-        serde_json::json!({
-            "characterDevice": after.file_type().is_char_device(),
-            "sameDevice": after.dev() == before.dev(),
-            "sameInode": after.ino() == before.ino()
-        }),
-    );
-    // #endregion
+    write_debug_event("client_tty_opened", serde_json::json!({}));
     Ok(file)
 }
 
@@ -621,12 +489,13 @@ fn known_process(pid: u32) -> bool {
         || command.contains("/kitty")
 }
 
-pub(crate) fn debug_log(
-    hypothesis_id: &str,
-    location: &str,
-    message: &str,
-    data: serde_json::Value,
-) {
+/// Appends one bounded diagnostic line to the file named by `TMATH_DEBUG_LOG`
+/// when that environment variable is set. `event` is a stable, static event
+/// name; `data` must carry only counts, sizes, booleans, or other
+/// non-reversible facts — never raw content, paths, or session identifiers.
+/// The write is disabled by default and never uses an absolute path from the
+/// source, keeping logs out of the repository.
+pub(crate) fn write_debug_event(event: &'static str, data: serde_json::Value) {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let timestamp = SystemTime::now()
@@ -634,35 +503,7 @@ pub(crate) fn debug_log(
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
     let payload = serde_json::json!({
-        "sessionId": "c276a1",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": timestamp
-    });
-    write_debug_line(&payload);
-}
-
-pub(crate) fn debug_log_current(
-    hypothesis_id: &str,
-    location: &str,
-    message: &str,
-    data: serde_json::Value,
-) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let payload = serde_json::json!({
-        "sessionId": "f945c2",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
+        "event": event,
         "data": data,
         "timestamp": timestamp
     });

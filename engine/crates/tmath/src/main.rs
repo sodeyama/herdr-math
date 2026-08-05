@@ -511,14 +511,10 @@ fn connect_terminal_with(tty: StdioTty) -> Result<(Terminal<StdioTty>, (u32, u32
         let graphics_supported = terminal
             .probe_graphics_support()
             .map_err(|error| format!("probe graphics: {error}"))?;
-        // #region agent log
-        terminal_output::debug_log(
-            "F,H,I",
-            "main.rs:connect_terminal",
-            "direct Kitty graphics probe completed",
+        terminal_output::write_debug_event(
+            "graphics_probe_completed",
             serde_json::json!({"graphicsSupported": graphics_supported}),
         );
-        // #endregion
         if !graphics_supported {
             return Err("this terminal reports no Kitty graphics support".into());
         }
@@ -556,37 +552,13 @@ fn place_in_terminal(
             },
         )
         .map_err(|error: PlacementError| format!("place image: {error}"))?;
-    // #region agent log
-    terminal_output::debug_log(
-        "F,I",
-        "main.rs:place_in_terminal",
-        "computed image and placeholder geometry",
+    terminal_output::write_debug_event(
+        "placement_geometry_computed",
         serde_json::json!({
-            "imageWidth": width,
-            "imageHeight": height,
-            "cellWidth": cell.0,
-            "cellHeight": cell.1,
             "placeholderCols": block.cols,
-            "placeholderRows": block.rows,
-            "imageId": block.image_id
+            "placeholderRows": block.rows
         }),
     );
-    // #endregion
-    // #region agent log
-    terminal_output::debug_log_current(
-        "H15,H17,H18,H19",
-        "main.rs:place_in_terminal",
-        "placing cursor-relative render",
-        serde_json::json!({
-            "imageWidth": width,
-            "imageHeight": height,
-            "placementCols": block.cols,
-            "placementRows": block.rows,
-            "stdinIsTerminal": io::stdin().is_terminal(),
-            "tmuxPane": std::env::var("TMUX_PANE").unwrap_or_else(|_| "<unset>".into())
-        }),
-    );
-    // #endregion
     // Inside tmux, `CSI 6n` is answered with the pane-relative cursor, not the
     // outer terminal's, so it cannot tell us whether the *outer* line already
     // starts at column 1; keep the conservative always-advance behavior there.
@@ -623,17 +595,6 @@ fn place_in_terminal(
     terminal
         .reset()
         .map_err(|error| format!("reset terminal: {error}"))?;
-    // #region agent log
-    terminal_output::debug_log_current(
-        "H18",
-        "main.rs:place_in_terminal",
-        "placement command completed",
-        serde_json::json!({
-            "pipedInput": !io::stdin().is_terminal(),
-            "imageId": block.image_id
-        }),
-    );
-    // #endregion
     println!();
     Ok(0)
 }
