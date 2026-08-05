@@ -117,10 +117,18 @@
       across two batches at different history depths, delete APCs target
       single image IDs only (no full-buffer clear), and all 6,630 captured
       RGBA payloads decompress to their declared dimensions with non-zero
-      glyph content. The visual tofu/overlap check was closed by a same-day
-      supervisor-run live screenshot review on the same commit — see the
-      evidence file's supervisor addendum; screenshots stay local-only per
-      privacy rules.)
+      glyph content. The same run also captured a human operator's
+      incidental interactive trackpad/wheel scrolling over the live
+      pane — a two-round-trip range walk distinguishable from the scripted
+      input by mouse-event coordinates — holding to the same per-sync
+      visible-window byte budget as the scripted batches; kept as positive
+      real-terminal evidence, not a defect. The visual tofu/overlap check
+      was closed by a same-day supervisor-run live screenshot review on the
+      same commit — see the evidence file's supervisor addendum;
+      screenshots stay local-only per privacy rules. Per-sync cost scaling
+      with the visible window (documented as a Limitation) motivated a
+      separate momentum/coalescing scroll pipeline developed concurrently;
+      re-measurement against it belongs to T3-602.)
 
 ## Phase 4 — Agent sources
 
