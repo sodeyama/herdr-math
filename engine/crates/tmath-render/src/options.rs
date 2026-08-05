@@ -4,6 +4,21 @@ use std::fmt;
 /// Fixed text color for the V3 dark theme.
 pub const DARK_THEME_TEXT_COLOR: &str = "#e6edf3";
 
+/// Table border stroke color: a mid-luminance gray derived from
+/// [`DARK_THEME_TEXT_COLOR`], mixed 57.5% toward a representative dark
+/// terminal background (`#0d1117`, GitHub Dark's background — the natural
+/// pairing for a text color that is itself GitHub Dark's foreground) so a
+/// stroke reads clearly on real dark terminal backgrounds without being as
+/// bright as body text. Rendered PNGs have a transparent background (`#set
+/// page(fill: none)`), so this is a fixed design choice, not a color read
+/// from the actual terminal — it only needs to work across the dark
+/// backgrounds real terminals plausibly use, not be theme-accurate.
+///
+/// Derivation (`round(text + (bg - text) * 0.575)` per channel):
+/// `e6edf3` → `(230, 237, 243)`, `0d1117` → `(13, 17, 23)`,
+/// mixed → `(105, 111, 117)` = `#696f75`.
+pub const TABLE_STROKE_COLOR: &str = "#696f75";
+
 /// One of the CJK fonts embedded in the binary (D-CONFIG phase 2). Shaped as
 /// an enum (rather than a bare `String`) so the valid set is closed and
 /// exhaustive-matched everywhere it is consumed — adding a second embedded

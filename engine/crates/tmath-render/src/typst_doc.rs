@@ -13,7 +13,7 @@ use crate::{
     limits::{render_guard, RenderDeadline},
     math::render_formula_with_deadline,
     scan_latex, Block, BlockKind, ErrorCode, Formula, Limits, MathImage, RenderError,
-    RenderOptions, SafeErrorRecord, ScannerLimits, DARK_THEME_TEXT_COLOR,
+    RenderOptions, SafeErrorRecord, ScannerLimits, DARK_THEME_TEXT_COLOR, TABLE_STROKE_COLOR,
 };
 
 /// Line rhythm (D-LINE): the em multiples that produce the composed page's
@@ -674,6 +674,17 @@ fn render_table(
 
     output.push_str("#table(columns: ");
     output.push_str(&columns.to_string());
+    // Explicit stroke + no fill (AT-1-101 dark-theme table legibility): the
+    // rendered page has a transparent background (`#set page(fill: none)`),
+    // so any cell fill here would show the terminal's own background
+    // through it inconsistently rather than blending — cell shading is out
+    // of scope, only the border needs to be visible. Typst's own default
+    // stroke is `1pt + black`, invisible on a dark terminal background;
+    // `TABLE_STROKE_COLOR` is a mid-luminance gray chosen to read clearly
+    // there (see its doc comment for the derivation).
+    output.push_str(", stroke: 1pt + rgb(\"");
+    output.push_str(TABLE_STROKE_COLOR);
+    output.push_str("\"), fill: none");
     if !alignments.is_empty() {
         output.push_str(", align: (");
         for alignment in alignments {
@@ -1147,5 +1158,80 @@ mod tests {
         let source = "weird chars: \u{E000}not-a-formula\u{E001} end";
         let composed = compose_block(&block(source), &RenderOptions::default()).unwrap();
         assert!(!composed.source.contains("image(\"math-"));
+    }
+
+    // --- Table stroke visibility on dark backgrounds (task #23) ---
+
+    fn table_block(source: &str) -> Block {
+        Block {
+            index: 0,
+            kind: BlockKind::Table,
+            source: source.to_owned(),
+        }
+    }
+
+    /// Source-level check: the composed Typst source for a table must
+    /// carry an explicit visible stroke and no cell fill — Typst's own
+    /// default stroke (`1pt + black`) is invisible on a dark terminal
+    /// background, which is the reported defect.
+    #[test]
+    fn table_emission_carries_an_explicit_visible_stroke_and_no_fill() {
+        let source = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let composed = compose_block(&table_block(source), &RenderOptions::default()).unwrap();
+        assert!(
+            composed
+                .source
+                .contains(&format!("stroke: 1pt + rgb(\"{TABLE_STROKE_COLOR}\")")),
+            "table source must set an explicit non-default stroke: {}",
+            composed.source
+        );
+        assert!(
+            composed.source.contains("fill: none"),
+            "table source must not fill cells (transparent PNGs sit on the \
+             terminal's own background): {}",
+            composed.source
+        );
+        // The stroke color must not be Typst's invisible-on-dark default.
+        assert_ne!(TABLE_STROKE_COLOR, "#000000");
+    }
+
+    /// Pixel-level check: a rendered table must actually contain ink at
+    /// (or very near) the chosen stroke color, proving the stroke is not
+    /// just present in source but visible in the output raster. Uses a
+    /// tolerance band around the exact stroke RGB because Typst's
+    /// rasterizer antialiases border pixels, so few pixels (if any) will
+    /// be the mathematically exact stroke color — most border pixels blend
+    /// with the transparent background at partial alpha.
+    #[test]
+    fn a_rendered_table_contains_ink_near_the_stroke_color() {
+        use std::io::Cursor;
+
+        let source = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let image =
+            crate::prose::render_prose_block(&table_block(source), &RenderOptions::default())
+                .unwrap();
+
+        let mut decoder = png::Decoder::new(Cursor::new(&image.png));
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
+        let mut reader = decoder.read_info().unwrap();
+        let mut output = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut output).unwrap();
+        let bytes = &output[..info.buffer_size()];
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+
+        let stroke_rgb = (0x69u8, 0x6fu8, 0x75u8); // TABLE_STROKE_COLOR
+        let tolerance: i32 = 12;
+        let near_stroke = bytes.chunks_exact(4).any(|pixel| {
+            pixel[3] > 200 // opaque enough that alpha blending with a
+                // transparent background hasn't diluted the color much
+                && (i32::from(pixel[0]) - i32::from(stroke_rgb.0)).abs() <= tolerance
+                && (i32::from(pixel[1]) - i32::from(stroke_rgb.1)).abs() <= tolerance
+                && (i32::from(pixel[2]) - i32::from(stroke_rgb.2)).abs() <= tolerance
+        });
+        assert!(
+            near_stroke,
+            "rendered table PNG must contain at least one near-opaque pixel \
+             close to the stroke color {stroke_rgb:?} (tolerance {tolerance})"
+        );
     }
 }

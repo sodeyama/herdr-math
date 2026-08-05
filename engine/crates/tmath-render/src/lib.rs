@@ -21,7 +21,9 @@ pub use hash::content_hash;
 pub use limits::{Limits, ScaledLimits};
 pub use markdown::{parse_blocks, parse_blocks_limited};
 pub use math::{render_formula, MathImage};
-pub use options::{CjkFont, RenderOptions, RenderOptionsError, DARK_THEME_TEXT_COLOR};
+pub use options::{
+    CjkFont, RenderOptions, RenderOptionsError, DARK_THEME_TEXT_COLOR, TABLE_STROKE_COLOR,
+};
 pub use planner::{BlockId, PlacementPlanner, Plan, PlanOp, PlannedBlock};
 pub use prose::{render_prose_block, RenderedImage};
 pub use scanner::{scan_latex, Formula, ScannerLimits};
