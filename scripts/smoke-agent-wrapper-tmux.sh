@@ -18,6 +18,11 @@
 
 set -euo pipefail
 
+# `set -e` exits are otherwise silent for commands whose output is
+# redirected — on CI this smoke once died in 0.2s with no clue which line
+# failed. Name the line and command on the way out.
+trap 'echo "FAIL: line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMATH="$ROOT/target/debug/tmath"
 
