@@ -272,7 +272,7 @@ scripts) before checking a box.
 
 ## Phase R4 — Hygiene and bounded investigation
 
-- [ ] **TR-401** Remove committed debug scaffolding (AT-R-501).
+- [x] **TR-401** Remove committed debug scaffolding (AT-R-501). (1adaeb5)
       Files: `engine/crates/tmath/src/terminal_output.rs` and any other file
       matched by `grep -rln "region agent log" engine/`.
       Delete every `// #region agent log ... // #endregion` block and the
