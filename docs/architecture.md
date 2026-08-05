@@ -216,6 +216,20 @@ client tty is accepted only when tmux reports a `/dev/tty*` character device
 owned by the current user and the opened descriptor retains the same identity.
 No screenshot or rendered bytes are retained.
 
+Outer-terminal gate: inside tmux with `TMATH_TMUX_TRANSPORT` unset, the route
+is selected only after classifying the outer terminal as Verified (advertised
+termname contains ghostty/kitty/wezterm, or the validated client tty's process
+ancestry reaches a known terminal), Unverified (named in the refusal message),
+or NoClient (no attached client). The two refusal states carry distinct
+bounded messages, and `tmath diagnose` prints the gate inputs (attached client
+count, termname, allow-passthrough, transport env) plus the full refusal
+reason. Because tmux-spawned commands inherit the tmux server's environment,
+the shell wrapper forwards `TMATH_TMUX_TRANSPORT`/`TMATH_DPR`/`TMATH_DEBUG_LOG`
+as an explicit `env` prefix on watcher command lines, and the watcher forwards
+them again to the viewer pane. A viewer that has emitted successfully treats a
+NoClient refusal as transient: it skips emissions (placements stay intact) and
+exits only after 30 consecutive unavailable emissions.
+
 ## Concurrency and Atomicity
 
 Single-invocation semantics keep concurrency simple:

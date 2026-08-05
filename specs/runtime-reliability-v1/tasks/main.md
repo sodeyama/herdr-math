@@ -2,7 +2,7 @@
 
 ## Status
 
-- Checklist state: **Draft — no task started**
+- Checklist state: **In progress — Phases R1 and R2 implemented**
 - Plan: `../plans/main.md`
 - Acceptance contract: `../tests/main.md`
 - Rules: one logical change per commit; a task is complete only when its listed
@@ -113,7 +113,8 @@ scripts) before checking a box.
 
 ## Phase R2 — tmux gate correctness
 
-- [ ] **TR-201** Propagate transport env in the wrapper's new-session path
+- [x] **TR-201** Propagate transport env in the wrapper's new-session path
+      (commit `29f791a`, with TR-205)
       (AT-R-301).
       File: `scripts/shell/tmath-agent.sh`
       (`__tmath_start_in_new_tmux_session` and `__tmath_start_watcher_for_pane`).
@@ -131,7 +132,8 @@ scripts) before checking a box.
       `TMATH_TMUX_TRANSPORT=passthrough` that
       `tmux list-panes -F '#{pane_start_command}'` shows the `env` prefix.
 
-- [ ] **TR-202** Split the gate refusal into two diagnostics (AT-R-302).
+- [x] **TR-202** Split the gate refusal into two diagnostics (AT-R-302).
+      (commit `52f1677`; classifier unit tests cover all branches)
       File: `engine/crates/tmath/src/terminal_output.rs`.
       Refactor `known_outer_terminal()` to return an enum
       `OuterTerminal { Verified, Unverified(String), NoClient }`:
@@ -151,7 +153,8 @@ scripts) before checking a box.
       document content; do not include tty paths in messages.
       Validate: `cargo test -p tmath`, `cargo clippy --all-targets`.
 
-- [ ] **TR-203** Transient no-client tolerance in the viewer (AT-R-303).
+- [x] **TR-203** Transient no-client tolerance in the viewer (AT-R-303).
+      (commit `e5984a4`; retry-budget decision helper unit-tested)
       Files: `engine/crates/tmath/src/agent_viewer.rs` (emission call sites
       of `write_operations`/`selected_route`), `terminal_output.rs` (expose
       the refusal cause from TR-202's enum to callers).
@@ -167,7 +170,8 @@ scripts) before checking a box.
       coverage comes from TR-301's headless smoke.
       Validate: `cargo test -p tmath`.
 
-- [ ] **TR-204** Diagnose reports gate inputs (AT-R-304).
+- [x] **TR-204** Diagnose reports gate inputs (AT-R-304).
+      (commit `5464361`)
       File: `engine/crates/tmath/src/terminal_output.rs`
       (`tmux_diagnostics()`).
       Add lines: `tmux attached clients: <n>` (from
@@ -179,7 +183,8 @@ scripts) before checking a box.
       Validate: `cargo test -p tmath`; manual `tmath diagnose` inside and
       outside tmux.
 
-- [ ] **TR-205** No orphan wrapper sessions (AT-R-203).
+- [x] **TR-205** No orphan wrapper sessions (AT-R-203).
+      (commit `29f791a`; watcher already exited cleanly on a closed source pane — no Rust change needed)
       Files: `scripts/shell/tmath-agent.sh`
       (`__tmath_start_in_new_tmux_session`),
       `engine/crates/tmath/src/agent_watcher.rs` (source-pane liveness).
@@ -195,9 +200,9 @@ scripts) before checking a box.
       gone within 5 s after the fake agent exits.
       Validate: `cargo test -p tmath`, smoke script.
 
-- [ ] **TR-206** Docs commit for Phase R2: update `docs/architecture.md`
+- [x] **TR-206** Docs commit for Phase R2: updated `docs/architecture.md`
       transport-gate section (decision inputs, messages, retry budget) and
-      check off R2 tasks.
+      checked off R2 tasks.
 
 ## Phase R3 — Smoke and CI isolation
 
