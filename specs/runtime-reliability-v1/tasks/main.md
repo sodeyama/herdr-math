@@ -2,7 +2,8 @@
 
 ## Status
 
-- Checklist state: **In progress — Phases R1 and R2 implemented**
+- Checklist state: **In progress — Phases R1 and R2 implemented; Phase R3 in
+  progress (TR-301, TR-302 done)**
 - Plan: `../plans/main.md`
 - Acceptance contract: `../tests/main.md`
 - Rules: one logical change per commit; a task is complete only when its listed
@@ -206,8 +207,10 @@ scripts) before checking a box.
 
 ## Phase R3 — Smoke and CI isolation
 
-- [ ] **TR-301** Private-socket rewrite of `scripts/smoke-agent-tmux.sh`
+- [x] **TR-301** Private-socket rewrite of `scripts/smoke-agent-tmux.sh`
       (AT-R-401).
+      (commit `3c5dd07`; PASS 3x consecutive, default tmux server session
+      list unchanged each run)
       Define `SOCKET="tmath-smoke-$$"` and a helper `tm() { tmux -L "$SOCKET" "$@"; }`;
       replace every `tmux` call with `tm`; add
       `trap 'tm kill-server 2>/dev/null || true; ...' EXIT`.
@@ -220,10 +223,20 @@ scripts) before checking a box.
       commit `ad579b9`.
       Validate: run twice in a row while a personal tmux server is up:
       both runs print `PASS`, `tmux ls` output unchanged.
+      Fixed two pre-existing failures the private-socket run exposed (both
+      present, latent, before this task): the source pane's default cwd
+      (this checkout) let `tmath agent` pick up this session's own live
+      Claude Code transcript instead of the synthetic pane content, and
+      zsh's `PROMPT_EOL_MARK` plus a redundant trailing prompt printf broke
+      the exact-match idle-prompt check in
+      `tmath-core::agent::boundary::is_idle_prompt_line`, so `find_answer()`
+      never proved a boundary. See the commit message for detail.
 
-- [ ] **TR-302** Private-socket + new assertions for
+- [x] **TR-302** Private-socket + new assertions for
       `scripts/smoke-agent-wrapper-tmux.sh` (AT-R-402, closes the loop on
       AT-R-201/202/301).
+      (commit `4cca50e`; PASS 3x consecutive, default tmux server session
+      list unchanged each run)
       Apply the same `tm()`/trap isolation. Add two cases:
       (a) broken-stub tmath (exit 137) → wrapper warning line + passthrough
       (may reuse the allowlist smoke's stub approach if simpler — then this
@@ -232,6 +245,16 @@ scripts) before checking a box.
       assert the watcher pane's start command contains
       `TMATH_TMUX_TRANSPORT=` (via `tm list-panes -F '#{pane_start_command}'`).
       Validate: script prints `PASS` with a personal tmux server running.
+      (a) confirmed already covered by `smoke-agent-allowlist.sh`'s
+      AT-R-201/202 stub cases; this script asserts isolation plus (b), the
+      latter by running `__tmath_start_in_new_tmux_session`'s own
+      `new-session`/`split-window` sequence directly (stopping short of its
+      blocking `tmux attach`, which would otherwise fight this test's own
+      outer tmux client) rather than invoking the function unmodified.
+      Also widened the `watching %`/`not a verified Kitty target` log-match
+      pair used to prove a watcher attempt to include TR-202's third
+      refusal message, `no attached client` — the one this detached,
+      no-client smoke session actually hits.
 
 - [ ] **TR-303** CI job for the tmux smokes (AT-R-403).
       File: `.github/workflows/` (extend the existing Rust/Node workflow —
