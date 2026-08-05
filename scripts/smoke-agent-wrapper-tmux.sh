@@ -80,8 +80,13 @@ HOME="$TMP_HOME" "$BIN_DIR/tmath" agent-enable "$TARGET_DIR" >/dev/null
 
 LOG="$(mktemp -t tmath-wrapper-smoke.XXXXXX)"
 cleanup() {
+  # Only tear down what this run itself started: `tm kill-server` destroys
+  # the private-socket tmux server, which kills every pane (and therefore
+  # every watcher process) it launched. A machine-wide `pkill -f "tmath
+  # agent --source-pane"` here would also kill unrelated `tmath agent`
+  # watchers the operator or another session has running against the
+  # default tmux server — never do that.
   tm kill-server 2>/dev/null || true
-  pkill -f "tmath agent --source-pane" 2>/dev/null || true
   rm -f "$LOG"
   rm -rf "$TMP_HOME"
 }
