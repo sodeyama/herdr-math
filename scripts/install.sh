@@ -45,7 +45,52 @@ REPO="$(find_repo)"
 # Targets
 # ----------------------------------------------------------------------------
 APP="${TMATH_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/tmath}/app"
-BIN_HOME="${XDG_BIN_HOME:-$HOME/.local/bin}"
+
+# ----------------------------------------------------------------------------
+# Launcher location
+# ----------------------------------------------------------------------------
+# choose_bin_home: pick where the launcher goes, most specific intent first.
+#   1. $XDG_BIN_HOME — explicit user configuration always wins.
+#   2. The directory of an existing tmath LAUNCHER on PATH (a `#!` script
+#      under $HOME, user-owned, in a writable directory): updating in place
+#      prevents this install leaving a second copy that an earlier PATH entry
+#      then shadows — the version-skew failure `tmath diagnose` warns about.
+#   3. The first known user-bin candidate (~/.local/bin, then ~/bin) that
+#      already exists and is on PATH.
+#   4. ~/.local/bin, created if needed (PATH guidance is printed at the end).
+# Deliberately narrow: never scans PATH for arbitrary writable directories
+# (another toolchain's bin directory is not ours to write into) and never
+# chooses a location outside $HOME.
+choose_bin_home() {
+  if [ -n "${XDG_BIN_HOME:-}" ]; then
+    echo "$XDG_BIN_HOME"
+    return
+  fi
+  local existing dir cand
+  existing="$(command -v tmath 2>/dev/null || true)"
+  if [ -n "$existing" ] && [ "$(head -c 2 "$existing" 2>/dev/null || true)" = "#!" ]; then
+    dir="$(cd "$(dirname "$existing")" && pwd)"
+    case "$dir" in
+      "$HOME"/*)
+        if [ -w "$dir" ] && [ -O "$existing" ]; then
+          echo "$dir"
+          return
+        fi
+        ;;
+    esac
+  fi
+  for cand in "$HOME/.local/bin" "$HOME/bin"; do
+    [ -d "$cand" ] || continue
+    case ":$PATH:" in
+      *":$cand:"*)
+        echo "$cand"
+        return
+        ;;
+    esac
+  done
+  echo "$HOME/.local/bin"
+}
+BIN_HOME="$(choose_bin_home)"
 
 # ----------------------------------------------------------------------------
 # Prerequisites (macOS / Linux are the tested bases)
@@ -107,6 +152,7 @@ mv "$APP.new" "$APP"
 # ----------------------------------------------------------------------------
 # Launcher on PATH
 # ----------------------------------------------------------------------------
+echo "tmath: launcher directory $BIN_HOME"
 mkdir -p "$BIN_HOME"
 if [ -f "$BIN_HOME/tmath" ] && [ "$(head -c 2 "$BIN_HOME/tmath")" != "#!" ]; then
   echo "tmath: replacing non-launcher file at $BIN_HOME/tmath" >&2
