@@ -54,6 +54,20 @@ const TEXT_BOTTOM_EDGE_EM: f64 = -0.3;
 /// exactly `TARGET_LINE_ADVANCE_EM`.
 const PAR_LEADING_EM: f64 = TARGET_LINE_ADVANCE_EM - TEXT_TOP_EDGE_EM + TEXT_BOTTOM_EDGE_EM;
 
+/// Undoes Typst's built-in `raw` show rule, which sets inline AND block code
+/// to `0.8em` of the surrounding text size by default (mono fonts read
+/// visually larger at equal pt than proportional ones, per Typst's own
+/// rationale — but that assumption doesn't hold against M PLUS 2/NewCM10 at
+/// this renderer's sizes: empirically measured ink-row height for an
+/// inline `` `code` `` span and a fenced code block were both ~0.83x a
+/// plain-text control at the live 15pt/dpr2 geometry, matching the 0.8em
+/// figure). A `show raw: set text(size: ...)` rule's `em` is relative to
+/// raw's OWN already-0.8x'd context, so `1.0 / 0.8` restores exactly the
+/// surrounding body text size for both inline and block code alike — per
+/// the task's finding that inline and block measured the same reduction,
+/// there is no reason to keep a separate, smaller block-code size.
+const RAW_TEXT_SIZE_EM: f64 = 1.0 / 0.8;
+
 /// The primary (Latin/math) prose font. Fixed — `RenderOptions` only ever
 /// selects among embedded CJK families (`CjkFont`); Latin coverage does not
 /// vary per session.
@@ -185,6 +199,7 @@ pub(crate) fn compose_block_with_deadline(
              #set text(font: {fonts}, size: {font_size}pt, \
              fill: rgb(\"{color}\"), top-edge: {top_edge}em, bottom-edge: {bottom_edge}em)\n\
              #set par(leading: {leading}em)\n\
+             #show raw: set text(size: {raw_size_em}em)\n\
              {body}\n",
             width = options.content_width_pt,
             block_margin = block_margin_pt,
@@ -194,6 +209,7 @@ pub(crate) fn compose_block_with_deadline(
             top_edge = TEXT_TOP_EDGE_EM,
             bottom_edge = TEXT_BOTTOM_EDGE_EM,
             leading = PAR_LEADING_EM,
+            raw_size_em = RAW_TEXT_SIZE_EM,
         ),
         static_files: context.static_files,
         formula_errors: context.formula_errors,
@@ -1232,6 +1248,29 @@ mod tests {
             near_stroke,
             "rendered table PNG must contain at least one near-opaque pixel \
              close to the stroke color {stroke_rgb:?} (tolerance {tolerance})"
+        );
+    }
+
+    // --- Raw text size balance (task #24): undo Typst's 0.8em raw default ---
+
+    /// Source-level check: every composed block carries a `show raw` rule
+    /// that restores raw text to the surrounding body size — Typst's own
+    /// default show rule sets `raw` to 0.8em, which reads visibly smaller
+    /// than surrounding prose (measured empirically at the live 15pt/dpr2
+    /// geometry, see `prose.rs`'s ink-level raw-size tests).
+    #[test]
+    fn every_block_carries_a_show_rule_restoring_raw_to_body_size() {
+        let composed = compose_block(
+            &block("Prose with `inline code` in it."),
+            &RenderOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            composed
+                .source
+                .contains(&format!("#show raw: set text(size: {RAW_TEXT_SIZE_EM}em)")),
+            "composed source must restore raw's font size: {}",
+            composed.source
         );
     }
 }

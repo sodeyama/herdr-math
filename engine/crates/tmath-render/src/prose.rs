@@ -1122,4 +1122,178 @@ mod tests {
             2.0 * expected_margin_pt
         );
     }
+
+    /// Inline `` `raw` `` spans must not read visibly smaller than
+    /// surrounding CJK prose — Typst's built-in `raw` show rule defaults to
+    /// 0.8em, which measured ink-row height ~0.83x a plain-text control at
+    /// the live 15pt/dpr2 geometry (task #24). `compose_block`'s `#show
+    /// raw: set text(size: RAW_TEXT_SIZE_EM em)` rule undoes that: an
+    /// inline raw span's ink height must now match a plain-text control
+    /// within a small tolerance (whole-pixel rounding, not the ~7px gap
+    /// the unfixed default produced).
+    #[test]
+    fn inline_raw_spans_match_surrounding_text_ink_height() {
+        fn ink_row_span(png_bytes: &[u8], width_px: u32, height_px: u32) -> u32 {
+            let mut decoder = png::Decoder::new(Cursor::new(png_bytes));
+            decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
+            let mut reader = decoder.read_info().unwrap();
+            let mut output = vec![0; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut output).unwrap();
+            let bytes = &output[..info.buffer_size()];
+            let mut first_row = None;
+            let mut last_row = 0u32;
+            for y in 0..height_px {
+                let row_start = (y * width_px * 4) as usize;
+                let row_end = row_start + (width_px * 4) as usize;
+                let row_has_ink = bytes[row_start..row_end]
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[3] > 0);
+                if row_has_ink {
+                    first_row.get_or_insert(y);
+                    last_row = y;
+                }
+            }
+            last_row - first_row.unwrap_or(0) + 1
+        }
+
+        let options = RenderOptions::new(672.0, 15.0, 2).unwrap();
+        let raw_only = render_prose_block(
+            &block(BlockKind::Paragraph, "`is_genuine_user_text`"),
+            &options,
+        )
+        .unwrap();
+        let plain_only = render_prose_block(
+            &block(BlockKind::Paragraph, "is_genuine_user_text"),
+            &options,
+        )
+        .unwrap();
+
+        let raw_span = ink_row_span(&raw_only.png, raw_only.width_px, raw_only.height_px);
+        let plain_span = ink_row_span(&plain_only.png, plain_only.width_px, plain_only.height_px);
+
+        assert_eq!(
+            raw_only.height_px, plain_only.height_px,
+            "raw must not change the block's line-box height"
+        );
+        let diff = raw_span.abs_diff(plain_span);
+        assert!(
+            diff <= 2,
+            "an inline raw span's ink height ({raw_span}px) must closely match              plain text's ({plain_span}px) once RAW_TEXT_SIZE_EM restores raw              to body size — Typst's unfixed 0.8em default would show a ~7px gap"
+        );
+    }
+
+    /// Fenced block code gets the same size restoration as inline raw
+    /// (task #24's measurement found no meaningful difference between
+    /// inline and block reduction, so both go through the same
+    /// `RAW_TEXT_SIZE_EM` rule rather than keeping two separate sizes).
+    #[test]
+    fn block_code_also_matches_surrounding_text_ink_height() {
+        fn ink_row_span(png_bytes: &[u8], width_px: u32, height_px: u32) -> u32 {
+            let mut decoder = png::Decoder::new(Cursor::new(png_bytes));
+            decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
+            let mut reader = decoder.read_info().unwrap();
+            let mut output = vec![0; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut output).unwrap();
+            let bytes = &output[..info.buffer_size()];
+            let mut first_row = None;
+            let mut last_row = 0u32;
+            for y in 0..height_px {
+                let row_start = (y * width_px * 4) as usize;
+                let row_end = row_start + (width_px * 4) as usize;
+                let row_has_ink = bytes[row_start..row_end]
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[3] > 0);
+                if row_has_ink {
+                    first_row.get_or_insert(y);
+                    last_row = y;
+                }
+            }
+            last_row - first_row.unwrap_or(0) + 1
+        }
+
+        let options = RenderOptions::new(672.0, 15.0, 2).unwrap();
+        let block_code = render_prose_block(
+            &block(
+                BlockKind::CodeBlock,
+                "```
+is_genuine_user_text
+```",
+            ),
+            &options,
+        )
+        .unwrap();
+        let plain_only = render_prose_block(
+            &block(BlockKind::Paragraph, "is_genuine_user_text"),
+            &options,
+        )
+        .unwrap();
+
+        let block_span = ink_row_span(&block_code.png, block_code.width_px, block_code.height_px);
+        let plain_span = ink_row_span(&plain_only.png, plain_only.width_px, plain_only.height_px);
+        let diff = block_span.abs_diff(plain_span);
+        assert!(
+            diff <= 2,
+            "block code's ink height ({block_span}px) must closely match \
+             plain text's ({plain_span}px) once RAW_TEXT_SIZE_EM restores it \
+             to body size"
+        );
+    }
+
+    /// Regression guard for task #24's fallback-order decision: measured
+    /// ink height for NewCM10 Latin text vs. M PLUS 2 CJK text at equal pt
+    /// (31px vs. 29px at the live 15pt/dpr2 geometry, ~6.5% apart) was
+    /// judged NOT large enough to justify reordering the prose font
+    /// fallback list (`("NewCM10", "M PLUS 2")`, fixed by
+    /// `font_fallback_list_always_starts_with_the_primary_latin_font` in
+    /// `typst_doc.rs`). If a future font change makes the two scripts
+    /// diverge past a clearly-visible amount, that decision should be
+    /// revisited — this test catches such drift rather than re-deciding it
+    /// silently.
+    #[test]
+    fn latin_and_cjk_ink_heights_stay_within_the_accepted_balance_tolerance() {
+        fn ink_row_span(png_bytes: &[u8], width_px: u32, height_px: u32) -> u32 {
+            let mut decoder = png::Decoder::new(Cursor::new(png_bytes));
+            decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
+            let mut reader = decoder.read_info().unwrap();
+            let mut output = vec![0; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut output).unwrap();
+            let bytes = &output[..info.buffer_size()];
+            let mut first_row = None;
+            let mut last_row = 0u32;
+            for y in 0..height_px {
+                let row_start = (y * width_px * 4) as usize;
+                let row_end = row_start + (width_px * 4) as usize;
+                let row_has_ink = bytes[row_start..row_end]
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[3] > 0);
+                if row_has_ink {
+                    first_row.get_or_insert(y);
+                    last_row = y;
+                }
+            }
+            last_row - first_row.unwrap_or(0) + 1
+        }
+
+        let options = RenderOptions::new(672.0, 15.0, 2).unwrap();
+        let latin_only = render_prose_block(
+            &block(BlockKind::Paragraph, "Hxypg quick brown fox"),
+            &options,
+        )
+        .unwrap();
+        let cjk_only = render_prose_block(
+            &block(BlockKind::Paragraph, "漢字仮名文章日本語吾輩猫"),
+            &options,
+        )
+        .unwrap();
+
+        let latin_span = ink_row_span(&latin_only.png, latin_only.width_px, latin_only.height_px);
+        let cjk_span = ink_row_span(&cjk_only.png, cjk_only.width_px, cjk_only.height_px);
+        let ratio = f64::from(cjk_span) / f64::from(latin_span);
+        assert!(
+            (0.85..=1.0).contains(&ratio),
+            "Latin ({latin_span}px) vs CJK ({cjk_span}px) ink-height balance drifted \
+             outside the accepted range (ratio={ratio:.3}); re-evaluate the prose \
+             font fallback order if this fails"
+        );
+    }
 }
