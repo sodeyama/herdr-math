@@ -283,6 +283,15 @@ struct Viewer {
     /// while `previously_emitted_ok` (reset to 0 on every successful
     /// emission). The viewer exits once this reaches 30.
     consecutive_route_failures: u32,
+    /// Test-only instrumentation: counts `redraw_status_bar` calls. Exists
+    /// because `StreamSink::Summary` (what every test viewer uses) makes
+    /// `set_status` a no-op, so the status-bar redraw itself has no other
+    /// observable effect a test can assert on — this is what let the
+    /// momentum-tick follow-disengage bug (row 1 silently staying on
+    /// "following" until the next unrelated redraw) ship without a failing
+    /// test.
+    #[cfg(test)]
+    status_bar_redraws: u32,
 }
 
 pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
@@ -464,6 +473,8 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
         scrollbar_visible_until: None,
         previously_emitted_ok: false,
         consecutive_route_failures: 0,
+        #[cfg(test)]
+        status_bar_redraws: 0,
     };
     let _ = viewer.stream.set_nonblocking(true);
     if log_enabled {
@@ -706,16 +717,20 @@ fn handle_scroll_input(
 /// crosses an integer boundary, reading as a stall rather than a smooth
 /// decelerating scroll.
 ///
-/// A no-op while following: momentum only ever accumulates from wheel
-/// input, which itself disengages follow the instant a notch actually moves
-/// the window off the bottom (see `handle_scroll_input` and
-/// `Viewport::scroll_by`'s re-pin-at-bottom rule), so momentum is never fed
-/// while following in practice — this only defends against a future caller
-/// feeding it while following.
+/// Momentum only ever accumulates from wheel input, but `handle_scroll_input`'s
+/// immediate wheel path does NOT disengage follow itself — it only calls
+/// `scroll_by(0.0)` (a clamp, see that function's doc comment) and coalesces
+/// the notch into `pending_wheel_rows` for this function to pick up. So while
+/// following is still true the very first time this function's own
+/// `scroll_by(whole_rows)` call below actually moves the offset off the
+/// bottom, and that first tick is exactly where the true→false transition
+/// becomes visible: it must be treated like any other follow-changing step
+/// (status bar redraw, scrollbar shown), not silently deferred to whatever
+/// follow-changing step happens to run next.
 ///
-/// Momentum CAN, however, carry the window back onto the bottom mid-decay
+/// Momentum CAN also carry the window back onto the bottom mid-decay
 /// (scrolling down toward the tail while a flick is still running) — this
-/// is a real follow transition, unlike a jump: `Viewport::scroll_by` now
+/// is the sister false→true transition, unlike a jump: `Viewport::scroll_by`
 /// re-engages follow the instant `scroll_by`'s result lands on
 /// `max_offset()` (the coordinator's fix), so a momentum tick must react to
 /// it exactly like any other follow-changing step: cancel the now-stale
@@ -764,10 +779,29 @@ fn apply_momentum_tick(viewer: &mut Viewer) -> Result<(), String> {
         finish_scroll_step(viewer, moved, true)?;
         return Ok(());
     }
-    // Momentum did not just re-engage follow (the common per-tick case:
-    // still decaying, still disengaged), so `scroll_by` here re-sets an
-    // already-false `follow` to itself — never a real transition — hence no
-    // `follow_changed` tracking or logging on this path.
+    if following_before && !viewer.viewport.following() {
+        // The sister transition of the branch above: `handle_scroll_input`'s
+        // immediate wheel path only clamps (`scroll_by(0.0)`), so the first
+        // actual offset move off the bottom happens right here, on this
+        // tick's `scroll_by(whole_rows)` call — this is where a wheel-up
+        // notch's follow-disengage really becomes visible, not somewhere the
+        // per-tick "always false" assumption below can cover. Route through
+        // the same shared tail every other follow-changing step already
+        // uses (`finish_scroll_step`) rather than `finish_momentum_step`'s
+        // incremental-only path, so the status bar's following/scrolled word
+        // and the scrollbar both update on this exact tick instead of
+        // silently waiting for a later transition (e.g. the next
+        // `momentum-bottom` re-pin, or a keyboard jump) to happen to redraw
+        // them.
+        log_follow_change_with_cause(viewer, true, "momentum-off-bottom");
+        finish_scroll_step(viewer, moved, true)?;
+        return Ok(());
+    }
+    // Momentum did not just change follow state (the common per-tick case:
+    // still decaying, follow state unchanged from before this tick), so
+    // `scroll_by` here re-sets follow to the same value it already had —
+    // never a real transition — hence no `follow_changed` tracking or
+    // logging on this path.
     if moved {
         finish_momentum_step(viewer, visible_before)?;
     }
@@ -786,9 +820,11 @@ fn apply_momentum_tick(viewer: &mut Viewer) -> Result<(), String> {
 /// `TerminalSink::try_scroll_window_incrementally`. Any other shape (a
 /// forward step, a `skip_rows_in_first` change mid-block, an empty visible
 /// range) falls back to the full `sync_visible_window`, which remains
-/// correct for it exactly as before stage 2. Momentum never toggles follow
-/// (see `apply_momentum_tick`'s doc comment), so there is no
-/// `follow_changed` parameter here.
+/// correct for it exactly as before stage 2. `apply_momentum_tick` only
+/// calls this function for a tick that did NOT just toggle follow (both
+/// toggle directions return early through `finish_scroll_step` instead — see
+/// that function's doc comment), so there is no `follow_changed` parameter
+/// here.
 fn finish_momentum_step(
     viewer: &mut Viewer,
     visible_before: viewer_viewport::VisibleRange,
@@ -1375,6 +1411,10 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
 /// UI chrome, not placed content, so a failed redraw must not disturb
 /// anything else `render_and_place`/`handle_scroll_input` already did.
 fn redraw_status_bar(viewer: &mut Viewer) {
+    #[cfg(test)]
+    {
+        viewer.status_bar_redraws += 1;
+    }
     let state = StatusBarState {
         following: viewer.viewport.following(),
         blocks: viewer.planner.blocks().len(),
@@ -1847,6 +1887,66 @@ mod tests {
         let offset_at_reengage = viewer.viewport.offset();
         apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         assert_eq!(viewer.viewport.offset(), offset_at_reengage);
+    }
+
+    /// Regression for the live scroll-lab observation: wheel-up while
+    /// following must update the status bar's following/scrolled word on
+    /// the SAME tick the offset actually leaves the bottom, not defer it to
+    /// whatever follow-changing step happens to run next. Before the fix,
+    /// `apply_momentum_tick`'s true→false transition fell through to
+    /// `finish_momentum_step`, which never calls `redraw_status_bar` — so
+    /// row 1 kept reading "following" until unrelated new content arrived.
+    /// This is the sister case of
+    /// `momentum_decay_reaching_the_bottom_reengages_follow_and_cancels_cleanly`,
+    /// which already covers the opposite (false→true) transition.
+    #[test]
+    fn a_wheel_up_momentum_tick_redraws_the_status_bar_the_moment_it_disengages_follow() {
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        viewer.viewport.jump_to_bottom_and_follow();
+        assert!(viewer.viewport.following());
+        let redraws_before = viewer.status_bar_redraws;
+
+        // Scroll up. `handle_scroll_input`'s own immediate `scroll_by(0.0)`
+        // clamp must not have moved anything or changed follow yet — it
+        // only coalesces into `pending_wheel_rows` for the tick below to
+        // apply.
+        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
+        assert!(viewer.viewport.following());
+        assert_eq!(
+            viewer.status_bar_redraws, redraws_before,
+            "the immediate wheel path is a no-op clamp; it must not redraw \
+             the status bar on its own"
+        );
+
+        // The decaying tail can take a few ticks to cross an integer row
+        // boundary (see `Viewer::momentum_remainder`'s field doc), so drive
+        // ticks — like `follow_disengages_on_scroll_and_reengages_on_end_or_
+        // shift_f` does — until the disengage actually happens, then assert
+        // the redraw landed on that exact tick rather than being deferred.
+        let mut disengaged_tick = None;
+        for tick in 0..5 {
+            apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
+            if !viewer.viewport.following() {
+                disengaged_tick = Some(tick);
+                break;
+            }
+            assert_eq!(
+                viewer.status_bar_redraws, redraws_before,
+                "follow has not changed yet on tick {tick}; the status bar \
+                 must not redraw before the transition actually happens"
+            );
+        }
+        assert!(
+            disengaged_tick.is_some(),
+            "momentum must eventually move the offset off the bottom within 5 ticks"
+        );
+        assert_eq!(
+            viewer.status_bar_redraws,
+            redraws_before + 1,
+            "the status bar must redraw on the exact tick follow disengages, \
+             not on some later unrelated redraw"
+        );
     }
 
     /// A scroll step that actually moves the offset while disengaged must
@@ -2418,6 +2518,8 @@ mod tests {
             scrollbar_visible_until: None,
             previously_emitted_ok: false,
             consecutive_route_failures: 0,
+            #[cfg(test)]
+            status_bar_redraws: 0,
         }
     }
 
