@@ -15,6 +15,16 @@ use tmath_core::placement::TerminalOp;
 
 const TRANSPORT_ENV: &str = "TMATH_TMUX_TRANSPORT";
 
+const REFUSAL_NO_CLIENT: &str =
+    "tmux has no attached client; graphics need an attached Kitty-capable terminal";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OuterTerminal {
+    Verified,
+    Unverified(String),
+    NoClient,
+}
+
 const REFUSAL_PIPED_STDIN: &str =
     "skipped Kitty graphics on stdout for piped input; use `tmath agent` and the viewer pane";
 const REFUSAL_EMBEDDED_TERMINAL: &str = "skipped Kitty graphics in the embedded coding-agent terminal; use `tmath agent` and the viewer pane";
@@ -37,6 +47,10 @@ impl Route {
 }
 
 pub(crate) fn selected_route() -> Result<Route, String> {
+    selected_route_detailed().map_err(|(_, message)| message)
+}
+
+pub(crate) fn selected_route_detailed() -> Result<Route, (OuterTerminal, String)> {
     if !tmath_core::kitty::inside_tmux() {
         // #region agent log
         debug_log(
@@ -54,7 +68,7 @@ pub(crate) fn selected_route() -> Result<Route, String> {
         return Ok(Route::Direct);
     }
     let transport_env = env::var(TRANSPORT_ENV).ok();
-    let known_outer = known_outer_terminal();
+    let outer = outer_terminal();
     // #region agent log
     debug_log(
         "A,B",
@@ -62,7 +76,8 @@ pub(crate) fn selected_route() -> Result<Route, String> {
         "selecting tmux graphics route",
         serde_json::json!({
             "transportEnv": transport_env.as_deref().unwrap_or("<unset>"),
-            "knownOuter": known_outer,
+            "knownOuter": matches!(outer, OuterTerminal::Verified),
+            "outerTerminal": format!("{outer:?}"),
             "clientTermname": tmux_value(&["display-message", "-p", "#{client_termname}"]).unwrap_or_else(|| "unknown".into()),
             "allowPassthrough": tmux_value(&["show-options", "-w", "-v", "allow-passthrough"]).unwrap_or_else(|| "unknown".into())
         }),
@@ -73,12 +88,10 @@ pub(crate) fn selected_route() -> Result<Route, String> {
     // owned by a relay such as a terminal-session daemon, where neither the
     // advertised termname nor the process ancestry can reach the real
     // terminal). Without it, stay fail-closed on unverified outers.
-    if transport_env.is_none() && !known_outer {
-        return Err(
-            "tmux outer terminal is not a verified Kitty target; refusing placeholder output \
-             (set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override)"
-                .into(),
-        );
+    if transport_env.is_none() {
+        if let Some(message) = outer_terminal_refusal(&outer) {
+            return Err((outer, message));
+        }
     }
     let route = route_from_transport_env(transport_env.as_deref());
     // #region agent log
@@ -89,7 +102,7 @@ pub(crate) fn selected_route() -> Result<Route, String> {
         serde_json::json!({"route": route.as_ref().map(|value| value.label()).unwrap_or("error")}),
     );
     // #endregion
-    route
+    route.map_err(|message| (OuterTerminal::Verified, message))
 }
 
 /// Returns a refusal reason when Kitty graphics would be written to stdout in
@@ -374,18 +387,50 @@ fn write_same_stream(
         .map_err(|error| format!("flush terminal output: {error}"))
 }
 
-fn known_outer_terminal() -> bool {
-    let advertised = tmux_value(&["display-message", "-p", "#{client_termname}"])
-        .map(|name| {
-            let name = name.to_ascii_lowercase();
-            name.contains("ghostty") || name.contains("kitty") || name.contains("wezterm")
-        })
+fn is_absent_or_empty(value: Option<&str>) -> bool {
+    value.map(|value| value.is_empty()).unwrap_or(true)
+}
+
+fn classify_outer_terminal(
+    client_termname: Option<&str>,
+    client_tty_path: Option<&str>,
+    tty_owner_is_known: bool,
+) -> OuterTerminal {
+    if is_absent_or_empty(client_termname) && is_absent_or_empty(client_tty_path) {
+        return OuterTerminal::NoClient;
+    }
+    if tty_owner_is_known {
+        return OuterTerminal::Verified;
+    }
+    if let Some(name) = client_termname.filter(|name| !name.is_empty()) {
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("ghostty") || lower.contains("kitty") || lower.contains("wezterm") {
+            return OuterTerminal::Verified;
+        }
+        return OuterTerminal::Unverified(name.to_string());
+    }
+    OuterTerminal::Unverified("unknown".into())
+}
+
+fn outer_terminal_refusal(outer: &OuterTerminal) -> Option<String> {
+    match outer {
+        OuterTerminal::NoClient => Some(REFUSAL_NO_CLIENT.into()),
+        OuterTerminal::Unverified(name) => Some(format!(
+            "tmux outer terminal '{name}' is not a verified Kitty target; set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override"
+        )),
+        OuterTerminal::Verified => None,
+    }
+}
+
+fn outer_terminal() -> OuterTerminal {
+    let termname = tmux_value(&["display-message", "-p", "#{client_termname}"])
+        .filter(|name| !name.is_empty());
+    let tty_path = query_client_tty_path();
+    let owner_known = tty_path
+        .as_deref()
+        .map(client_owner_is_known)
         .unwrap_or(false);
-    advertised
-        || query_client_tty_path()
-            .as_deref()
-            .map(client_owner_is_known)
-            .unwrap_or(false)
+    classify_outer_terminal(termname.as_deref(), tty_path.as_deref(), owner_known)
 }
 
 fn tmux_value(args: &[&str]) -> Option<String> {
@@ -644,6 +689,81 @@ mod tests {
     #[test]
     fn stdout_graphics_refusal_allows_client_tty_even_with_piped_stdin() {
         assert!(stdout_graphics_refusal(Route::TmuxClientTty).is_none());
+    }
+
+    #[test]
+    fn classify_outer_terminal_detects_no_client() {
+        assert_eq!(
+            classify_outer_terminal(None, None, false),
+            OuterTerminal::NoClient
+        );
+        assert_eq!(
+            classify_outer_terminal(Some(""), None, false),
+            OuterTerminal::NoClient
+        );
+        assert_eq!(
+            classify_outer_terminal(None, Some(""), false),
+            OuterTerminal::NoClient
+        );
+    }
+
+    #[test]
+    fn classify_outer_terminal_detects_empty_termname_with_tty() {
+        assert_eq!(
+            classify_outer_terminal(None, Some("/dev/ttys001"), false),
+            OuterTerminal::Unverified("unknown".into())
+        );
+        assert_eq!(
+            classify_outer_terminal(Some(""), Some("/dev/ttys001"), false),
+            OuterTerminal::Unverified("unknown".into())
+        );
+        assert_eq!(
+            classify_outer_terminal(None, Some("/dev/ttys001"), true),
+            OuterTerminal::Verified
+        );
+    }
+
+    #[test]
+    fn classify_outer_terminal_verifies_known_terminals_case_insensitively() {
+        for name in [
+            "ghostty",
+            "Ghostty",
+            "xterm-ghostty",
+            "kitty",
+            "KITTY",
+            "wezterm",
+        ] {
+            assert_eq!(
+                classify_outer_terminal(Some(name), None, false),
+                OuterTerminal::Verified,
+                "expected {name} to verify"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_outer_terminal_marks_unrelated_names_unverified() {
+        assert_eq!(
+            classify_outer_terminal(Some("xterm-256color"), Some("/dev/ttys001"), false),
+            OuterTerminal::Unverified("xterm-256color".into())
+        );
+    }
+
+    #[test]
+    fn outer_terminal_refusal_messages_match_spec() {
+        assert_eq!(
+            outer_terminal_refusal(&OuterTerminal::NoClient).unwrap(),
+            REFUSAL_NO_CLIENT
+        );
+        assert_eq!(
+            outer_terminal_refusal(&OuterTerminal::Unverified("xterm-256color".into())).unwrap(),
+            "tmux outer terminal 'xterm-256color' is not a verified Kitty target; set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override"
+        );
+        assert_eq!(
+            outer_terminal_refusal(&OuterTerminal::Unverified("unknown".into())).unwrap(),
+            "tmux outer terminal 'unknown' is not a verified Kitty target; set TMATH_TMUX_TRANSPORT=client-tty or passthrough to override"
+        );
+        assert!(outer_terminal_refusal(&OuterTerminal::Verified).is_none());
     }
 
     #[test]
