@@ -202,12 +202,21 @@ pipeline to show a coding agent's finished answers in a separate tmux pane:
   re-anchoring a visibility window — a full visibility-driven re-emission
   (AT-3-503) is not yet implemented. The viewer closes on `q`/Ctrl-C.
 - Under `$TMUX`, graphics and pane-local output are separate operations. The
-  default route writes only Kitty APC commands to the validated visible client
-  tty; cursor movement, terminal modes, color CSI, line breaks, and Unicode
-  placeholders remain normal tmux pane output. The optional stable-tmux route
-  independently DCS-wraps each Kitty APC with every embedded `ESC` doubled.
-  Graphics probes are skipped because replies cannot be routed reliably, and
-  cell size comes from winsize; outside tmux probing stays mandatory.
+  default route DCS-wraps each Kitty APC (every embedded `ESC` doubled) as
+  tmux passthrough, so graphics bytes are serialized through tmux's own
+  output queue against every other pane's output; it requires
+  `allow-passthrough on` (checked when the route is defaulted, refused with
+  an actionable message otherwise). The optional client-tty route
+  (`TMATH_TMUX_TRANSPORT=client-tty`) writes Kitty APC commands directly to
+  the validated visible client tty; it bypasses tmux relay quirks but its
+  writes are NOT serialized against tmux's own output — concurrent heavy
+  pane output can tear an escape mid-sequence and desync the outer
+  terminal's parser (observed live 2026-08-05 as raw base64 sprayed over the
+  window), which is why it is no longer the default. Cursor movement,
+  terminal modes, color CSI, line breaks, and Unicode placeholders remain
+  normal tmux pane output on both routes. Graphics probes are skipped
+  because replies cannot be routed reliably, and cell size comes from
+  winsize; outside tmux probing stays mandatory.
 
 Recorded behavior (P1): controlled image pixels display in Ghostty 1.3.1 and
 cmux 0.64.12 through tmux 3.5a using the client-tty graphics route. The corrected

@@ -79,6 +79,14 @@ pub(crate) fn selected_route_detailed() -> Result<Route, (OuterTerminal, String)
         }
     }
     let route = route_from_transport_env(transport_env.as_deref());
+    // The defaulted passthrough route only works when tmux actually relays
+    // passthrough content; an explicit TMATH_TMUX_TRANSPORT value skips this
+    // check (same user-assertion contract as the outer-terminal override).
+    if transport_env.is_none() {
+        if let (Ok(Route::TmuxPassthrough), Some(message)) = (&route, passthrough_refusal()) {
+            return Err((outer, message));
+        }
+    }
     write_debug_event(
         "route_selected",
         serde_json::json!({"route": route.as_ref().map(|value| value.label()).unwrap_or("error")}),
@@ -118,10 +126,37 @@ fn route_from_transport_env(value: Option<&str>) -> Result<Route, String> {
         Some(value) => Err(format!(
             "{TRANSPORT_ENV} must be 'passthrough' or 'client-tty', got {value:?}"
         )),
-        // A direct write of graphics-only APCs to the attached client's tty
-        // avoids terminal-specific DCS relay bugs in both Ghostty and cmux.
-        // Pane-local bytes still go through tmux on stdout.
-        None => Ok(Route::TmuxClientTty),
+        // Default to passthrough: its bytes flow through tmux's own output
+        // queue, so graphics writes are serialized against every other
+        // pane's output. The previous client-tty default wrote graphics
+        // APCs directly to the attached client's tty, and a write landing
+        // between two chunks of tmux's own stream desynced the outer
+        // terminal's escape parser — observed live on 2026-08-05 as raw
+        // base64 payload sprayed across the window while another pane was
+        // streaming heavily. client-tty remains available as an explicit
+        // opt-in for terminals with broken passthrough relays.
+        None => Ok(Route::TmuxPassthrough),
+    }
+}
+
+/// Whether a tmux `allow-passthrough` option value permits passthrough
+/// writes. Empty/unset and `off` both mean tmux silently DISCARDS
+/// passthrough content, which would present as "no images, no error" — so
+/// the defaulted passthrough route refuses instead (fail closed with an
+/// actionable message, matching the outer-terminal gate's style).
+fn passthrough_option_allows(value: Option<&str>) -> bool {
+    matches!(value, Some("on") | Some("all"))
+}
+
+fn passthrough_refusal() -> Option<String> {
+    let value = tmux_value(&["show-options", "-w", "-A", "-v", "allow-passthrough"]);
+    if passthrough_option_allows(value.as_deref().map(str::trim).filter(|v| !v.is_empty())) {
+        None
+    } else {
+        Some(format!(
+            "tmux allow-passthrough is not enabled ({}); run 'tmux set-option -g allow-passthrough on' or set {TRANSPORT_ENV}=client-tty",
+            value.as_deref().filter(|v| !v.is_empty()).unwrap_or("unset")
+        ))
     }
 }
 
@@ -541,9 +576,11 @@ mod tests {
 
     #[test]
     fn transport_env_selects_the_tmux_route() {
+        // Defaulting to passthrough (serialized through tmux's own output
+        // queue) is the 2026-08-05 torn-escape fix; client-tty is opt-in.
         assert_eq!(
             route_from_transport_env(None).unwrap(),
-            Route::TmuxClientTty
+            Route::TmuxPassthrough
         );
         assert_eq!(
             route_from_transport_env(Some("client-tty")).unwrap(),
@@ -554,6 +591,15 @@ mod tests {
             Route::TmuxPassthrough
         );
         assert!(route_from_transport_env(Some("dcs")).is_err());
+    }
+
+    #[test]
+    fn passthrough_option_gate_accepts_only_on_and_all() {
+        assert!(passthrough_option_allows(Some("on")));
+        assert!(passthrough_option_allows(Some("all")));
+        assert!(!passthrough_option_allows(Some("off")));
+        assert!(!passthrough_option_allows(Some("")));
+        assert!(!passthrough_option_allows(None));
     }
 
     #[test]
