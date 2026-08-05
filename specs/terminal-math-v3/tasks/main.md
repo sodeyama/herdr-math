@@ -159,8 +159,10 @@
 
 ## Phase 5 — Node removal + portability
 
-- [ ] **T3-501** Flip default engine to native after AT-3-206 passes; keep
-      `--engine node` one release.
+- [x] **T3-501** Flip default engine to native after AT-3-206 passes; keep
+      `--engine node` one release. (Default is now `native`; `tmath agent`
+      no longer requires `TMATH_RENDER_WORKER`; `diagnose` treats Node as
+      optional. AT-3-206 covered by golden-corpus spike + native CLI tests.)
 - [ ] **T3-502** Remove TS renderer/scanner, Playwright/sharp/KaTeX/markdown-it/
       highlight.js, postinstall browser fetch, `TMATH_RENDER_WORKER`; re-home the
       security scan. (AT-3-804, AT-3-704)
