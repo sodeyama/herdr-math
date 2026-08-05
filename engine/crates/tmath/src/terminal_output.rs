@@ -94,16 +94,16 @@ pub(crate) fn selected_route() -> Result<Route, String> {
 
 /// Returns a refusal reason when Kitty graphics would be written to stdout in
 /// a context where the host UI is likely to show the raw APC payload as text
-/// (coding-agent tool shells, piped `tmath render -`, and similar).
+/// (embedded coding-agent terminals and tmux passthrough from a piped render).
 pub(crate) fn stdout_graphics_refusal(route: Route) -> Option<&'static str> {
     if !matches!(route, Route::Direct | Route::TmuxPassthrough) {
         return None;
     }
-    if !io::stdin().is_terminal() {
-        return Some(REFUSAL_PIPED_STDIN);
-    }
     if embedded_coding_terminal() && !tmath_core::kitty::inside_tmux() {
         return Some(REFUSAL_EMBEDDED_TERMINAL);
+    }
+    if !io::stdin().is_terminal() && route == Route::TmuxPassthrough {
+        return Some(REFUSAL_PIPED_STDIN);
     }
     None
 }
