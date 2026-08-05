@@ -12,8 +12,8 @@ use pulldown_cmark::{Alignment, CodeBlockKind, CowStr, Event, HeadingLevel, Opti
 use crate::{
     limits::{render_guard, RenderDeadline},
     math::render_formula_with_deadline,
-    scan_latex, Block, BlockKind, ErrorCode, Limits, MathImage, RenderError, RenderOptions,
-    SafeErrorRecord, ScannerLimits, DARK_THEME_TEXT_COLOR,
+    scan_latex, Block, BlockKind, ErrorCode, Formula, Limits, MathImage, RenderError,
+    RenderOptions, SafeErrorRecord, ScannerLimits, DARK_THEME_TEXT_COLOR,
 };
 
 /// Line rhythm (D-LINE): the em multiples that produce the composed page's
@@ -138,17 +138,33 @@ pub(crate) fn compose_block_with_deadline(
 ) -> Result<TypstSource, RenderError> {
     limits.check_source_bytes_per_block(block.source.len() as u64)?;
     validate_options(options)?;
-    if supports_math_embedding(block.kind) {
-        // This block-wide pass enforces scanner counters before individual text
-        // runs are converted into safe Typst nodes.
-        scan_latex(&block.source, &ScannerLimits::default())?;
-    }
+    // AGENTS.md's Product Boundaries requires `$...$`/`$$...$$` to be parsed
+    // FIRST, before Markdown — scanned here, over the whole block source, so
+    // every formula's span is known before pulldown-cmark ever sees the
+    // text. This is not optional plumbing: pulldown-cmark's inline parser
+    // splits a block's text into multiple `Event::Text`/`Event::InlineHtml`
+    // pieces at `_`, `*`, and `<` (emphasis/HTML-tag candidates), so a
+    // formula spanning one of those characters — `$Z_{in}$`, `$a*b$`,
+    // `$0 \le r < \infty$` — would land in more than one `Node::Text` and
+    // never look contiguous to a per-node scan. `protect_formula_spans`
+    // below replaces each formula's exact source bytes with an opaque
+    // placeholder token before handing the text to pulldown-cmark, so no
+    // Markdown-significant character from inside a formula ever reaches the
+    // inline parser; `push_text_with_math` restores the real formula from
+    // `context.formulas` by index wherever a placeholder survives into a
+    // `Node::Text`.
+    let formulas = if supports_math_embedding(block.kind) {
+        scan_latex(&block.source, &ScannerLimits::default())?
+    } else {
+        Vec::new()
+    };
+    let protected_source = protect_formula_spans(&block.source, &formulas);
     deadline.checkpoint()?;
 
-    let mut events = Parser::new_ext(&block.source, Options::ENABLE_TABLES).peekable();
+    let mut events = Parser::new_ext(&protected_source, Options::ENABLE_TABLES).peekable();
     let nodes = parse_nodes(&mut events);
     let mut body = String::new();
-    let mut context = MathContext::new(block.index, options, limits, deadline);
+    let mut context = MathContext::new(block.index, options, limits, deadline, formulas);
     render_nodes(&nodes, &mut body, &mut context)?;
     if body.is_empty() {
         body.push_str("#text(\"\")");
@@ -193,6 +209,93 @@ fn supports_math_embedding(kind: BlockKind) -> bool {
             | BlockKind::Quote
             | BlockKind::Table
     )
+}
+
+/// Brackets a formula placeholder token: two Unicode Private Use Area
+/// codepoints that never occur in ordinary Markdown/LaTeX source, so a
+/// placeholder can never collide with real text and is never itself
+/// Markdown-significant (no `_`, `*`, `<`, backtick, etc. inside it) —
+/// pulldown-cmark passes it through as an ordinary character in a `Text`
+/// event, never splitting on it.
+const FORMULA_PLACEHOLDER_START: char = '\u{E000}';
+const FORMULA_PLACEHOLDER_END: char = '\u{E001}';
+
+/// Replaces each formula's exact source span (delimiters included) with an
+/// opaque placeholder token encoding its index into `formulas` — see the
+/// doc comment on the `protect_formula_spans` call site in
+/// `compose_block_with_deadline` for why this must happen before
+/// pulldown-cmark ever sees the text. Byte-range replacement, driven
+/// entirely by `Formula::start`/`end` (already validated UTF-8-safe byte
+/// offsets from `scan_latex`), so this never needs to re-parse LaTeX or
+/// second-guess the scanner's delimiter matching.
+fn protect_formula_spans(source: &str, formulas: &[Formula]) -> String {
+    if formulas.is_empty() {
+        return source.to_string();
+    }
+    let mut protected = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (index, formula) in formulas.iter().enumerate() {
+        protected.push_str(&source[cursor..formula.start]);
+        protected.push(FORMULA_PLACEHOLDER_START);
+        protected.push_str(&index.to_string());
+        protected.push(FORMULA_PLACEHOLDER_END);
+        cursor = formula.end;
+    }
+    protected.push_str(&source[cursor..]);
+    protected
+}
+
+/// Scans `text` for `protect_formula_spans`' placeholder tokens, splitting
+/// it into an ordered sequence of literal text runs and formula indices.
+/// Any `FORMULA_PLACEHOLDER_START` not immediately followed by digits and a
+/// matching `FORMULA_PLACEHOLDER_END` is treated as literal text (fail
+/// closed — a placeholder can only ever come from this module's own
+/// `protect_formula_spans`, but a malformed one must never panic or drop
+/// content).
+fn split_formula_placeholders(text: &str) -> Vec<TextSegment<'_>> {
+    let mut segments = Vec::new();
+    let mut literal_start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((byte_index, character)) = chars.next() {
+        if character != FORMULA_PLACEHOLDER_START {
+            continue;
+        }
+        let digits_start = byte_index + character.len_utf8();
+        let mut digits_end = digits_start;
+        while let Some(&(_, next_char)) = chars.peek() {
+            if next_char.is_ascii_digit() {
+                digits_end += next_char.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        let Some(&(end_index, FORMULA_PLACEHOLDER_END)) = chars.peek() else {
+            continue;
+        };
+        if digits_end == digits_start {
+            continue;
+        }
+        let Ok(formula_index) = text[digits_start..digits_end].parse::<usize>() else {
+            continue;
+        };
+        chars.next();
+        let placeholder_end = end_index + FORMULA_PLACEHOLDER_END.len_utf8();
+        if literal_start < byte_index {
+            segments.push(TextSegment::Literal(&text[literal_start..byte_index]));
+        }
+        segments.push(TextSegment::Formula(formula_index));
+        literal_start = placeholder_end;
+    }
+    if literal_start < text.len() {
+        segments.push(TextSegment::Literal(&text[literal_start..]));
+    }
+    segments
+}
+
+enum TextSegment<'a> {
+    Literal(&'a str),
+    Formula(usize),
 }
 
 fn validate_options(options: &RenderOptions) -> Result<(), RenderError> {
@@ -358,7 +461,24 @@ fn heading_level(level: HeadingLevel) -> u8 {
 
 struct MathContext<'a> {
     block_index: usize,
-    next_formula_index: usize,
+    /// Every formula `scan_latex` found in the whole block source, indexed
+    /// by the placeholder tokens `protect_formula_spans` wrote in their
+    /// place. `push_text_with_math` looks a formula up by this index rather
+    /// than re-scanning `text` — the whole point of the placeholder
+    /// protocol is that `text` (one `Node::Text`'s contents) may no longer
+    /// contain a formula's Markdown-significant characters contiguously,
+    /// so re-scanning it here would reproduce the original bug.
+    formulas: Vec<Formula>,
+    /// Tracks which `formulas` indices have already been rendered, so a
+    /// placeholder that somehow appears twice (never expected in practice,
+    /// but not provably impossible if a future Markdown construct clones
+    /// text) renders its image at most once rather than re-running
+    /// `render_formula_with_deadline` — that call is not free, and
+    /// `static_files` entries are keyed by `(block_index, rendered
+    /// count)`, not by formula index, so a duplicate render would silently
+    /// double-count against the render-guard/deadline budget for no
+    /// visible benefit.
+    rendered: Vec<bool>,
     options: &'a RenderOptions,
     limits: &'a Limits,
     deadline: &'a RenderDeadline,
@@ -372,10 +492,13 @@ impl<'a> MathContext<'a> {
         options: &'a RenderOptions,
         limits: &'a Limits,
         deadline: &'a RenderDeadline,
+        formulas: Vec<Formula>,
     ) -> Self {
+        let rendered = vec![false; formulas.len()];
         Self {
             block_index,
-            next_formula_index: 0,
+            formulas,
+            rendered,
             options,
             limits,
             deadline,
@@ -384,34 +507,59 @@ impl<'a> MathContext<'a> {
         }
     }
 
+    /// Renders `text` (one `Node::Text`'s contents) into the composed Typst
+    /// body: literal runs go through the usual escaped `#text(...)` call,
+    /// and each formula-placeholder token is resolved by index against
+    /// `self.formulas` and rendered as an image (or an `[invalid latex]`
+    /// badge, matching the pre-fix per-formula error contract). A
+    /// placeholder index out of range or already consumed is treated as
+    /// literal text — defensive only; `protect_formula_spans` never
+    /// produces such a token, but this keeps the function total rather
+    /// than panicking on a state it should never reach.
     fn push_text_with_math(&mut self, text: &str, output: &mut String) -> Result<(), RenderError> {
-        let formulas = scan_latex(text, &ScannerLimits::default())?;
-        let mut cursor = 0;
-        for formula in formulas {
-            push_text_call(output, &text[cursor..formula.start]);
-            let formula_index = self.next_formula_index;
-            self.next_formula_index += 1;
-            match render_formula_with_deadline(
-                &formula.latex,
-                formula.display,
-                self.options,
-                self.limits,
-                self.deadline,
-            ) {
-                Ok(image) => {
-                    let name = format!("math-{}-{formula_index}.svg", self.block_index);
-                    push_math_image(output, &name, &image, formula.display);
-                    self.static_files.push((name, image.svg));
+        for segment in split_formula_placeholders(text) {
+            match segment {
+                TextSegment::Literal(literal) => push_text_call(output, literal),
+                TextSegment::Formula(formula_index) => {
+                    let already_rendered = self.rendered.get(formula_index).copied();
+                    let Some(formula) = (already_rendered == Some(false))
+                        .then(|| self.formulas.get(formula_index))
+                        .flatten()
+                        .cloned()
+                    else {
+                        // Out of range or already consumed: fall back to
+                        // literal text rather than silently dropping it.
+                        push_text_call(
+                            output,
+                            &format!(
+                                "{FORMULA_PLACEHOLDER_START}{formula_index}{FORMULA_PLACEHOLDER_END}"
+                            ),
+                        );
+                        continue;
+                    };
+                    self.rendered[formula_index] = true;
+                    let rendered_count = self.static_files.len();
+                    match render_formula_with_deadline(
+                        &formula.latex,
+                        formula.display,
+                        self.options,
+                        self.limits,
+                        self.deadline,
+                    ) {
+                        Ok(image) => {
+                            let name = format!("math-{}-{rendered_count}.svg", self.block_index);
+                            push_math_image(output, &name, &image, formula.display);
+                            self.static_files.push((name, image.svg));
+                        }
+                        Err(error) if error.safe_record().code == ErrorCode::InvalidLatex => {
+                            self.formula_errors.push(error.into_safe_record());
+                            push_raw_call(output, "[invalid latex]", false, None);
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
-                Err(error) if error.safe_record().code == ErrorCode::InvalidLatex => {
-                    self.formula_errors.push(error.into_safe_record());
-                    push_raw_call(output, "[invalid latex]", false, None);
-                }
-                Err(error) => return Err(error),
             }
-            cursor = formula.end;
         }
-        push_text_call(output, &text[cursor..]);
         Ok(())
     }
 }
@@ -837,5 +985,167 @@ mod tests {
             "{}",
             source.source
         );
+    }
+
+    // --- Scanner recognition gaps (D-SCAN): formula spans crossing a
+    // Markdown-significant character must still be recognized as one
+    // formula, not split into literal text by pulldown-cmark's inline
+    // parser. See the doc comment on `protect_formula_spans`'s call site in
+    // `compose_block_with_deadline` for the mechanism.
+
+    /// Whether `source` (one whole paragraph) was recognized as containing
+    /// a `$...$` formula span by `scan_latex`, whether or not that LaTeX
+    /// was itself valid — a recognized-but-invalid formula still renders
+    /// an `[invalid latex]` badge (`formula_errors` non-empty) rather than
+    /// falling all the way through to literal text, which is what
+    /// distinguishes "the scanner didn't see this as math at all" (the bug
+    /// this fix addresses) from "the scanner saw it but the LaTeX itself
+    /// was bad" (a separate, expected outcome — see
+    /// `prose.rs::one_invalid_formula_becomes_a_badge_without_harming_siblings`).
+    fn recognized_as_math(source: &str) -> bool {
+        let composed = compose_block(&block(source), &RenderOptions::default()).unwrap();
+        composed.source.contains("image(\"math-") || !composed.formula_errors.is_empty()
+    }
+
+    #[test]
+    fn formulas_crossing_underscore_asterisk_or_angle_bracket_are_recognized() {
+        // Each of these previously split across multiple pulldown-cmark
+        // Text/InlineHtml events and fell through to literal text.
+        let cases = [
+            r"$Z_{in}$",                      // braced subscript
+            r"$V_{BE}$",                      // braced subscript, EE notation
+            r"$r_\pi$",                       // subscript then a command
+            r"$\{x\}$",                       // escaped brace
+            r"$V_T \approx 26\,\mathrm{mV}$", // thin space
+            r"$a*b$",                         // bare asterisk
+            r"$0 \le r < \infty$",            // bare less-than
+            r"$a<b>c$",                       // less-than mixed with greater-than
+        ];
+        for case in cases {
+            assert!(
+                recognized_as_math(case),
+                "expected math recognition: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn previously_working_recognition_cases_do_not_regress() {
+        let cases = [
+            r"$x_i$",
+            r"$x^2$",
+            r"$x^{2}$",
+            r"$|x|$",
+            r"$a>b$", // bare greater-than alone was already fine
+            r"$a \le b \times c$",
+            r"$a \badcmd b$", // an unknown command is still a formula span
+        ];
+        for case in cases {
+            assert!(
+                recognized_as_math(case),
+                "expected math recognition: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn currency_and_js_template_text_still_reads_as_literal() {
+        // The desired rejections: these must never be mistaken for math,
+        // with or without the placeholder protocol in the way. The
+        // Japanese-currency phrasing is the exact live-corpus shape (a
+        // dollar sign immediately followed by a number and full-width
+        // Japanese text, not a plausible LaTeX body) — the scanner's own
+        // heuristics decide these are not formulas; this test only proves
+        // the placeholder-protocol change did not alter that outcome.
+        let cases = [
+            "$10/月、Business $20/月",
+            "js template ${x}",
+            "price list: $5, $10, $15",
+        ];
+        for case in cases {
+            assert!(
+                !recognized_as_math(case),
+                "expected literal text, not math: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_paragraph_mixing_recognized_math_rejected_currency_and_multibyte_context_composes_correctly(
+    ) {
+        // Mirrors the live failure shape: Japanese prose (with full-width
+        // punctuation) containing both a formula that used to fail to
+        // scan and a currency-shaped span that must keep failing to scan,
+        // in the same paragraph.
+        let source = "抵抗値は$Z_{in}$で、価格は$10/月です（$20/月ではありません）。$a_i$も使う。";
+        let composed = compose_block(&block(source), &RenderOptions::default()).unwrap();
+        // Two real formulas ($Z_{in}$ and $a_i$) -> two rendered images.
+        let image_count = composed.source.matches("image(\"math-").count();
+        assert_eq!(
+            image_count, 2,
+            "expected exactly the two real formulas to render: {}",
+            composed.source
+        );
+        // The currency text must survive as literal, escaped text — not
+        // consumed as (part of) a formula and not dropped.
+        assert!(composed.source.contains("価格"));
+        assert!(composed.source.contains("月です"));
+    }
+
+    #[test]
+    fn greater_than_ampersand_and_html_looking_text_inside_math_render_as_math() {
+        // `>`, `&`, and HTML-tag-shaped text INSIDE a formula span must all
+        // resolve as part of the one recognized formula, not be peeled off
+        // by the Markdown inline parser the way `<` alone used to be.
+        let cases = [r"$a > b \& c$", r"$a < b$", r"$\langle x \rangle$"];
+        for case in cases {
+            assert!(
+                recognized_as_math(case),
+                "expected math recognition: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_literal_less_than_outside_math_stays_inert_text_never_html() {
+        // AGENTS.md: the renderer never executes/interprets raw HTML. A
+        // bare `<` outside any `$...$` span must render as literal escaped
+        // text, not become (or be swallowed as) HTML — this is the
+        // "generic tags stay literal" half of AT-3-701's injection
+        // contract, exercised here specifically against the placeholder
+        // protocol added by this fix (a stray, unprotected `<` in the
+        // non-formula part of the source must still go through
+        // `push_text_call`, not leak past it).
+        //
+        // pulldown-cmark still splits this into several `Text` events
+        // around the bare `<` — that is pre-existing, unrelated to this
+        // fix (only formula spans need protecting), and harmless: each
+        // piece still comes out through the same escaped `#text(...)`
+        // call, so Typst concatenates them back into one line visually.
+        // The assertion below checks each literal piece is present and
+        // properly escaped as text, not that they are joined into one
+        // Rust string.
+        let source = "1 < 2 and no math here";
+        let composed = compose_block(&block(source), &RenderOptions::default()).unwrap();
+        assert!(!composed.source.contains("image(\"math-"));
+        assert!(!composed.source.contains("#eval"));
+        assert!(composed.source.contains("#text(\"1 \")"));
+        assert!(composed.source.contains("#text(\"<\")"));
+        assert!(composed.source.contains("#text(\" 2 and no math here\")"));
+        // Never a bare, unescaped HTML-tag-shaped Typst call.
+        assert!(!composed.source.contains("<2"));
+    }
+
+    #[test]
+    fn a_malformed_placeholder_like_string_in_ordinary_text_is_not_mistaken_for_a_formula() {
+        // Defense-in-depth: `split_formula_placeholders` must never treat
+        // stray Private Use Area characters typed by a user as a formula
+        // reference. This can only arise if a user's own text happens to
+        // contain the placeholder codepoints; confirms the fail-closed
+        // "keep as literal" behavior documented on
+        // `split_formula_placeholders`.
+        let source = "weird chars: \u{E000}not-a-formula\u{E001} end";
+        let composed = compose_block(&block(source), &RenderOptions::default()).unwrap();
+        assert!(!composed.source.contains("image(\"math-"));
     }
 }
