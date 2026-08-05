@@ -47,6 +47,7 @@
     "test:performance": "cargo test -p tmath performance -- --ignored",
     "test:unit": "vitest run tests/unit",
     "typecheck": "tsc --noEmit",
+    "smoke:install-launcher": "bash scripts/smoke-install-launcher.sh",
     "smoke:render": "vitest run tests/integration/renderer.spec.ts --reporter=verbose"
   },
   "prettier": {
