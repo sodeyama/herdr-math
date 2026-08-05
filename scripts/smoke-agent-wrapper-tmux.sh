@@ -152,14 +152,17 @@ check() {
 # `tmath agent ...` command embedded in the resulting pane_start_command is
 # never actually invoked here; only its literal text is asserted on.
 NESTED_SESSION="tmath-probe-$$"
-PATH="$SHIM_DIR:/usr/bin:/bin" TMATH_TMUX_TRANSPORT=passthrough bash -c "
+# `bash -x` trace: this block once failed only on CI, silently — keep the
+# trace so a regression names the exact nested command instead of leaving
+# an empty pane_start_command with no clue.
+PATH="$SHIM_DIR:/usr/bin:/bin" TMATH_TMUX_TRANSPORT=passthrough bash -x -c "
   source '$WRAPPER'
   quoted=\$(__tmath_shell_quote_args /bin/sleep 30)
   tmux new-session -d -s '$NESTED_SESSION' \"\$quoted\"
   agent_pane=\$(tmux list-panes -t '$NESTED_SESSION' -F '#{pane_id}' | head -1)
   env_prefix=\$(__tmath_env_prefix)
   tmux split-window -h -p 35 -t '$NESTED_SESSION' \"\${env_prefix}tmath agent --source-pane \$agent_pane\"
-"
+" 2> >(sed 's/^/nested-trace: /' >&2) || echo "nested block failed (exit $?)" >&2
 
 PANE_START_CMD="$(tm list-panes -t "$NESTED_SESSION" -F '#{pane_start_command}' 2>/dev/null | grep 'tmath agent' | head -1)"
 if printf '%s' "$PANE_START_CMD" | grep -q 'TMATH_TMUX_TRANSPORT='; then
