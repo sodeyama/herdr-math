@@ -1979,4 +1979,607 @@ mod tests {
             }
         }
     }
+
+    // --- Ghost-placement re-route: row-bookkeeping invariant (D-ROWS) ---
+    //
+    // Live-screenshot report: after a whole-document Reset (a divergence
+    // rewrite from `reanchor_from = 0`, every op a `Replace`) renders a
+    // 12-block answer, every display-math block appeared TWICE — a clean
+    // copy at its correct row plus a garbled "ghost" copy a few rows above,
+    // overlapping the preceding block, with the vertical error growing for
+    // blocks further down the document (cumulative drift). Suspected after
+    // `53b20da` (the inter-block margin change), since that made per-block
+    // pixel heights no longer trivial multiples of the cell height, so
+    // `grid_for`'s `div_ceil` rounding now actually matters.
+    //
+    // This is a pure-function trace, per the investigation's required
+    // method: simulate a terminal cursor by walking `divergence_rewrite_operations`'s
+    // emitted `TerminalOp` list byte-by-byte, and assert the physical
+    // cursor position after every emitted block matches what the
+    // bookkeeping (`old_rows_total`, `PlacedState.rows`, `grid_for`) claims
+    // — row by row, not just in the final total. A "ghost" symptom is
+    // exactly what a bookkeeping/physical mismatch would produce: if the
+    // cursor-up at the top of the rewrite undershoots the actual on-screen
+    // span, every re-placed block lands `N` rows too high, overlapping
+    // whatever occupied those rows before (the preceding text block) —
+    // and if the undershoot itself depends on the stale span's rows (which
+    // it does, `old_rows_total` sums `placed[].rows`), a per-block rounding
+    // mismatch would compound across blocks, exactly matching "grows for
+    // blocks further down the document."
+
+    /// Interprets one `TerminalOp::Local` byte sequence as a net terminal-row
+    /// delta (positive = cursor moved down), recognizing exactly the control
+    /// sequences this module's emitters produce: `\x1b[{N}A\r` (up N),
+    /// `\r\n` and `\x1b[1B\r` (down 1 each), and no-op sequences (`\x1b[2K`,
+    /// `\x1b[0J`, SGR color codes, and the raw placeholder glyph bytes
+    /// between them) which contribute 0. Panics on a byte sequence this
+    /// suite does not recognize, so an emitter change that introduces a new
+    /// cursor-moving control sequence fails loudly here instead of silently
+    /// desyncing the invariant checker from what is actually emitted.
+    fn local_op_row_delta(bytes: &[u8]) -> i64 {
+        let mut delta: i64 = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
+                // Find the final byte of the CSI sequence (first ASCII
+                // 0x40..=0x7e after the parameter/intermediate bytes).
+                let start = i + 2;
+                let mut end = start;
+                while end < bytes.len() && !(0x40..=0x7e).contains(&bytes[end]) {
+                    end += 1;
+                }
+                assert!(end < bytes.len(), "unterminated CSI sequence in {bytes:?}");
+                let params = std::str::from_utf8(&bytes[start..end]).unwrap();
+                let final_byte = bytes[end];
+                match final_byte {
+                    b'A' => {
+                        let n: i64 = if params.is_empty() {
+                            1
+                        } else {
+                            params.parse().expect("CSI A param must be a number")
+                        };
+                        delta -= n;
+                    }
+                    b'B' => {
+                        let n: i64 = if params.is_empty() {
+                            1
+                        } else {
+                            params.parse().expect("CSI B param must be a number")
+                        };
+                        delta += n;
+                    }
+                    b'H' => {
+                        panic!(
+                            "CSI H (absolute home) inside a row-delta-only op; \
+                             use an absolute-position-aware simulation instead: {bytes:?}"
+                        );
+                    }
+                    // No-ops for row tracking: erase line (K), erase display
+                    // (J), and SGR color-setting (m) never move the cursor.
+                    b'K' | b'J' | b'm' => {}
+                    other => panic!(
+                        "unrecognized CSI final byte {other:?} in {bytes:?} — extend \
+                         local_op_row_delta before trusting this invariant"
+                    ),
+                }
+                i = end + 1;
+            } else if bytes[i] == b'\r' {
+                // Bare CR (no accompanying LF) does not change the row.
+                i += 1;
+            } else if bytes[i] == b'\n' {
+                delta += 1;
+                i += 1;
+            } else {
+                // Any other byte (placeholder glyph UTF-8, diacritic
+                // combining marks) never moves the cursor row on its own.
+                i += 1;
+            }
+        }
+        delta
+    }
+
+    /// Walks a full `divergence_rewrite_operations` output and returns the
+    /// NET row delta the whole operation list produces (sum of every
+    /// `Local` op's delta; `Graphics` ops are cursor-neutral).
+    fn net_row_delta(operations: &[TerminalOp]) -> i64 {
+        operations
+            .iter()
+            .map(|operation| match operation {
+                TerminalOp::Local(bytes) => local_op_row_delta(bytes),
+                TerminalOp::Graphics(_) => 0,
+            })
+            .sum()
+    }
+
+    /// The core invariant: after `divergence_rewrite_operations` runs, the
+    /// cursor's NET row movement must equal exactly
+    /// `new_tail`'s total rows MINUS `old_rows_total` (the up-front
+    /// cursor-up) — i.e. the rewrite leaves the cursor exactly
+    /// `sum(new_tail.rows)` rows below where the OLD tail's top was, which
+    /// is the same place a from-scratch append of that many rows would
+    /// leave it. A mismatch here is precisely the ghost-placement
+    /// mechanism: the physical cursor ends up somewhere other than where
+    /// the next revision's bookkeeping (`old_rows_total`, again summed from
+    /// `placed[].rows`) assumes it starts, so the NEXT rewrite's cursor-up
+    /// is wrong by the accumulated error, and rows overlap.
+    fn assert_row_bookkeeping_is_internally_consistent(
+        operations: &[TerminalOp],
+        old_rows_total: u32,
+        new_tail: &[PlacedState],
+    ) {
+        let expected_net_delta = i64::from(new_tail.iter().map(|entry| entry.rows).sum::<u32>())
+            - i64::from(old_rows_total);
+        let actual_net_delta = net_row_delta(operations);
+        assert_eq!(
+            actual_net_delta, expected_net_delta,
+            "cursor net row movement ({actual_net_delta}) must equal \
+             sum(new_tail.rows) - old_rows_total ({expected_net_delta}); a mismatch \
+             means the next revision's cursor-up (which trusts `placed[].rows`) will \
+             start from the wrong physical row — the ghost-placement mechanism"
+        );
+    }
+
+    /// One surviving placement's absolute row span, `[start, end)`, after
+    /// walking a combined operation stream — built by
+    /// [`placement_row_spans`].
+    #[derive(Debug, Clone, Copy)]
+    struct RowSpan {
+        id: u32,
+        start: i64,
+        end: i64,
+    }
+
+    /// Walks `operations` tracking an absolute cursor row (starting at 0,
+    /// the row the caller's cursor-up left it at), and records the row span
+    /// each Kitty placement command's SUBSEQUENT placeholder-grid write
+    /// occupies. A `kitty_delete_id` graphics op removes any earlier span
+    /// for that id (the placement no longer exists once deleted — this
+    /// mirrors what a real terminal does: a deleted Kitty image's cells
+    /// stop being backed by that image, though `clear_rows`'s `\x1b[2K`
+    /// additionally blanks the text there). Returns only the SURVIVING
+    /// spans (every earlier span for an id that got deleted is dropped, not
+    /// just marked), so two spans in the result overlapping is exactly a
+    /// ghost: two different ids both claiming to render over the same rows
+    /// at the end of the sequence.
+    fn placement_row_spans(operations: &[TerminalOp]) -> Vec<RowSpan> {
+        let mut spans: Vec<RowSpan> = Vec::new();
+        let mut row: i64 = 0;
+        let mut pending_id: Option<u32> = None;
+        for operation in operations {
+            match operation {
+                TerminalOp::Graphics(bytes) => {
+                    let text = String::from_utf8_lossy(bytes);
+                    if let Some(id) = parse_kitty_delete_id(&text) {
+                        spans.retain(|span| span.id != id);
+                    } else if let Some(id) = parse_kitty_place_id(&text) {
+                        pending_id = Some(id);
+                    }
+                }
+                TerminalOp::Local(bytes) => {
+                    if let Some(id) = pending_id.take() {
+                        // The very next Local op after a placement command
+                        // is always `placeholder_grid_at_cursor`'s output
+                        // (see `emit_placed_block_cursor`), whose row
+                        // extent is exactly this op's own row delta (each
+                        // placeholder row but the last is followed by
+                        // `\r\n`, so the delta IS the placeholder row count
+                        // minus one — the span covers `delta + 1` rows).
+                        let delta = local_op_row_delta(bytes);
+                        let span_rows = delta + 1;
+                        spans.push(RowSpan {
+                            id,
+                            start: row,
+                            end: row + span_rows,
+                        });
+                        row += delta;
+                    } else {
+                        row += local_op_row_delta(bytes);
+                    }
+                }
+            }
+        }
+        spans
+    }
+
+    fn parse_kitty_delete_id(apc_text: &str) -> Option<u32> {
+        if !apc_text.contains("a=d") {
+            return None;
+        }
+        apc_text
+            .split(',')
+            .find_map(|field| field.strip_prefix("i="))
+            .and_then(|value| value.trim_end_matches('\u{1b}').parse().ok())
+    }
+
+    fn parse_kitty_place_id(apc_text: &str) -> Option<u32> {
+        if !apc_text.contains("U=1") {
+            return None;
+        }
+        apc_text
+            .split(',')
+            .find_map(|field| field.strip_prefix("i="))
+            .and_then(|value| value.parse().ok())
+    }
+
+    /// The direct overlap check: no two surviving placements' row spans may
+    /// intersect. This is the literal definition of a "ghost" — two
+    /// different image ids both claiming some of the same rows.
+    fn assert_no_overlapping_row_spans(operations: &[TerminalOp]) {
+        let spans = placement_row_spans(operations);
+        for (i, a) in spans.iter().enumerate() {
+            for b in &spans[i + 1..] {
+                let overlaps = a.start < b.end && b.start < a.end;
+                assert!(
+                    !overlaps,
+                    "id={} (rows {}..{}) overlaps id={} (rows {}..{}) — this IS a ghost: \
+                     two surviving placements claim the same terminal rows",
+                    a.id, a.start, a.end, b.id, b.start, b.end
+                );
+            }
+        }
+    }
+
+    /// Reproduces a synthetic 12-block whole-document Reset with realistic,
+    /// NON-uniform pixel heights that include the inter-block margin
+    /// (`53b20da`) — heights are `12 + 2*margin_px` style values that are
+    /// deliberately NOT exact multiples of the cell height, so `grid_for`'s
+    /// `div_ceil` rounds some blocks up by a fractional cell, exactly the
+    /// condition the live report's timing implicates. Feeds a 12-block plan
+    /// where every op is `Replace` (a whole-document Reset from a
+    /// completely different previous answer) through
+    /// `divergence_rewrite_operations` and checks the row-bookkeeping
+    /// invariant holds for the WHOLE batch — not just each individual
+    /// block's own `grid_for` call, which is where the coordinator's
+    /// suspicion (a) targeted, but the cumulative sum across all 12, which
+    /// is where a per-block rounding mismatch would compound (suspicion
+    /// (b)/(c)).
+    #[test]
+    fn synthetic_twelve_block_reset_keeps_row_bookkeeping_consistent_with_margin_heights() {
+        let cell = CellSize {
+            width: 8,
+            height: 17,
+        };
+
+        // Realistic non-uniform heights: a mix of single-line paragraph
+        // blocks, multi-line blocks, and display-math blocks, each with the
+        // inter-block margin baked in (an odd, non-cell-multiple pixel
+        // count) — the exact shape `53b20da` introduced.
+        let old_heights_px: [u32; 12] = [19, 38, 55, 19, 91, 19, 38, 127, 19, 55, 19, 73];
+        let new_heights_px: [u32; 12] = [23, 42, 59, 23, 95, 23, 42, 131, 23, 59, 23, 77];
+
+        let old_rows: Vec<u32> = old_heights_px
+            .iter()
+            .map(|&height| tmath_core::placement::grid_for(100, height, cell).1)
+            .collect();
+        let placed: Vec<PlacedState> = (1..=12u64)
+            .zip(old_rows.iter())
+            .map(|(id, &rows)| placed(id, rows, rgba8_png(1, 1)))
+            .collect();
+        let previous: Vec<tmath_render::PlannedBlock> = (1..=12u64)
+            .zip(old_heights_px.iter())
+            .map(|(id, &height)| tmath_render::PlannedBlock {
+                id,
+                hash: [0; 32],
+                width_px: 100,
+                height_px: height,
+            })
+            .collect();
+
+        let plan = Plan {
+            ops: (1..=12u64)
+                .zip(new_heights_px.iter())
+                .map(|(old_id, &height)| PlanOp::Replace {
+                    old_id,
+                    block: tmath_render::PlannedBlock {
+                        id: old_id + 100,
+                        hash: [1; 32],
+                        width_px: 100,
+                        height_px: height,
+                    },
+                })
+                .collect(),
+            reanchor_from: Some(0),
+        };
+        let prepared: Vec<PreparedBlock> = new_heights_px
+            .iter()
+            .map(|&height| {
+                let png = rgba8_png(100, height);
+                PreparedBlock {
+                    rendered: Some(Arc::new(RenderedBlock {
+                        png: png.clone(),
+                        width_px: 100,
+                        height_px: height,
+                        formula_errors: Vec::new(),
+                        duration_ms: 0,
+                    })),
+                    png: Some(png),
+                    cache: Some(CacheOutcome::Miss),
+                }
+            })
+            .collect();
+
+        let old_rows_total: u32 = old_rows
+            .iter()
+            .fold(0u32, |total, &rows| total.saturating_add(rows));
+        let (operations, new_tail) = divergence_rewrite_operations(
+            &placed,
+            &previous,
+            &plan,
+            &prepared,
+            0,
+            cell,
+            u64::MAX,
+            true,
+        )
+        .unwrap();
+
+        // (a) Per-block: `new_tail`'s row count for each block must equal
+        // `grid_for` on that block's own emitted height — the placeholder
+        // rows actually written match the bookkeeping row count.
+        for (index, entry) in new_tail.iter().enumerate() {
+            let expected_rows = tmath_core::placement::grid_for(100, new_heights_px[index], cell).1;
+            assert_eq!(
+                entry.rows, expected_rows,
+                "block {index} (id={}): new_tail.rows must equal grid_for(height={})'s \
+                 row count",
+                entry.id, new_heights_px[index]
+            );
+        }
+
+        // (b)/(c) Whole-batch: the physical cursor's net movement matches
+        // exactly what the bookkeeping (`old_rows_total` cursor-up plus
+        // every emitted block's rows) predicts — the invariant that a
+        // ghost placement would violate.
+        assert_row_bookkeeping_is_internally_consistent(&operations, old_rows_total, &new_tail);
+        // The literal ghost check: no two of the 12 newly placed blocks'
+        // row spans overlap each other.
+        assert_no_overlapping_row_spans(&operations);
+
+        // Sanity: the emitted operations actually contain all 12 new ids
+        // and delete all 12 old ids (no block silently dropped or
+        // double-emitted, which would also explain a visual "ghost" if a
+        // duplicate placement command were the mechanism instead of a
+        // cursor-position mismatch).
+        let bytes = direct_bytes(&operations);
+        let text = String::from_utf8_lossy(&bytes);
+        for old_id in 1..=12u32 {
+            assert!(
+                text.contains(&format!("\x1b_Ga=d,d=I,i={old_id},q=2\x1b\\")),
+                "missing delete for stale id={old_id}"
+            );
+        }
+        for new_id in 101..=112u32 {
+            let needle = format!("i={new_id},U=1,c=");
+            assert_eq!(
+                text.matches(&needle).count(),
+                1,
+                "id={new_id} must be placed exactly once, not zero or more than once \
+                 (a duplicate placement command is itself a possible ghost mechanism)"
+            );
+        }
+    }
+
+    /// Cross-call stress test: two consecutive whole-document Resets (a
+    /// first different answer, then a second different answer replacing it
+    /// entirely — exactly "a previous different answer" from the live
+    /// report), threading `placed` state through two
+    /// `divergence_rewrite_operations` calls the SAME WAY `TerminalSink::emit_batch`
+    /// does (`self.placed.truncate(reanchor_from); self.placed.extend(new_tail)`,
+    /// reproduced here manually since `TerminalSink` is hardcoded to
+    /// `Terminal<StdioTty>` and cannot be constructed with `FakeTty` without
+    /// changing production type signatures — out of scope for a diagnosis
+    /// task). This exercises what the single-batch pure trace above cannot:
+    /// whether the bookkeeping state the FIRST call leaves behind
+    /// (`new_tail`, spliced into `placed` exactly as `emit_batch` does)
+    /// still agrees with the physical cursor position that batch's own
+    /// emitted operations actually produced, which is what the SECOND
+    /// Reset's `old_rows_total` cursor-up then trusts.
+    #[test]
+    fn two_consecutive_resets_keep_row_bookkeeping_consistent_across_calls() {
+        let cell = CellSize {
+            width: 8,
+            height: 17,
+        };
+
+        // First Reset: a 12-block answer, reanchor_from = Some(0) since the
+        // very first revision has nothing to keep. Mirrors `emit_batch`
+        // being called on an initially empty `self.placed`.
+        let first_heights: [u32; 12] = [19, 38, 55, 19, 91, 19, 38, 127, 19, 55, 19, 73];
+        let first_previous: Vec<tmath_render::PlannedBlock> = Vec::new();
+        let placed_before_first: Vec<PlacedState> = Vec::new();
+        let first_plan = Plan {
+            ops: (1..=12u64)
+                .zip(first_heights.iter())
+                .map(|(id, &height)| PlanOp::Replace {
+                    old_id: id, // unused when `placed_before_first` is empty
+                    block: tmath_render::PlannedBlock {
+                        id,
+                        hash: [0; 32],
+                        width_px: 100,
+                        height_px: height,
+                    },
+                })
+                .collect(),
+            reanchor_from: Some(0),
+        };
+        let first_prepared: Vec<PreparedBlock> = first_heights
+            .iter()
+            .map(|&height| {
+                let png = rgba8_png(100, height);
+                PreparedBlock {
+                    rendered: Some(Arc::new(RenderedBlock {
+                        png: png.clone(),
+                        width_px: 100,
+                        height_px: height,
+                        formula_errors: Vec::new(),
+                        duration_ms: 0,
+                    })),
+                    png: Some(png),
+                    cache: Some(CacheOutcome::Miss),
+                }
+            })
+            .collect();
+
+        let (first_operations, first_new_tail) = divergence_rewrite_operations(
+            &placed_before_first,
+            &first_previous,
+            &first_plan,
+            &first_prepared,
+            0,
+            cell,
+            u64::MAX,
+            true,
+        )
+        .unwrap();
+        // Same per-block check as the single-batch trace, against the
+        // FIRST call's own output.
+        for (index, entry) in first_new_tail.iter().enumerate() {
+            let expected_rows = tmath_core::placement::grid_for(100, first_heights[index], cell).1;
+            assert_eq!(
+                entry.rows, expected_rows,
+                "after the FIRST reset, block {index} (id={}) has rows={} but \
+                 grid_for(height={}) says {expected_rows}",
+                entry.id, entry.rows, first_heights[index]
+            );
+        }
+        assert_row_bookkeeping_is_internally_consistent(&first_operations, 0, &first_new_tail);
+
+        // Exactly what `emit_batch` does after `divergence_rewrite_operations`
+        // returns: truncate to `reanchor_from` (0 here — nothing to keep)
+        // and splice in the new tail. This becomes `placed` for the SECOND
+        // call, precisely modeling the cross-call state `TerminalSink`
+        // carries between two consecutive `sink.emit()` invocations.
+        let mut placed_before_second = placed_before_first;
+        placed_before_second.truncate(0);
+        placed_before_second.extend(first_new_tail.clone());
+
+        // Second Reset: a COMPLETELY DIFFERENT 12-block answer (every hash
+        // differs, so the planner emits Replace for every index) — the
+        // exact "previous different answer" -> new Reset transition the
+        // live report describes. `previous` reflects what the planner's
+        // `blocks()` would report right after the first Reset: ids 1-12 at
+        // the FIRST heights (their `PlannedBlock.height_px`, independent of
+        // `placed`'s row bookkeeping — this is the OTHER place height
+        // enters the picture, and it must agree with `placed`'s rows too).
+        let second_heights: [u32; 12] = [23, 42, 59, 23, 95, 23, 42, 131, 23, 59, 23, 77];
+        let second_previous: Vec<tmath_render::PlannedBlock> = (1..=12u64)
+            .zip(first_heights.iter())
+            .map(|(id, &height)| tmath_render::PlannedBlock {
+                id,
+                hash: [0; 32],
+                width_px: 100,
+                height_px: height,
+            })
+            .collect();
+        let second_plan = Plan {
+            ops: (1..=12u64)
+                .zip(second_heights.iter())
+                .map(|(old_id, &height)| PlanOp::Replace {
+                    old_id,
+                    block: tmath_render::PlannedBlock {
+                        id: old_id + 100,
+                        hash: [1; 32],
+                        width_px: 100,
+                        height_px: height,
+                    },
+                })
+                .collect(),
+            reanchor_from: Some(0),
+        };
+        let second_prepared: Vec<PreparedBlock> = second_heights
+            .iter()
+            .map(|&height| {
+                let png = rgba8_png(100, height);
+                PreparedBlock {
+                    rendered: Some(Arc::new(RenderedBlock {
+                        png: png.clone(),
+                        width_px: 100,
+                        height_px: height,
+                        formula_errors: Vec::new(),
+                        duration_ms: 0,
+                    })),
+                    png: Some(png),
+                    cache: Some(CacheOutcome::Miss),
+                }
+            })
+            .collect();
+
+        // The bookkeeping value the SECOND call's cursor-up will actually
+        // use, re-derived exactly as `divergence_rewrite_operations` does
+        // internally (sum of `placed[].rows` for the stale ids) — must
+        // equal what the FIRST call's own row bookkeeping says it placed.
+        let first_reported_total_rows: u32 = first_new_tail
+            .iter()
+            .fold(0u32, |total, entry| total.saturating_add(entry.rows));
+        let second_old_rows_total: u32 = placed_before_second
+            .iter()
+            .filter(|entry| (1..=12u64).contains(&entry.id))
+            .fold(0u32, |total, entry| total.saturating_add(entry.rows));
+        assert_eq!(
+            second_old_rows_total, first_reported_total_rows,
+            "the second Reset's cursor-up must sum to exactly what the first \
+             Reset's own bookkeeping says it placed — a mismatch here is the \
+             cross-call desync that would misplace every block of the second answer"
+        );
+
+        let (second_operations, second_new_tail) = divergence_rewrite_operations(
+            &placed_before_second,
+            &second_previous,
+            &second_plan,
+            &second_prepared,
+            0,
+            cell,
+            u64::MAX,
+            true,
+        )
+        .unwrap();
+        for (index, entry) in second_new_tail.iter().enumerate() {
+            let expected_rows = tmath_core::placement::grid_for(100, second_heights[index], cell).1;
+            assert_eq!(
+                entry.rows, expected_rows,
+                "after the SECOND reset, block {index} (id={}) has rows={} but \
+                 grid_for(height={}) says {expected_rows}",
+                entry.id, entry.rows, second_heights[index]
+            );
+        }
+        assert_row_bookkeeping_is_internally_consistent(
+            &second_operations,
+            second_old_rows_total,
+            &second_new_tail,
+        );
+
+        // Whole-session check: concatenate BOTH calls' emitted operations
+        // (exactly the order `TerminalSink` would have written them to the
+        // real terminal, back to back) and replay the combined stream
+        // through the row-delta simulator. Each Reset's cursor-up + clear
+        // + redraw is individually a closed loop relative to where it
+        // started (proven per-call above), so two Resets back to back must
+        // net out to just the SECOND (final) answer's total row count —
+        // not the first answer's, and not some drifted value in between.
+        let mut combined_operations = first_operations;
+        combined_operations.extend(second_operations);
+        let final_total_rows = i64::from(
+            second_new_tail
+                .iter()
+                .fold(0u32, |total, entry| total.saturating_add(entry.rows)),
+        );
+        let whole_session_delta = net_row_delta(&combined_operations);
+        assert_eq!(
+            whole_session_delta, final_total_rows,
+            "the combined two-Reset operation stream's net cursor movement \
+             ({whole_session_delta}) must equal exactly the final answer's total \
+             row count ({final_total_rows}) — a mismatch means the two Resets did \
+             not compose into a closed-loop-plus-final-redraw, which is the \
+             cross-call ghost-placement mechanism"
+        );
+
+        // The literal ghost check across BOTH resets combined: the second
+        // Reset deletes every first-Reset id (1-12) before placing its own
+        // (101-112), so after replaying the whole combined stream, no
+        // surviving span may overlap another — including the specific
+        // "ghost above the correct copy" shape from the live report (an
+        // old, un-deleted or wrongly-positioned span still claiming rows
+        // near a new one).
+        assert_no_overlapping_row_spans(&combined_operations);
+    }
 }
