@@ -24,6 +24,8 @@ use tmath_core::placement::{
 };
 use tmath_core::terminal::{StdioTty, Terminal, Tty};
 
+type ConnectedTerminal = (Terminal<StdioTty>, (u32, u32));
+
 use crate::render::{render_document_text, renderer_worker_path};
 
 mod agent_allowlist;
@@ -290,7 +292,7 @@ fn render(args: &[String]) -> Result<i32, String> {
     let source = read_document(&parsed.input)?;
 
     let connected = if io::stdout().is_terminal() {
-        Some(connect_terminal()?)
+        try_connect_terminal_for_render()?
     } else {
         None
     };
@@ -356,10 +358,7 @@ fn exec_watch_supervisor(_args: &[String]) -> Result<i32, String> {
 
 fn render_native_stream(parsed: &RenderArgs) -> Result<i32, String> {
     let connected = if io::stdout().is_terminal() {
-        match StdioTty::from_control_terminal() {
-            Ok(tty) => Some(connect_terminal_with(tty)?),
-            Err(_) => None,
-        }
+        try_connect_terminal_for_render()?
     } else {
         None
     };
@@ -372,6 +371,17 @@ fn render_native_stream(parsed: &RenderArgs) -> Result<i32, String> {
             Ok(1)
         }
     }
+}
+
+fn try_connect_terminal_for_render() -> Result<Option<ConnectedTerminal>, String> {
+    let route = terminal_output::selected_route()?;
+    if let Some(reason) = terminal_output::stdout_graphics_refusal(route) {
+        eprintln!("tmath: {reason}");
+        return Ok(None);
+    }
+    let tty = StdioTty::from_control_terminal()
+        .map_err(|error| format!("open control terminal: {error}"))?;
+    Ok(Some(connect_terminal_with(tty)?))
 }
 
 fn render_with_node(

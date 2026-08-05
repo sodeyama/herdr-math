@@ -6,12 +6,14 @@ the shell. It is agent-agnostic: the watcher reads the pane's output, so the
 same command works for Claude Code, Codex, opencode, Cursor Agent, and pi.
 
 After [one `tmath` install](getting-started.md#install), every agent also gets
-the `tmath` skill linked into its skills directory, so you can ask an agent to
-"show this as math" and it will pipe the Markdown/LaTeX through `tmath render`.
-The installer also offers an opt-in shell integration
-([Auto-watch](#auto-watch-opt-in-per-directory) below) that starts the
-watcher automatically for allowlisted directories, so you never have to find
-a pane id by hand.
+the `tmath` skill linked into its skills directory. **Do not run `tmath render`
+inside the agent's own shell** — coding-agent UIs capture tool stdout as plain
+text, so Kitty graphics payloads show up as unreadable base64 and corrupt the
+chat pane. Start `tmath agent --source-pane %N` once per session and let the
+viewer pane typeset answers automatically. The installer also offers an opt-in
+shell integration ([Auto-watch](#auto-watch-opt-in-per-directory) below) that
+starts the watcher automatically for allowlisted directories, so you never have
+to find a pane id by hand.
 
 ## Setup once (tmux)
 

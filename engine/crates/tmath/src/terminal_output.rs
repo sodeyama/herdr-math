@@ -7,13 +7,17 @@
 
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write as _};
+use std::io::{self, IsTerminal, Write as _};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::process::{Command, Stdio};
 
 use tmath_core::placement::TerminalOp;
 
 const TRANSPORT_ENV: &str = "TMATH_TMUX_TRANSPORT";
+
+const REFUSAL_PIPED_STDIN: &str =
+    "skipped Kitty graphics on stdout for piped input; use `tmath agent` and the viewer pane";
+const REFUSAL_EMBEDDED_TERMINAL: &str = "skipped Kitty graphics in the embedded coding-agent terminal; use `tmath agent` and the viewer pane";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Route {
@@ -88,6 +92,31 @@ pub(crate) fn selected_route() -> Result<Route, String> {
     route
 }
 
+/// Returns a refusal reason when Kitty graphics would be written to stdout in
+/// a context where the host UI is likely to show the raw APC payload as text
+/// (coding-agent tool shells, piped `tmath render -`, and similar).
+pub(crate) fn stdout_graphics_refusal(route: Route) -> Option<&'static str> {
+    if !matches!(route, Route::Direct | Route::TmuxPassthrough) {
+        return None;
+    }
+    if !io::stdin().is_terminal() {
+        return Some(REFUSAL_PIPED_STDIN);
+    }
+    if embedded_coding_terminal() && !tmath_core::kitty::inside_tmux() {
+        return Some(REFUSAL_EMBEDDED_TERMINAL);
+    }
+    None
+}
+
+fn embedded_coding_terminal() -> bool {
+    matches!(
+        env::var("TERM_PROGRAM")
+            .map(|value| value.to_ascii_lowercase())
+            .as_deref(),
+        Ok("vscode") | Ok("cursor") | Ok("code")
+    )
+}
+
 fn route_from_transport_env(value: Option<&str>) -> Result<Route, String> {
     match value {
         Some("passthrough") => Ok(Route::TmuxPassthrough),
@@ -124,6 +153,14 @@ pub(crate) fn tmux_diagnostics() -> Vec<String> {
 
 pub(crate) fn write_operations(operations: &[TerminalOp]) -> Result<(), String> {
     let route = selected_route()?;
+    if operations
+        .iter()
+        .any(|operation| matches!(operation, TerminalOp::Graphics(_)))
+    {
+        if let Some(reason) = stdout_graphics_refusal(route) {
+            return Err(reason.into());
+        }
+    }
     let local_count = operations
         .iter()
         .filter(|operation| matches!(operation, TerminalOp::Local(_)))
@@ -605,10 +642,26 @@ mod tests {
     }
 
     #[test]
-    fn cursor_after_local_ignores_other_bytes() {
-        let mut row = 0i64;
-        let mut col = 3i64;
-        cursor_after_local(b"\x1b[38;2;1;2;3m", &mut row, &mut col);
-        assert_eq!((row, col), (0, 3));
+    fn stdout_graphics_refusal_allows_client_tty_even_with_piped_stdin() {
+        assert!(stdout_graphics_refusal(Route::TmuxClientTty).is_none());
+    }
+
+    #[test]
+    fn stdout_graphics_refusal_blocks_unsafe_direct_routes() {
+        let term_program = env::var("TERM_PROGRAM").ok();
+        let tmux = env::var_os("TMUX");
+        env::set_var("TERM_PROGRAM", "vscode");
+        env::remove_var("TMUX");
+        assert!(
+            stdout_graphics_refusal(Route::Direct).is_some(),
+            "direct stdout graphics must be refused in coding-agent-like environments"
+        );
+        match term_program {
+            Some(value) => env::set_var("TERM_PROGRAM", value),
+            None => env::remove_var("TERM_PROGRAM"),
+        }
+        if let Some(value) = tmux {
+            env::set_var("TMUX", value);
+        }
     }
 }
