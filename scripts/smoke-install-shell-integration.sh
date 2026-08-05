@@ -45,30 +45,40 @@ EOF
 cp "$TMP_HOME/.zshrc" "$TMP_HOME/.bashrc"
 
 run_install_shell_integration() {
-  ( HOME="$TMP_HOME" APP="$APP" source "$SNIPPET" )
+  ( HOME="$TMP_HOME" APP="$APP" WITH_SHELL_INTEGRATION="${1:-0}" source "$SNIPPET" )
 }
 
-# --- first run: adds exactly one marker block, preserves existing content --
-run_install_shell_integration >/dev/null
+# --- run without opt-in on clean rc files: never touches them --------------
+OUT="$(run_install_shell_integration 0)"
+MARK_COUNT="$(grep -c 'tmath shell integration >>>' "$TMP_HOME/.zshrc" || true)"
+check "no opt-in: rc files stay untouched" "$MARK_COUNT" 0
+case "$OUT" in
+  *--with-shell-integration*) check "no opt-in: enable hint printed" ok ok ;;
+  *) check "no opt-in: enable hint printed" missing ok ;;
+esac
+
+# --- opt-in run: adds exactly one marker block, preserves existing content -
+run_install_shell_integration 1 >/dev/null
 MARK_COUNT="$(grep -c 'tmath shell integration >>>' "$TMP_HOME/.zshrc")"
-check "first run adds one marker block (zshrc)" "$MARK_COUNT" 1
+check "opt-in run adds one marker block (zshrc)" "$MARK_COUNT" 1
 check "existing content preserved" "$(head -1 "$TMP_HOME/.zshrc")" "# existing user content before"
 check "bashrc also got one marker block" \
   "$(grep -c 'tmath shell integration >>>' "$TMP_HOME/.bashrc")" 1
 
-# --- second run with the same APP: still exactly one block (idempotent) ----
-run_install_shell_integration >/dev/null
+# --- second opt-in run with the same APP: still exactly one block ----------
+run_install_shell_integration 1 >/dev/null
 MARK_COUNT="$(grep -c 'tmath shell integration >>>' "$TMP_HOME/.zshrc")"
 check "second run stays idempotent (still one block)" "$MARK_COUNT" 1
 
-# --- stale block content is replaced in place, unrelated lines kept --------
+# --- an existing block is refreshed even WITHOUT the flag (earlier consent),
+# --- stale content replaced in place, unrelated lines kept -----------------
 sed -i '' 's#'"$APP"'/shell/tmath-agent.sh#/stale/path/tmath-agent.sh#g' "$TMP_HOME/.zshrc" 2>/dev/null \
   || sed -i 's#'"$APP"'/shell/tmath-agent.sh#/stale/path/tmath-agent.sh#g' "$TMP_HOME/.zshrc"
 printf '\n# user content appended after\n' >> "$TMP_HOME/.zshrc"
 
-run_install_shell_integration >/dev/null
+run_install_shell_integration 0 >/dev/null
 MARK_COUNT="$(grep -c 'tmath shell integration >>>' "$TMP_HOME/.zshrc")"
-check "stale block replaced, still one block" "$MARK_COUNT" 1
+check "existing block refreshed without the flag, still one block" "$MARK_COUNT" 1
 STALE_COUNT="$(grep -c '/stale/path/tmath-agent.sh' "$TMP_HOME/.zshrc" || true)"
 check "stale path no longer present" "$STALE_COUNT" 0
 check "content after the block survives replacement" \

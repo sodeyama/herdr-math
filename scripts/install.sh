@@ -10,14 +10,27 @@
 # Usage:
 #   bash scripts/install.sh                 # from a repository checkout
 #   curl -fsSL <raw .../scripts/install.sh> | bash   # anywhere (auto-clones)
+#   bash scripts/install.sh --with-shell-integration   # also add the rc snippet
 #
-# Options (environment variables):
+# Options:
+#   --with-shell-integration        opt in to adding the auto-watch snippet to
+#                                   ~/.zshrc / ~/.bashrc (never added silently;
+#                                   an existing marker block keeps being updated)
+#   TMATH_WITH_SHELL_INTEGRATION=1  same as the flag (for `curl | bash`)
 #   TMATH_INSTALL_ROOT   install prefix (default ~/.local/share/tmath)
 #   TMATH_SKIP_TESTS=1   skip the post-install `tmath diagnose` gate
 #   TMATH_FORCE_REBUILD=1 always rebuild instead of reusing artifacts
-#   TMATH_SKIP_SHELL_INTEGRATION=1  skip the ~/.zshrc / ~/.bashrc auto-watch snippet
+#   TMATH_SKIP_SHELL_INTEGRATION=1  never touch rc files, not even an existing block
 
 set -euo pipefail
+
+WITH_SHELL_INTEGRATION="${TMATH_WITH_SHELL_INTEGRATION:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --with-shell-integration) WITH_SHELL_INTEGRATION=1 ;;
+    *) echo "tmath: unknown option $arg" >&2; exit 1 ;;
+  esac
+done
 
 # ----------------------------------------------------------------------------
 # Locate the repository (checkout, parent of this script, cwd, or a fresh
@@ -45,7 +58,52 @@ REPO="$(find_repo)"
 # Targets
 # ----------------------------------------------------------------------------
 APP="${TMATH_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/tmath}/app"
-BIN_HOME="${XDG_BIN_HOME:-$HOME/.local/bin}"
+
+# ----------------------------------------------------------------------------
+# Launcher location
+# ----------------------------------------------------------------------------
+# choose_bin_home: pick where the launcher goes, most specific intent first.
+#   1. $XDG_BIN_HOME — explicit user configuration always wins.
+#   2. The directory of an existing tmath LAUNCHER on PATH (a `#!` script
+#      under $HOME, user-owned, in a writable directory): updating in place
+#      prevents this install leaving a second copy that an earlier PATH entry
+#      then shadows — the version-skew failure `tmath diagnose` warns about.
+#   3. The first known user-bin candidate (~/.local/bin, then ~/bin) that
+#      already exists and is on PATH.
+#   4. ~/.local/bin, created if needed (PATH guidance is printed at the end).
+# Deliberately narrow: never scans PATH for arbitrary writable directories
+# (another toolchain's bin directory is not ours to write into) and never
+# chooses a location outside $HOME.
+choose_bin_home() {
+  if [ -n "${XDG_BIN_HOME:-}" ]; then
+    echo "$XDG_BIN_HOME"
+    return
+  fi
+  local existing dir cand
+  existing="$(command -v tmath 2>/dev/null || true)"
+  if [ -n "$existing" ] && [ "$(head -c 2 "$existing" 2>/dev/null || true)" = "#!" ]; then
+    dir="$(cd "$(dirname "$existing")" && pwd)"
+    case "$dir" in
+      "$HOME"/*)
+        if [ -w "$dir" ] && [ -O "$existing" ]; then
+          echo "$dir"
+          return
+        fi
+        ;;
+    esac
+  fi
+  for cand in "$HOME/.local/bin" "$HOME/bin"; do
+    [ -d "$cand" ] || continue
+    case ":$PATH:" in
+      *":$cand:"*)
+        echo "$cand"
+        return
+        ;;
+    esac
+  done
+  echo "$HOME/.local/bin"
+}
+BIN_HOME="$(choose_bin_home)"
 
 # ----------------------------------------------------------------------------
 # Prerequisites (macOS / Linux are the tested bases)
@@ -107,6 +165,7 @@ mv "$APP.new" "$APP"
 # ----------------------------------------------------------------------------
 # Launcher on PATH
 # ----------------------------------------------------------------------------
+echo "tmath: launcher directory $BIN_HOME"
 mkdir -p "$BIN_HOME"
 if [ -f "$BIN_HOME/tmath" ] && [ "$(head -c 2 "$BIN_HOME/tmath")" != "#!" ]; then
   echo "tmath: replacing non-launcher file at $BIN_HOME/tmath" >&2
@@ -145,7 +204,14 @@ done
 # Shell integration (opt-in auto-watch): source $APP/shell/tmath-agent.sh from
 # ~/.zshrc and ~/.bashrc via a marker-delimited block so `tmath agent-enable`d
 # directories get a background `tmath agent` watcher automatically when a
-# wrapped coding-agent command runs. TMATH_SKIP_SHELL_INTEGRATION=1 opts out.
+# wrapped coding-agent command runs.
+#
+# Editing rc files is the one thing an installer must not do silently: a NEW
+# block is only added with --with-shell-integration (or
+# TMATH_WITH_SHELL_INTEGRATION=1). An EXISTING marker block is refreshed on
+# every install — its presence is the user's earlier consent, and a stale
+# block pointing at an old install path would break the wrapper.
+# TMATH_SKIP_SHELL_INTEGRATION=1 skips rc files entirely, even existing blocks.
 # ----------------------------------------------------------------------------
 TMATH_SHELL_SNIPPET_PATH="$APP/shell/tmath-agent.sh"
 TMATH_MARK_BEGIN='# >>> tmath shell integration >>>'
@@ -173,19 +239,27 @@ install_shell_integration() {
       skip        { next }
       { print }
     ' "$rc" > "$rc.tmath.tmp" && mv "$rc.tmath.tmp" "$rc"
-    echo "tmath: updated shell integration in $rc"
-  else
+    echo "tmath: updated shell integration in $rc (remove: delete the '$TMATH_MARK_BEGIN' block)"
+  elif [ "$WITH_SHELL_INTEGRATION" = "1" ]; then
     printf '\n' >> "$rc"
     cat "$block_file" >> "$rc"
-    echo "tmath: added shell integration to $rc"
+    echo "tmath: added shell integration to $rc (remove: delete the '$TMATH_MARK_BEGIN' block)"
   fi
   rm -f "$block_file"
 }
 
 if [ "${TMATH_SKIP_SHELL_INTEGRATION:-0}" != "1" ]; then
+  TMATH_RC_TOUCHED=0
   for TMATH_RC in "$HOME/.zshrc" "$HOME/.bashrc"; do
-    install_shell_integration "$TMATH_RC"
+    if grep -qF "$TMATH_MARK_BEGIN" "$TMATH_RC" 2>/dev/null || [ "$WITH_SHELL_INTEGRATION" = "1" ]; then
+      install_shell_integration "$TMATH_RC"
+      TMATH_RC_TOUCHED=1
+    fi
   done
+  if [ "$TMATH_RC_TOUCHED" = "0" ]; then
+    echo "tmath: shell auto-watch integration not installed (rc files untouched);"
+    echo "tmath: re-run with --with-shell-integration to enable it"
+  fi
 else
   echo "tmath: skipping shell integration (TMATH_SKIP_SHELL_INTEGRATION=1)"
 fi
