@@ -6,7 +6,7 @@
 //! on every wrapped coding-agent launch, so the check must stay silent and cheap.
 
 use std::env;
-    use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::config;
 
@@ -171,6 +171,6 @@ mod tests {
     #[test]
     fn disable_missing_entry_is_noop_success() {
         let _home = TempHome::new();
-        assert!(!config::disable_allowlist_dir(Path::new("/tmp/missing")).unwrap());
+        assert!(!config::disable_allowlist_dir(&PathBuf::from("/tmp/missing")).unwrap());
     }
 }

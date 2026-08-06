@@ -24,17 +24,9 @@ use crate::transcript_adapter::{
     project_transcript_dir, resolve_transcript_file, TranscriptAdapter, TranscriptDelta,
 };
 
-/// Inactivity (ms) an answer must hold before it is emitted.
-const DEFAULT_WAIT_MS: u64 = 600;
 /// Ceiling (ms) on holding a pending answer, so a repainting agent never
 /// wedges the viewer.
 const MAX_HOLD_MS: u64 = 3000;
-/// Pane poll interval (ms).
-const DEFAULT_POLL_MS: u64 = 250;
-/// Scrollback lines included in each capture.
-const DEFAULT_HISTORY: u32 = 500;
-/// Default viewer split width percent.
-const DEFAULT_PERCENT: u32 = 35;
 /// Re-check which Claude Code transcript file is live every N poll ticks.
 const TRANSCRIPT_RERESOLVE_POLLS: u64 = 4;
 /// Fall back to tmux capture when the transcript adapter stays idle this
@@ -859,10 +851,10 @@ mod tests {
     #[test]
     fn defaults_apply_when_no_options_are_given() {
         let parsed = parse_agent_args(&args(&[]), &file_defaults()).unwrap();
-        assert_eq!(parsed.percent, DEFAULT_PERCENT);
-        assert_eq!(parsed.wait_ms, DEFAULT_WAIT_MS);
-        assert_eq!(parsed.poll_ms, DEFAULT_POLL_MS);
-        assert_eq!(parsed.history, DEFAULT_HISTORY);
+        assert_eq!(parsed.percent, crate::config::DEFAULT_AGENT_VIEWER_PERCENT);
+        assert_eq!(parsed.wait_ms, crate::config::DEFAULT_AGENT_WAIT_MS);
+        assert_eq!(parsed.poll_ms, crate::config::DEFAULT_AGENT_POLL_MS);
+        assert_eq!(parsed.history, crate::config::DEFAULT_AGENT_HISTORY_LINES);
         assert!(parsed.source.is_none(), "source resolved from env later");
     }
 
@@ -913,7 +905,7 @@ mod tests {
     #[test]
     fn tmux_capture_arguments_are_bounded() {
         let pane = PaneId::new("%4").unwrap();
-        let cmd = capture(&pane, DEFAULT_HISTORY);
+        let cmd = capture(&pane, crate::config::DEFAULT_AGENT_HISTORY_LINES);
         assert_eq!(cmd.last().map(String::as_str), Some("-500"));
         assert_eq!(cmd[3], "%4");
     }

@@ -76,6 +76,12 @@ pub(crate) struct RegionBlock<'a> {
     pub png: &'a [u8],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RegionBounds {
+    pub top: u32,
+    pub bottom: u32,
+}
+
 /// A byte-sequence build error: an id does not fit `u32` (the Kitty image-id
 /// space), or a PNG fails to decode. Mirrors `native_stream`'s
 /// `stream_error()` shape at the boundary — this module has no `RenderError`
@@ -224,10 +230,13 @@ pub(crate) fn region_tail_replace_top_operations(
     new_block: RegionBlock<'_>,
     cell: CellSize,
     max_image_pixels: u64,
-    region_top: u32,
-    region_bottom: u32,
+    region: RegionBounds,
     rows_before_tail: u32,
 ) -> Result<Vec<TerminalOp>, RegionOpError> {
+    let RegionBounds {
+        top: region_top,
+        bottom: region_bottom,
+    } = region;
     let region_rows = region_bottom.saturating_sub(region_top).saturating_add(1);
     if rows_before_tail >= region_rows {
         return Ok(Vec::new());

@@ -1049,8 +1049,10 @@ impl TerminalSink {
                     crate::scroll_region::RegionBlock { id: new_id, png },
                     self.cell,
                     self.max_image_pixels,
-                    region_top,
-                    region_bottom,
+                    crate::scroll_region::RegionBounds {
+                        top: region_top,
+                        bottom: region_bottom,
+                    },
                     rows_before_tail,
                 )
                 .map_err(|_| stream_error())?

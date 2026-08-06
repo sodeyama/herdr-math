@@ -780,9 +780,9 @@ mod tests {
     #[test]
     fn allowlist_expands_tilde_paths_from_config() {
         let home = env::var("HOME").expect("HOME");
-        let path = temp_config_path(Some(&format!(
-            "[agent]\nallowlist = [\"~/docs/obsidian\"]\n"
-        )));
+        let path = temp_config_path(Some(
+            "[agent]\nallowlist = [\"~/docs/obsidian\"]\n",
+        ));
         let config = load(&path);
         assert_eq!(
             config.agent.allowlist,
