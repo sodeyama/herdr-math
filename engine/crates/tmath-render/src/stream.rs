@@ -1,6 +1,6 @@
 use crate::{
-    content_hash, parse_blocks_limited, scan_latex, Block, BlockKind, Limits, RenderError,
-    RenderOptions, ScannerLimits,
+    content_hash, open_display_math_start, parse_blocks_limited, Block, BlockKind, Limits,
+    RenderError, RenderOptions,
 };
 
 /// The current semantic block revision for a byte stream.
@@ -98,9 +98,32 @@ impl StreamSplitter {
     }
 
     fn revise(&mut self, eof: bool) -> Result<Revision, RenderError> {
-        let blocks = match parse_blocks_limited(&self.text, &self.limits) {
-            Ok(blocks) => blocks,
-            Err(error) => return self.fail(error),
+        // While the stream is still open, an unclosed display-math opener's
+        // raw LaTeX must never reach pulldown-cmark: line-leading `+`, `-`,
+        // `#`, and `---` inside the still-growing formula body would be
+        // misread as list items, headings, or thematic breaks, splitting the
+        // eventual one-block formula into several (see
+        // `specs/stream-open-tail-v1/plans/main.md`'s root-cause chain). Bundle
+        // everything from the opener to the end of the buffer into a single
+        // synthetic `Paragraph` tail block instead, so every revision while
+        // the formula is open is a same-position tail replace. At EOF the
+        // opener is final and never bundled: parse the full text exactly as
+        // the one-shot parser would (AT-S-105).
+        let bundled_open_tail = if eof {
+            None
+        } else {
+            open_display_math_start(&self.text)
+        };
+
+        let (blocks, bundling_engaged) = match bundled_open_tail {
+            Some(start) => match self.bundle_open_tail(start) {
+                Ok(blocks) => (blocks, true),
+                Err(error) => return self.fail(error),
+            },
+            None => match parse_blocks_limited(&self.text, &self.limits) {
+                Ok(blocks) => (blocks, false),
+                Err(error) => return self.fail(error),
+            },
         };
 
         // Stream layout options are fixed; callers cannot vary them between revisions.
@@ -117,7 +140,7 @@ impl StreamSplitter {
             .count();
         let tail_open = !eof
             && (!self.carry.is_empty()
-                || has_unclosed_display_math(&self.text)
+                || bundling_engaged
                 || tail_is_open(&self.text, blocks.last()));
         self.previous_hashes = hashes;
 
@@ -126,6 +149,26 @@ impl StreamSplitter {
             stable_prefix,
             tail_open,
         })
+    }
+
+    /// Parses only the prefix before the open formula's opener, then appends
+    /// the still-open span as one synthetic `Paragraph` block, subject to the
+    /// same per-block byte cap and document block-count cap
+    /// `parse_blocks_limited` would enforce (AT-S-107): a cap violation fails
+    /// closed exactly like an oversized ordinary block.
+    fn bundle_open_tail(&self, start: usize) -> Result<Vec<Block>, RenderError> {
+        let mut blocks = parse_blocks_limited(&self.text[..start], &self.limits)?;
+        let tail_source = self.text[start..].to_owned();
+        self.limits
+            .check_source_bytes_per_block(tail_source.len() as u64)?;
+        self.limits
+            .check_blocks_per_document((blocks.len() as u64).saturating_add(1))?;
+        blocks.push(Block {
+            index: blocks.len(),
+            kind: BlockKind::Paragraph,
+            source: tail_source,
+        });
+        Ok(blocks)
     }
 
     fn fail<T>(&mut self, error: RenderError) -> Result<T, RenderError> {
@@ -152,7 +195,7 @@ fn tail_is_open(text: &str, last_block: Option<&Block>) -> bool {
 
     match last_block.kind {
         BlockKind::CodeBlock => code_tail_is_open(text, &last_block.source),
-        BlockKind::DisplayMath => !ends_with_closed_display_math(text),
+        BlockKind::DisplayMath => !ends_with_closed_display_math(text, &last_block.source),
         BlockKind::ThematicBreak | BlockKind::Heading => !ends_with_line_terminator(text),
         BlockKind::Paragraph | BlockKind::List | BlockKind::Quote | BlockKind::Table => {
             !ends_with_blank_line(text)
@@ -182,23 +225,6 @@ fn code_tail_is_open(text: &str, source: &str) -> bool {
     }
 }
 
-fn has_unclosed_display_math(text: &str) -> bool {
-    completes_formula_with(text, "$$") || completes_formula_with(text, "\\]")
-}
-
-fn completes_formula_with(text: &str, closing: &str) -> bool {
-    let original_len = text.len();
-    let mut completed = String::with_capacity(original_len.saturating_add(closing.len()));
-    completed.push_str(text);
-    completed.push_str(closing);
-
-    scan_latex(&completed, &ScannerLimits::default()).map_or(true, |formulas| {
-        formulas
-            .iter()
-            .any(|formula| formula.display && formula.end > original_len)
-    })
-}
-
 fn ends_with_line_terminator(text: &str) -> bool {
     text.ends_with('\n') || text.ends_with('\r')
 }
@@ -218,9 +244,16 @@ fn ends_with_blank_line(text: &str) -> bool {
     final_line.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
 }
 
-fn ends_with_closed_display_math(text: &str) -> bool {
+/// A `DisplayMath` block's source is always the exact closing-delimiter-
+/// inclusive slice of the input (`parse_blocks_limited` restores it verbatim,
+/// including for a bare-bracket formula, whose closer is a plain `]` rather
+/// than `\]`/`$$`). Comparing against the block's own source, instead of a
+/// fixed set of delimiter strings, is what makes this correct for all three
+/// display-math openers (fixes the bare-bracket `tail_open` gap noted in the
+/// plan's Secondary defect).
+fn ends_with_closed_display_math(text: &str, block_source: &str) -> bool {
     let trimmed = text.trim_end_matches([' ', '\t', '\r', '\n']);
-    trimmed.ends_with("$$") || trimmed.ends_with("\\]")
+    trimmed.ends_with(block_source)
 }
 
 fn ends_with_closed_fence(text: &str) -> bool {
@@ -359,11 +392,26 @@ mod tests {
 
     #[test]
     fn unclosed_display_math_remains_open_even_after_a_blank_line() {
+        // Strengthened for T-S-201/202: the blank line inside the still-open
+        // formula must not fool pulldown-cmark into splitting the tail into
+        // more than one block (previously only kind/tail_open were checked,
+        // which a broken-apart-but-still-Paragraph-first split would have
+        // passed). Bundling keeps the whole open span as exactly one
+        // synthetic Paragraph tail block, byte-for-byte.
         let mut splitter = StreamSplitter::new(Limits::default());
         let revision = splitter.push(b"$$a+b\n\n").unwrap();
 
+        assert_eq!(revision.blocks.len(), 1);
         assert_eq!(revision.blocks[0].kind, BlockKind::Paragraph);
+        assert_eq!(revision.blocks[0].source, "$$a+b\n\n");
         assert!(revision.tail_open);
+
+        // Pushing more text that still doesn't close the formula must keep
+        // the span as one block across the blank line.
+        let second = splitter.push(b"more\n\nlines\n").unwrap();
+        assert_eq!(second.blocks.len(), 1);
+        assert_eq!(second.blocks[0].kind, BlockKind::Paragraph);
+        assert!(second.tail_open);
     }
 
     #[test]
@@ -581,5 +629,191 @@ mod tests {
                 other => panic!("splitter/one-shot mismatch at iteration {iteration}: {other:?}"),
             }
         }
+    }
+
+    // --- Open-tail bundling (specs/stream-open-tail-v1, T-S-201/202/203) ---
+
+    #[test]
+    fn at_s_101_unclosed_backslash_bracket_formula_stays_one_paragraph_tail_across_strides() {
+        // AT-S-101: line-leading `+`, `-`, `#`, and `---` inside the still-open
+        // formula body must never split it into multiple blocks or get
+        // misclassified as List/Heading/ThematicBreak while unclosed.
+        let opener = "Update:\n\\[\n";
+        let body =
+            "\\Lambda_{n+1} = \\Lambda_n\n+ \\alpha\n- \\beta\n# not a heading\n---\nmore terms\n";
+        let input = format!("{opener}{body}");
+
+        for stride in [1, 3, 7, 64] {
+            let mut splitter = StreamSplitter::new(Limits::default());
+            for (end, chunk) in input
+                .as_bytes()
+                .chunks(stride)
+                .scan(0usize, |offset, chunk| {
+                    *offset += chunk.len();
+                    Some((*offset, chunk))
+                })
+            {
+                let revision = splitter.push(chunk).unwrap();
+                if end < opener.len() {
+                    // The opener itself has not fully arrived yet.
+                    continue;
+                }
+                let tail = revision
+                    .blocks
+                    .last()
+                    .expect("at least one block once the opener has arrived");
+                assert_eq!(
+                    tail.kind,
+                    BlockKind::Paragraph,
+                    "stride {stride} at byte {end}: open span must stay Paragraph, got {:?} in {:?}",
+                    tail.kind,
+                    revision.blocks.iter().map(|b| b.kind).collect::<Vec<_>>()
+                );
+                assert!(
+                    revision.tail_open,
+                    "stride {stride} at byte {end}: tail_open must be true while the formula is unclosed"
+                );
+                assert!(
+                    revision
+                        .blocks
+                        .iter()
+                        .all(|block| !matches!(
+                            block.kind,
+                            BlockKind::List | BlockKind::Heading | BlockKind::ThematicBreak
+                        )),
+                    "stride {stride} at byte {end}: no block may be misclassified as List/Heading/ThematicBreak while the formula is open"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn at_s_102_formula_completion_is_a_pure_tail_update_with_stable_prefix_covering_the_prefix() {
+        // AT-S-102: when the closer arrives, stable_prefix must cover every
+        // block before the formula, and the formula itself collapses to one
+        // DisplayMath block (a pure same-position tail replace).
+        let mut splitter = StreamSplitter::new(Limits::default());
+        let opening = splitter
+            .push(b"Intro paragraph.\n\nSecond paragraph.\n\n\\[\n\\Lambda_n\n+ \\alpha\n")
+            .unwrap();
+
+        assert_eq!(opening.blocks.len(), 3);
+        assert_eq!(opening.blocks[2].kind, BlockKind::Paragraph);
+        let blocks_before_formula = opening.blocks.len() - 1;
+
+        let closed = splitter.push(b"- \\beta\n\\]\n\n").unwrap();
+
+        assert_eq!(closed.stable_prefix, blocks_before_formula);
+        assert_eq!(closed.blocks.len(), 3);
+        assert_eq!(closed.blocks[2].kind, BlockKind::DisplayMath);
+        assert!(!closed.tail_open);
+    }
+
+    #[test]
+    fn at_s_103_bare_bracket_formula_spanning_a_blank_line_bundles_and_reports_tail_open() {
+        // AT-S-103: bare-bracket display math had no unclosed detection at
+        // all before this fix; it must now get the same one-block-tail and
+        // tail_open guarantees as \[ and $$, including across a blank line
+        // inside the still-open body.
+        let mut splitter = StreamSplitter::new(Limits::default());
+        let opening = splitter
+            .push(b"Density is\n\n[ \\boldsymbol{V}_n\n\nkeeps growing\n")
+            .unwrap();
+
+        let tail = opening.blocks.last().unwrap();
+        assert_eq!(tail.kind, BlockKind::Paragraph);
+        assert!(opening.tail_open);
+        let blocks_before_formula = opening.blocks.len() - 1;
+
+        let closed = splitter.push(b"still open\n").unwrap();
+        assert_eq!(closed.blocks.last().unwrap().kind, BlockKind::Paragraph);
+        assert!(closed.tail_open);
+        assert_eq!(closed.blocks.len(), opening.blocks.len());
+
+        let finished = splitter.push(b" ]\n\n").unwrap();
+        assert_eq!(finished.stable_prefix, blocks_before_formula);
+        assert_eq!(finished.blocks.last().unwrap().kind, BlockKind::DisplayMath);
+        assert!(!finished.tail_open);
+    }
+
+    #[test]
+    fn at_s_104_dollar_dollar_formula_across_chunks_keeps_the_same_guarantees() {
+        // AT-S-104: regression guard for the delimiter that already worked
+        // before this fix.
+        let mut splitter = StreamSplitter::new(Limits::default());
+        let opening = splitter
+            .push(b"Before.\n\n$$\na + b\n- c\n# not a heading\n")
+            .unwrap();
+
+        assert_eq!(opening.blocks.len(), 2);
+        assert_eq!(opening.blocks[1].kind, BlockKind::Paragraph);
+        assert!(opening.tail_open);
+
+        let closed = splitter.push(b"---\nd\n$$\n\n").unwrap();
+        assert_eq!(closed.blocks.len(), 2);
+        assert_eq!(closed.blocks[1].kind, BlockKind::DisplayMath);
+        assert_eq!(closed.stable_prefix, 1);
+        assert!(!closed.tail_open);
+    }
+
+    #[test]
+    fn at_s_105_eof_with_an_unclosed_opener_matches_the_one_shot_parser_block_for_block() {
+        // AT-S-105: at EOF an unclosed opener is final; finish() must parse
+        // the full text exactly like parse_blocks_limited, never leaving a
+        // stuck synthetic tail block.
+        let input = "Prose.\n\n\\[\n\\Lambda_n\n+ \\alpha\n- \\beta\n# not a heading\n---\nstill unclosed\n";
+        let mut splitter = StreamSplitter::new(Limits::default());
+        for chunk in input.as_bytes().chunks(5) {
+            splitter.push(chunk).unwrap();
+        }
+        let finished = splitter.finish().unwrap();
+
+        let expected = parse_blocks_limited(input, &Limits::default()).unwrap();
+        assert_eq!(finished.blocks, expected);
+        assert!(!finished.tail_open);
+    }
+
+    #[test]
+    fn at_s_106_fenced_code_containing_openers_is_never_bundled() {
+        // AT-S-106: `\[` and `$$` inside an unclosed fence are not openers;
+        // the fence must keep using ordinary CodeBlock tail-open detection,
+        // not the bundling path, and the final fence block is CodeBlock.
+        let mut splitter = StreamSplitter::new(Limits::default());
+        let opening = splitter
+            .push(b"Before.\n\n```text\n\\[\nnever closes here\n$$\nalso not a formula\n")
+            .unwrap();
+
+        assert_eq!(opening.blocks.len(), 2);
+        assert_eq!(opening.blocks[1].kind, BlockKind::CodeBlock);
+        assert!(opening.tail_open);
+
+        let closed = splitter.push(b"```\n").unwrap();
+        assert_eq!(closed.blocks.len(), 2);
+        assert_eq!(closed.blocks[1].kind, BlockKind::CodeBlock);
+        assert!(!closed.tail_open);
+    }
+
+    #[test]
+    fn at_s_107_oversized_open_tail_fails_closed_and_stays_sticky() {
+        // AT-S-107: an opener followed by more bytes than
+        // source_bytes_per_block without closing must report the same
+        // stable limit error the one-shot parser reports for an oversized
+        // block, and the failure must be sticky on subsequent pushes,
+        // matching existing splitter semantics (limit_failure_is_sticky).
+        let limits = Limits {
+            source_bytes_per_block: 16,
+            ..Limits::default()
+        };
+        let mut splitter = StreamSplitter::new(limits);
+        let oversized_tail = b"\\[\nthis body is deliberately longer than the byte cap";
+
+        let error = splitter.push(oversized_tail).unwrap_err();
+        let expected = parse_blocks_limited(std::str::from_utf8(oversized_tail).unwrap(), &limits)
+            .unwrap_err();
+        assert_eq!(error, expected);
+
+        let second = splitter.push(b"ignored").unwrap_err();
+        assert_eq!(second, error);
+        assert_eq!(splitter.finish().unwrap_err(), error);
     }
 }
