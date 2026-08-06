@@ -279,6 +279,14 @@ fn is_agent_chrome_or_system_line(line: &str) -> bool {
     if trimmed.contains("Claude Code v") || trimmed.contains("MCP servers need authentication") {
         return true;
     }
+    // Startup header: model/plan line (`Sonnet 5 with high effort · Claude
+    // Max`) and the bare working-directory path below it.
+    if trimmed.contains("· Claude") {
+        return true;
+    }
+    if trimmed.starts_with("~/") && !trimmed.contains(' ') {
+        return true;
+    }
     trimmed.starts_with("tmath agent:")
 }
 
@@ -851,6 +859,18 @@ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reatta
     fn claude_rc_and_effort_status_lines_are_not_answer_content() {
         let baseline = "⏺ Old answer\n";
         let completion = "⏺ Old answer\nrc connecting...\n● high · /effort\n";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_startup_header_and_placeholder_are_not_answer_content() {
+        let baseline = "";
+        let completion = "\
+Claude Code v2.1.223\n\
+Sonnet 5 with high effort · Claude Max\n\
+~/git/terminal-math\n\n\
+⚠ 2 MCP servers need authentication · run /mcp\n\n\
+> Try \"write a test for agent-status-worker.ts\"\n";
         assert_eq!(answer(baseline, completion), None);
     }
 
