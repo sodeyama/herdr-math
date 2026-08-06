@@ -22,6 +22,7 @@ use tmath_core::scroll_driver::is_exit_signal;
 
 use crate::transcript_adapter::{
     project_transcript_dir, resolve_transcript_file, TranscriptAdapter, TranscriptDelta,
+    TranscriptOpenMode,
 };
 
 /// Ceiling (ms) on holding a pending answer, so a repainting agent never
@@ -31,7 +32,7 @@ const MAX_HOLD_MS: u64 = 3000;
 const TRANSCRIPT_RERESOLVE_POLLS: u64 = 4;
 /// Fall back to tmux capture when the transcript adapter stays idle this
 /// many poll ticks without ever sending a document to the viewer.
-const TRANSCRIPT_IDLE_FALLBACK_POLLS: u64 = 40;
+const TRANSCRIPT_IDLE_FALLBACK_POLLS: u64 = 120;
 /// Safety cap on a single captured snapshot.
 const SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// Separator inserted between two accumulated answers (and between a
@@ -116,7 +117,7 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     let transcript_project_dir = transcript_project_dir_for(&source);
     let transcript = transcript_project_dir
         .as_deref()
-        .and_then(|dir| open_transcript_in(dir, watcher_started));
+        .and_then(|dir| open_transcript_in(dir, watcher_started, TranscriptAttach::Initial));
     eprintln!(
         "tmath agent: source={}",
         if transcript.is_some() {
@@ -296,7 +297,7 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         poll_tick += 1;
         if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) && transcript.is_none() {
             if let Some(dir) = transcript_project_dir.as_deref() {
-                transcript = open_transcript_in(dir, watcher_started);
+                transcript = open_transcript_in(dir, watcher_started, TranscriptAttach::JoinLive);
                 if transcript.is_some() {
                     eprintln!("tmath agent: source=transcript");
                     transcript_idle_polls = 0;
@@ -525,14 +526,30 @@ fn transcript_project_dir_for(source: &PaneId) -> Option<std::path::PathBuf> {
     project_transcript_dir(std::path::Path::new(&home), std::path::Path::new(cwd))
 }
 
+/// Whether a transcript open is the watcher's first attach attempt or a
+/// later join while the capture adapter was running.
+enum TranscriptAttach {
+    /// Watcher startup: honour [`resolve_transcript_file`]'s FromStart/Tail choice.
+    Initial,
+    /// Capture-to-transcript upgrade: tail at EOF so a long-running watcher
+    /// never replays an entire prior session in one burst when the JSONL's
+    /// mtime refreshes on the next user turn.
+    JoinLive,
+}
+
 /// Locates and opens a Claude Code transcript for the watched pane, or
 /// `None` when there is no live session file yet — the caller's fallback is
 /// simply "keep using the capture adapter", not a retry loop here.
 fn open_transcript_in(
     dir: &std::path::Path,
     watcher_started: std::time::SystemTime,
+    attach: TranscriptAttach,
 ) -> Option<TranscriptAdapter> {
     let (file, mode) = resolve_transcript_file(dir, watcher_started)?;
+    let mode = match attach {
+        TranscriptAttach::Initial => mode,
+        TranscriptAttach::JoinLive => TranscriptOpenMode::Tail,
+    };
     TranscriptAdapter::open(&file, mode).ok()
 }
 

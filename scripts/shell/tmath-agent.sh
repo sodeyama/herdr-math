@@ -59,7 +59,7 @@ __tmath_start_watcher_for_pane() {
   ( set -o noclobber; : > "$lock" ) 2>/dev/null || return 0
 
   # Background job inherits the current shell environment; no env prefix needed.
-  ( tmath agent --source-pane "$pane" >/dev/null 2>&1 & echo $! > "$lock"; wait ) &
+  ( tmath agent --source-pane "$pane" --wait-ms 200 --poll-ms 100 >/dev/null 2>&1 & echo $! > "$lock"; wait ) &
   disown 2>/dev/null || true
 }
 

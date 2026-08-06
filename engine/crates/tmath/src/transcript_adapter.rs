@@ -316,7 +316,11 @@ pub(crate) fn project_transcript_dir(home: &Path, cwd: &Path) -> Option<PathBuf>
 
 /// How long a transcript file can go without modification and still be
 /// treated as the live session currently being appended to.
-const ACTIVE_TRANSCRIPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+const ACTIVE_TRANSCRIPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// When no file looks actively appended, still tail the newest project JSONL
+/// modified within this window instead of falling back to capture immediately.
+const STALE_TRANSCRIPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(86_400);
 
 /// Slack before the watcher's start time when deciding a transcript file
 /// belongs to the session that began alongside the watcher.
@@ -385,6 +389,9 @@ pub(crate) fn resolve_transcript_file(
     let session_cutoff = watcher_started
         .checked_sub(WATCHER_START_SLACK)
         .unwrap_or(std::time::UNIX_EPOCH);
+    let stale_cutoff = now
+        .checked_sub(STALE_TRANSCRIPT_WINDOW)
+        .unwrap_or(std::time::UNIX_EPOCH);
 
     if let Some(best) = files
         .iter()
@@ -407,7 +414,13 @@ pub(crate) fn resolve_transcript_file(
         return Some((best.path.clone(), TranscriptOpenMode::FromStart));
     }
 
-    None
+    // Last resort before capture: tail the newest JSONL from a recent session
+    // at EOF so pauses between questions do not force the lossy capture path.
+    files
+        .iter()
+        .filter(|candidate| candidate.modified >= stale_cutoff)
+        .max_by_key(|candidate| candidate.modified)
+        .map(|candidate| (candidate.path.clone(), TranscriptOpenMode::Tail))
 }
 
 #[cfg(test)]
@@ -954,6 +967,50 @@ mod tests {
             .checked_sub(std::time::Duration::from_secs(7200))
             .unwrap();
         assert_eq!(resolve_transcript_file(&dir, watcher_started), None);
+    }
+
+    #[test]
+    fn resolve_transcript_file_tails_the_newest_recent_file_when_not_active() {
+        let dir = temp_path("resolve-stale-fallback");
+        std::fs::create_dir_all(&dir).unwrap();
+        let older = dir.join("older.jsonl");
+        let newer = dir.join("newer.jsonl");
+        File::create(&older).unwrap();
+        File::create(&newer).unwrap();
+        let hour_ago = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(3600))
+            .unwrap();
+        let two_hours_ago = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(7200))
+            .unwrap();
+        touch_mtime(&older, two_hours_ago);
+        touch_mtime(&newer, hour_ago);
+
+        let watcher_started = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .unwrap();
+        let resolved = resolve_transcript_file(&dir, watcher_started).unwrap();
+        assert_eq!(resolved.0, newer);
+        assert_eq!(resolved.1, TranscriptOpenMode::Tail);
+    }
+
+    fn touch_mtime(path: &Path, when: std::time::SystemTime) {
+        let secs = when
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("mtime")
+            .as_secs();
+        let formatted = std::process::Command::new("date")
+            .args(["-r", &secs.to_string(), "+%Y%m%d%H%M.%S"])
+            .output()
+            .expect("date");
+        let stamp = String::from_utf8(formatted.stdout)
+            .expect("utf8")
+            .trim()
+            .to_string();
+        std::process::Command::new("touch")
+            .args(["-t", &stamp, path.to_str().expect("path")])
+            .status()
+            .expect("touch");
     }
 
     #[test]
