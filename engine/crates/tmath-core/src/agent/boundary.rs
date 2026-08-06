@@ -60,11 +60,17 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
     let bl: Vec<&str> = baseline.lines().collect();
     let cl: Vec<&str> = completion.lines().collect();
     if cl.iter().any(|line| is_delimited_prompt_line(line)) {
-        let answer = prompt_delimited_answer(&cl)?;
-        if prompt_delimited_answer(&bl).as_ref() == Some(&answer) {
-            return None;
+        if let Some(answer) = prompt_delimited_answer(&cl) {
+            if prompt_delimited_answer(&bl).as_ref() == Some(&answer) {
+                return None;
+            }
+            return Some(answer);
         }
-        return Some(answer);
+        // Idle prompt-delimited extraction failed (streaming command output
+        // under a non-idle `❯ cmd`, or Claude still repainting). Fall through
+        // to prefix-based detection so growing pane snapshots can still emit
+        // incrementally; wholesale repaints without a shared prefix remain
+        // fail-closed (see `claude_repaint_without_idle_prompt_is_not_complete`).
     }
 
     let (tail, _) = if completion.starts_with(baseline) {
@@ -502,6 +508,29 @@ mod tests {
         let completion =
             "Earlier screen content\n❯ Show equations\n\n⏺ Partial answer\n✻ Churned for 2s\n";
         assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn streaming_command_output_grows_by_exact_prefix_while_prompt_is_busy() {
+        let baseline = "❯ \n";
+        let completion =
+            "❯ \n❯ python3 demo-stream-answer.py bayes-ja\n# ベイズ統計 — 要点まとめ\n";
+        assert_eq!(
+            answer(baseline, completion).as_deref(),
+            Some("❯ python3 demo-stream-answer.py bayes-ja\n# ベイズ統計 — 要点まとめ")
+        );
+    }
+
+    #[test]
+    fn streaming_command_output_appends_japanese_lines_incrementally() {
+        let baseline = "❯ \n❯ python3 demo.py bayes-ja\n# ベイズ統計 — 要点まとめ\n";
+        let completion = format!(
+            "{baseline}\n**事後分布**は **事前分布** と **尤度** から更新される:\n"
+        );
+        assert_eq!(
+            answer(baseline, &completion).as_deref(),
+            Some("**事後分布**は **事前分布** と **尤度** から更新される:")
+        );
     }
 
     #[test]

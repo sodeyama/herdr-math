@@ -13,13 +13,31 @@
 
 set -euo pipefail
 
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMATH_SRC="${TMATH_BIN:-$ROOT/target/release/tmath}"
 OUT_DIR="$ROOT/docs/media"
-OUT_GIF="${OUT_GIF:-$OUT_DIR/claude-code-demo.gif}"
 DEMO_ANSWER="${DEMO_ANSWER:-long}"
-DEMO_PROMPT="${DEMO_PROMPT:-Summarize quadratic equations with all key formulas.}"
 DEMO_PS1="${DEMO_PS1:-❯ }"
+
+# Preset content for localized Bayes demos (override piecemeal via env if needed).
+case "$DEMO_ANSWER" in
+  bayes-ja)
+    DEMO_PROMPT="${DEMO_PROMPT:-ベイズ統計の要点を数式付きで要約して。}"
+    OUT_GIF="${OUT_GIF:-$OUT_DIR/claude-code-demo-bayes-ja.gif}"
+    ;;
+  bayes-en)
+    DEMO_PROMPT="${DEMO_PROMPT:-Summarize Bayesian statistics with all key formulas.}"
+    OUT_GIF="${OUT_GIF:-$OUT_DIR/claude-code-demo-bayes-en.gif}"
+    ;;
+  *)
+    DEMO_PROMPT="${DEMO_PROMPT:-Summarize quadratic equations with all key formulas.}"
+    OUT_GIF="${OUT_GIF:-$OUT_DIR/claude-code-demo.gif}"
+    ;;
+esac
+
 DEMO_ROOT="/tmp/tmath-public-demo-$$"
 TMP="$DEMO_ROOT/scratch"
 SOCKET="tmath-demo-$$"
@@ -82,6 +100,8 @@ EOF
 ATTACH_SCRIPT="$DEMO_ROOT/ghostty-attach.sh"
 cat > "$ATTACH_SCRIPT" <<EOF
 #!/bin/zsh
+export LANG="${LANG}"
+export LC_ALL="${LC_ALL}"
 export PATH="/usr/local/bin:/opt/homebrew/bin:\$PATH"
 exec tmux -L "$SOCKET" attach -t "$SESSION"
 EOF
@@ -183,7 +203,8 @@ ensure_demo_geometry() {
 
 # --- isolated tmux session + compact Ghostty window --------------------------
 tm new-session -d -s "$SESSION" -c "$TMP/workspace" -n "Terminal Math demo" \
-  -x "$TMUX_COLS" -y "$TMUX_ROWS" 'zsh -f' >/dev/null
+  -x "$TMUX_COLS" -y "$TMUX_ROWS" \
+  "env LANG=$LANG LC_ALL=$LC_ALL zsh -f" >/dev/null
 tm set-option -t "$SESSION" -w allow-passthrough on >/dev/null
 tm set-option -t "$SESSION" -w mouse on >/dev/null
 tm set-option -t "$SESSION" status off >/dev/null
@@ -192,9 +213,13 @@ SRC_PANE="$(tm display-message -p -t "$SESSION" '#{pane_id}')"
 
 cat > "$DEMO_ROOT/run-agent.sh" <<EOF
 #!/bin/zsh
+export LANG="${LANG}"
+export LC_ALL="${LC_ALL}"
 exec env TMATH_DPR=2 TMATH_FONT_SIZE_PT=$TMATH_FONT_SIZE_PT "$TMATH" agent --source-pane $SRC_PANE --wait-ms 150 --poll-ms 60 --percent 45
 EOF
 chmod +x "$DEMO_ROOT/run-agent.sh"
+
+printf '%s' "$DEMO_PROMPT" > "$DEMO_ROOT/demo-prompt.txt"
 
 tm send-keys -l -t "$SRC_PANE" "PROMPT_EOL_MARK=\"\" ; PS1=\"$DEMO_PS1\" ; clear"
 tm send-keys -t "$SRC_PANE" Enter
@@ -255,8 +280,7 @@ while [ "$SECONDS" -lt "$end" ]; do
   case "$demo_step" in
     0)
       if [ "$elapsed" -ge 1 ]; then
-        tm send-keys -l -t "$SRC_PANE" \
-          "printf '%s\n' $(printf '%q' "$DEMO_PROMPT")"
+        tm send-keys -l -t "$SRC_PANE" "cat '$DEMO_ROOT/demo-prompt.txt'"
         tm send-keys -t "$SRC_PANE" Enter
         demo_step=1
       fi
