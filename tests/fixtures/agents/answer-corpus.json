@@ -86,6 +86,20 @@
       "coverage": ["valid_math", "display", "multiline"],
       "answer": "Integrate:\n\\[\n\\int_0^1 x^2 dx\n\\]\nDone.",
       "expected": [{ "latex": "\\int_0^1 x^2 dx", "display": true }]
+    },
+    {
+      "id": "claude-bare-bracket-display",
+      "agent": "claude",
+      "coverage": ["valid_math", "display", "bare_bracket"],
+      "answer": "Density is\n\n[ p(\\boldsymbol{x}\\mid\\boldsymbol{\\mu},\\boldsymbol{\\Sigma}) ]\n\nDone.",
+      "expected": [{ "latex": "p(\\boldsymbol{x}\\mid\\boldsymbol{\\mu},\\boldsymbol{\\Sigma})", "display": true }]
+    },
+    {
+      "id": "claude-bare-bracket-markdown-link",
+      "agent": "claude",
+      "coverage": ["bare_bracket", "markdown_link"],
+      "answer": "See the [link](https://example.com) and a [note] in prose.",
+      "expected": []
     }
   ],
   "boundaryCases": [

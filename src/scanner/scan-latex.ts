@@ -135,6 +135,22 @@ export function scanLatex(input: string, overrides: Partial<ScannerLimits> = {})
       }
     }
 
+    // Bare `[ ... ]` block math: some agents drop the backslash and emit
+    // `[ \boldsymbol{x} ]` instead of `\[ ... \]`. Only treat this as math at
+    // the start of a line, and only when the content looks like LaTeX and the
+    // closing bracket isn't immediately followed by `(` (a Markdown link).
+    if (input[index] === "[" && !isEscaped(input, index) && isLineStart(input, index)) {
+      const bareMatch = scanBareBracketMath(input, index, limits);
+      if (bareMatch !== undefined) {
+        formulas.push(bareMatch.formula);
+        if (formulas.length > limits.maxFormulaCount) {
+          throw new ScannerLimitError("formula_count", limits.maxFormulaCount, formulas.length);
+        }
+        index = bareMatch.nextIndex;
+        continue;
+      }
+    }
+
     if (input[index] !== "$" || isEscaped(input, index)) {
       index += 1;
       continue;
@@ -259,6 +275,56 @@ function isPlausibleInlineLatex(latex: string): boolean {
     return false;
   }
   return !/[、。\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(latex);
+}
+
+const BARE_BRACKET_LATEX_HINT = /\\[A-Za-z]+|\\(?:mid|cdot|top|left|right)|[_^]\{|\\[[({]/;
+
+function isPlausibleBlockLatex(latex: string): boolean {
+  if (latex.length === 0 || latex.includes("[") || latex.includes("]")) {
+    return false;
+  }
+  if (/[、。\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(latex)) {
+    return false;
+  }
+  return BARE_BRACKET_LATEX_HINT.test(latex);
+}
+
+interface BareBracketMatch {
+  formula: Formula;
+  nextIndex: number;
+}
+
+function scanBareBracketMath(input: string, start: number, limits: ScannerLimits): BareBracketMatch | undefined {
+  const contentStart = start + 1;
+  let cursor = contentStart;
+  while (cursor < input.length) {
+    if (input[cursor] === "]" && !isEscaped(input, cursor)) {
+      if (input[cursor + 1] === "(") {
+        // Looks like a Markdown link `[label](url)`, not math.
+        return undefined;
+      }
+      const latex = input.slice(contentStart, cursor).trim();
+      if (!isPlausibleBlockLatex(latex)) {
+        return undefined;
+      }
+      const formulaCharacters = [...latex].length;
+      if (formulaCharacters > limits.maxFormulaCharacters) {
+        throw new ScannerLimitError("formula_characters", limits.maxFormulaCharacters, formulaCharacters);
+      }
+      return {
+        formula: {
+          latex,
+          display: true,
+          start,
+          end: cursor + 1,
+          delimiter: "bracket"
+        },
+        nextIndex: cursor + 1
+      };
+    }
+    cursor += 1;
+  }
+  return undefined;
 }
 
 function looksLikeNextDollarValue(input: string, contentStart: number, candidateIndex: number): boolean {

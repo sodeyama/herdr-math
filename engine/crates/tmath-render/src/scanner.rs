@@ -137,6 +137,19 @@ pub fn scan_latex(input: &str, limits: &ScannerLimits) -> Result<Vec<Formula>, R
             }
         }
 
+        if bytes[index] == b'[' && !is_escaped(bytes, index) && is_line_start(bytes, index) {
+            if let Some((formula, next_index)) = scan_bare_bracket_math(input, bytes, index, limits)? {
+                formulas.push(formula);
+                check_limit(
+                    formulas.len(),
+                    limits.max_formula_count,
+                    SafeLimitKind::FormulaCount,
+                )?;
+                index = next_index;
+                continue;
+            }
+        }
+
         if bytes[index] != b'$' || is_escaped(bytes, index) {
             index += 1;
             continue;
@@ -316,6 +329,73 @@ fn is_plausible_inline_latex(latex: &str) -> bool {
         return false;
     }
     !latex.chars().any(is_japanese_prose_character)
+}
+
+/// Some agents drop the backslash and emit `[ \boldsymbol{x} ]` instead of the
+/// documented `\[ ... \]`. Only treat this as math at the start of a line, and
+/// only when the content looks like LaTeX and the closing bracket isn't
+/// immediately followed by `(` (a Markdown link).
+fn is_plausible_block_latex(latex: &str) -> bool {
+    if latex.is_empty() || latex.contains('[') || latex.contains(']') {
+        return false;
+    }
+    if latex.chars().any(is_japanese_prose_character) {
+        return false;
+    }
+    has_bare_bracket_latex_hint(latex)
+}
+
+fn has_bare_bracket_latex_hint(latex: &str) -> bool {
+    let bytes = latex.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && index + 1 < bytes.len() && bytes[index + 1].is_ascii_alphabetic() {
+            return true;
+        }
+        if (bytes[index] == b'_' || bytes[index] == b'^') && bytes.get(index + 1) == Some(&b'{') {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn scan_bare_bracket_math(
+    input: &str,
+    bytes: &[u8],
+    start: usize,
+    limits: &ScannerLimits,
+) -> Result<Option<(Formula, usize)>, RenderError> {
+    let content_start = start + 1;
+    let mut cursor = content_start;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b']' && !is_escaped(bytes, cursor) {
+            if bytes.get(cursor + 1) == Some(&b'(') {
+                return Ok(None);
+            }
+            let latex = trim_javascript_whitespace(&input[content_start..cursor]);
+            if !is_plausible_block_latex(latex) {
+                return Ok(None);
+            }
+            let formula_characters = latex.chars().count();
+            check_limit(
+                formula_characters,
+                limits.max_formula_characters,
+                SafeLimitKind::FormulaCharacters,
+            )?;
+            return Ok(Some((
+                Formula {
+                    latex: latex.to_owned(),
+                    display: true,
+                    start,
+                    end: cursor + 1,
+                },
+                cursor + 1,
+            )));
+        }
+        cursor += 1;
+    }
+    Ok(None)
 }
 
 fn is_japanese_prose_character(character: char) -> bool {
@@ -619,6 +699,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(summaries(&formulas), vec![("\\int_0^1 x^2 dx", true)]);
+    }
+
+    #[test]
+    fn matches_bare_bracket_math_when_the_backslash_is_dropped() {
+        let formulas = scan_latex(
+            "Density is\n\n[ p(\\boldsymbol{x}\\mid\\boldsymbol{\\mu}) ]\n\nDone.",
+            &ScannerLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            summaries(&formulas),
+            vec![("p(\\boldsymbol{x}\\mid\\boldsymbol{\\mu})", true)]
+        );
+    }
+
+    #[test]
+    fn ignores_bare_brackets_that_look_like_markdown_links_or_prose() {
+        let formulas = scan_latex(
+            "See the [link](https://example.com) and a [note] in prose.",
+            &ScannerLimits::default(),
+        )
+        .unwrap();
+        assert!(formulas.is_empty());
+    }
+
+    #[test]
+    fn ignores_bare_brackets_not_at_the_start_of_a_line() {
+        let formulas = scan_latex(
+            "Inline text with [ \\alpha ] mid-sentence is not display math.",
+            &ScannerLimits::default(),
+        )
+        .unwrap();
+        assert!(formulas.is_empty());
     }
 
     #[test]
