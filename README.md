@@ -14,6 +14,11 @@ Current release: **v0.3.0** ([release notes](https://github.com/sodeyama/termina
 Verified on macOS with Ghostty + tmux; kitty and WezTerm are expected to work (they speak the
 same protocol) but are not yet part of the verified matrix.
 
+![Claude Code with tmath agent viewer](docs/media/claude-code-demo.gif)
+
+*Synthetic demo: a Claude Code–style shell (left) and the live typeset viewer (right). Recorded
+with `scripts/record-claude-demo-gif.sh`; no personal paths or transcripts.*
+
 ## Install
 
 ```sh
