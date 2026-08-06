@@ -72,7 +72,8 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         );
         return Ok(0);
     }
-    let parsed = parse_agent_args(args)?;
+    let file_config = crate::config::load_active();
+    let parsed = parse_agent_args(args, &file_config.agent)?;
     let source = parsed
         .source
         .clone()
@@ -90,12 +91,21 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
     listener.set_nonblocking(true).ok();
 
     let exe = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
+    let dpr = crate::config::resolve_device_pixel_ratio_config(&file_config.agent)
+        .map(|value| value.to_string());
+    let viewer_log = match crate::config::resolve_viewer_log_config(&file_config.agent) {
+        Some(true) => Some("1".to_string()),
+        _ => None,
+    };
+    let font_size_pt = crate::config::resolve_font_size_pt_env_or_config(&file_config)
+        .map(format_font_size_pt);
     let viewer_cmd = viewer_command(
         &exe,
         &socket_path,
-        env::var("TMATH_TMUX_TRANSPORT").ok().as_deref(),
-        env::var("TMATH_DPR").ok().as_deref(),
-        env::var("TMATH_VIEWER_LOG").ok().as_deref(),
+        crate::config::resolve_tmux_transport(&file_config.agent).as_deref(),
+        dpr.as_deref(),
+        viewer_log.as_deref(),
+        font_size_pt.as_deref(),
     );
     let viewer_pane = spawn_viewer_pane(&parsed, &source, &viewer_cmd)?;
     let route = crate::terminal_output::selected_route()?;
@@ -312,11 +322,27 @@ fn remember_answer(seen: &mut VecDeque<String>, answer: String) {
     seen.push_back(answer);
 }
 
-fn parse_agent_args(args: &[String]) -> Result<WatcherArgs, String> {
-    let mut percent = DEFAULT_PERCENT;
-    let mut wait_ms = DEFAULT_WAIT_MS;
-    let mut poll_ms = DEFAULT_POLL_MS;
-    let mut history = DEFAULT_HISTORY;
+fn format_font_size_pt(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+    }
+}
+
+fn parse_agent_args(args: &[String], file: &crate::config::AgentConfig) -> Result<WatcherArgs, String> {
+    let mut percent = file
+        .viewer_percent
+        .unwrap_or(crate::config::DEFAULT_AGENT_VIEWER_PERCENT);
+    let mut wait_ms = file
+        .wait_ms
+        .unwrap_or(crate::config::DEFAULT_AGENT_WAIT_MS);
+    let mut poll_ms = file
+        .poll_ms
+        .unwrap_or(crate::config::DEFAULT_AGENT_POLL_MS);
+    let mut history = file
+        .history_lines
+        .unwrap_or(crate::config::DEFAULT_AGENT_HISTORY_LINES);
     let mut source: Option<PaneId> = None;
     let mut index = 0;
     while index < args.len() {
@@ -396,6 +422,7 @@ fn viewer_command(
     transport: Option<&str>,
     dpr: Option<&str>,
     viewer_log: Option<&str>,
+    font_size_pt: Option<&str>,
 ) -> String {
     let mut env_pairs = Vec::new();
     if let Some(value) = transport {
@@ -406,6 +433,9 @@ fn viewer_command(
     }
     if let Some(value) = viewer_log {
         env_pairs.push(format!("TMATH_VIEWER_LOG={}", shell_quote(value)));
+    }
+    if let Some(value) = font_size_pt {
+        env_pairs.push(format!("TMATH_FONT_SIZE_PT={}", shell_quote(value)));
     }
     let exe = shell_quote(&exe.display().to_string());
     let socket = shell_quote(&socket.display().to_string());
@@ -792,7 +822,12 @@ fn finish(peer: &mut Option<UnixStream>, viewer_pane: &PaneId) -> Result<i32, St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentConfig;
     use crate::transcript_adapter::{TranscriptAdapter, TranscriptOpenMode};
+
+    fn file_defaults() -> AgentConfig {
+        AgentConfig::default()
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -823,7 +858,7 @@ mod tests {
 
     #[test]
     fn defaults_apply_when_no_options_are_given() {
-        let parsed = parse_agent_args(&args(&[])).unwrap();
+        let parsed = parse_agent_args(&args(&[]), &file_defaults()).unwrap();
         assert_eq!(parsed.percent, DEFAULT_PERCENT);
         assert_eq!(parsed.wait_ms, DEFAULT_WAIT_MS);
         assert_eq!(parsed.poll_ms, DEFAULT_POLL_MS);
@@ -833,7 +868,8 @@ mod tests {
 
     #[test]
     fn parses_agent_options() {
-        let parsed = parse_agent_args(&args(&[
+        let parsed = parse_agent_args(
+            &args(&[
             "--source-pane",
             "%7",
             "--percent",
@@ -844,7 +880,9 @@ mod tests {
             "100",
             "--history",
             "200",
-        ]))
+        ]),
+            &file_defaults(),
+        )
         .unwrap();
         assert_eq!(parsed.source.as_ref().unwrap().as_str(), "%7");
         assert_eq!(parsed.percent, 50);
@@ -855,18 +893,20 @@ mod tests {
 
     #[test]
     fn rejects_bad_options() {
-        assert!(parse_agent_args(&args(&["--percent", "0"])).is_err());
-        assert!(parse_agent_args(&args(&["--percent", "100"])).is_err());
-        assert!(parse_agent_args(&args(&["--history", "abc"])).is_err());
-        assert!(parse_agent_args(&args(&["--bogus"])).is_err());
-        assert!(parse_agent_args(&args(&["ignored"])).is_err());
+        let defaults = file_defaults();
+        assert!(parse_agent_args(&args(&["--percent", "0"]), &defaults).is_err());
+        assert!(parse_agent_args(&args(&["--percent", "100"]), &defaults).is_err());
+        assert!(parse_agent_args(&args(&["--history", "abc"]), &defaults).is_err());
+        assert!(parse_agent_args(&args(&["--bogus"]), &defaults).is_err());
+        assert!(parse_agent_args(&args(&["ignored"]), &defaults).is_err());
     }
 
     #[test]
     fn rejects_invalid_pane_ids() {
-        assert!(parse_agent_args(&args(&["--source-pane", "7"])).is_err());
-        assert!(parse_agent_args(&args(&["--source-pane", "%zz"])).is_err());
-        let parsed = parse_agent_args(&args(&["--source-pane", "%2"])).unwrap();
+        let defaults = file_defaults();
+        assert!(parse_agent_args(&args(&["--source-pane", "7"]), &defaults).is_err());
+        assert!(parse_agent_args(&args(&["--source-pane", "%zz"]), &defaults).is_err());
+        let parsed = parse_agent_args(&args(&["--source-pane", "%2"]), &defaults).unwrap();
         assert_eq!(parsed.source.unwrap().as_str(), "%2");
     }
 
@@ -886,6 +926,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(
             cmd,
@@ -898,6 +939,7 @@ mod tests {
         let cmd = viewer_command(
             std::path::Path::new("/opt/my tools/tmath"),
             std::path::Path::new("/tmp/tmath agent-1.sock"),
+            None,
             None,
             None,
             None,
@@ -916,6 +958,7 @@ mod tests {
             Some("passthrough"),
             None,
             None,
+            None,
         );
         assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
     }
@@ -932,6 +975,7 @@ mod tests {
             None,
             Some("2"),
             None,
+            None,
         );
         assert!(cmd.contains("TMATH_DPR='2'"));
     }
@@ -943,6 +987,7 @@ mod tests {
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             Some("3"),
+            None,
             None,
         );
         assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
@@ -957,10 +1002,12 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!cmd.contains("TMATH_TMUX_TRANSPORT"));
         assert!(!cmd.contains("TMATH_DPR"));
         assert!(!cmd.contains("TMATH_VIEWER_LOG"));
+        assert!(!cmd.contains("TMATH_FONT_SIZE_PT"));
         assert!(!cmd.contains("TMATH_RENDER_WORKER"));
     }
 
@@ -977,22 +1024,38 @@ mod tests {
             None,
             None,
             Some("1"),
+            None,
         );
         assert!(cmd.contains("TMATH_VIEWER_LOG='1'"));
     }
 
     #[test]
-    fn viewer_command_forwards_all_three_overrides_together() {
+    fn viewer_command_forwards_an_explicit_font_size_override() {
+        let cmd = viewer_command(
+            std::path::Path::new("/opt/tools/tmath"),
+            std::path::Path::new("/tmp/tmath-agent-1.sock"),
+            None,
+            None,
+            None,
+            Some("16"),
+        );
+        assert!(cmd.contains("TMATH_FONT_SIZE_PT='16'"));
+    }
+
+    #[test]
+    fn viewer_command_forwards_all_four_overrides_together() {
         let cmd = viewer_command(
             std::path::Path::new("/opt/tools/tmath"),
             std::path::Path::new("/tmp/tmath-agent-1.sock"),
             Some("passthrough"),
             Some("3"),
             Some("1"),
+            Some("16"),
         );
         assert!(cmd.contains("TMATH_TMUX_TRANSPORT='passthrough'"));
         assert!(cmd.contains("TMATH_DPR='3'"));
         assert!(cmd.contains("TMATH_VIEWER_LOG='1'"));
+        assert!(cmd.contains("TMATH_FONT_SIZE_PT='16'"));
     }
 
     // AT-3-602 supervisor fix 1: reassembling a two-message answer must not

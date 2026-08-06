@@ -69,9 +69,12 @@ skips this). It wraps `claude`, `codex`, `opencode`, `cursor-agent`, and `pi`:
 - **Allowlisted, outside tmux, non-interactive** (piped or redirected):
   passes through untouched, same as not being allowlisted.
 
-The allowlist lives at `${XDG_CONFIG_HOME:-~/.config}/tmath/agent-allowlist`
-(one canonicalized absolute path per line) and starts empty after install, so
-nothing changes until you run `tmath agent-enable`.
+The allowlist lives in `[agent].allowlist` inside
+`${XDG_CONFIG_HOME:-~/.config}/tmath/config.toml` (one canonicalized absolute
+path per array entry). `tmath agent-enable` / `agent-disable` read and write
+that file. A legacy `agent-allowlist` file is migrated automatically on first
+load. The file starts with an empty allowlist after install, so nothing changes
+until you run `tmath agent-enable`.
 
 ## Per-agent notes
 

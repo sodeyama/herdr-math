@@ -38,8 +38,10 @@
 
 use std::env;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use tmath_render::CjkFont;
 
 use crate::layout::{MAX_FONT_SIZE_PT, MIN_FONT_SIZE_PT};
@@ -58,15 +60,44 @@ pub(crate) const MAX_CONTENT_WIDTH_FONT_MULTIPLE: f64 = 60.0;
 /// terminal auto-fit path typically resolves to.
 pub(crate) const DEFAULT_CONTENT_WIDTH_FONT_MULTIPLE: f64 = 28.0;
 
+/// Default agent viewer split width (percent).
+pub(crate) const DEFAULT_AGENT_VIEWER_PERCENT: u32 = 35;
+/// Default answer settle debounce (ms).
+pub(crate) const DEFAULT_AGENT_WAIT_MS: u64 = 600;
+/// Default source-pane poll interval (ms).
+pub(crate) const DEFAULT_AGENT_POLL_MS: u64 = 250;
+/// Default scrollback capture depth (lines).
+pub(crate) const DEFAULT_AGENT_HISTORY_LINES: u32 = 500;
+
+const LEGACY_ALLOWLIST_FILE: &str = "agent-allowlist";
+const TMUX_TRANSPORT_ENV_VAR: &str = "TMATH_TMUX_TRANSPORT";
+const VIEWER_LOG_ENV_VAR: &str = "TMATH_VIEWER_LOG";
+const DPR_ENV_VAR: &str = "TMATH_DPR";
+
+/// Parsed, validated `[agent]` settings. Unset fields fall back to the
+/// documented defaults at resolution time.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct AgentConfig {
+    pub viewer_percent: Option<u32>,
+    pub wait_ms: Option<u64>,
+    pub poll_ms: Option<u64>,
+    pub history_lines: Option<u32>,
+    pub device_pixel_ratio: Option<u32>,
+    pub viewer_log: Option<bool>,
+    pub tmux_transport: Option<String>,
+    pub allowlist: Vec<PathBuf>,
+}
+
 /// Parsed, validated configuration. Every field is optional: an absent file,
 /// an absent key, or a value that fails validation all resolve to `None`
 /// here (fail closed to "no override" rather than propagating an error),
 /// with the appropriate warning event already logged by [`load`].
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Config {
     pub(crate) font_size_pt: Option<f64>,
     pub(crate) cjk_font: Option<CjkFont>,
     pub(crate) max_content_width_font_multiple: Option<f64>,
+    pub(crate) agent: AgentConfig,
 }
 
 /// Where the config file resolution and precedence decisions get their
@@ -93,19 +124,26 @@ impl FontSizeSource {
     }
 }
 
-/// Resolves `$XDG_CONFIG_HOME/tmath/config.toml`, falling back to
-/// `$HOME/.config/tmath/config.toml` — identical resolution order to
-/// `agent_allowlist.rs::allowlist_path` (kept as a separate function rather
-/// than shared code since the two files intentionally have unrelated
-/// lifecycles and error handling: a missing/unwritable config directory
-/// here silently disables config, whereas the allowlist path is load-bearing
-/// for `agent-enable`/`agent-allowed`).
-pub(crate) fn config_path() -> Option<PathBuf> {
+/// Resolves the platform config directory (`$XDG_CONFIG_HOME/tmath` or
+/// `$HOME/.config/tmath`).
+pub(crate) fn config_dir() -> Option<PathBuf> {
     let base = match env::var_os("XDG_CONFIG_HOME") {
         Some(value) => PathBuf::from(value),
         None => PathBuf::from(env::var_os("HOME")?).join(".config"),
     };
-    Some(base.join("tmath").join("config.toml"))
+    Some(base.join("tmath"))
+}
+
+/// Resolves `$XDG_CONFIG_HOME/tmath/config.toml`, falling back to
+/// `$HOME/.config/tmath/config.toml` — identical resolution order to the
+/// historical allowlist path's parent directory.
+pub(crate) fn config_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("config.toml"))
+}
+
+/// Historical allowlist file kept for one-time migration into `config.toml`.
+pub(crate) fn legacy_allowlist_path() -> Option<PathBuf> {
+    Some(config_dir()?.join(LEGACY_ALLOWLIST_FILE))
 }
 
 /// Loads and validates the config file at `path`. Fails closed at every
@@ -162,10 +200,241 @@ pub(crate) fn load(path: &Path) -> Config {
                 }
                 _ => log_warning("config_value_invalid", Some(key)),
             },
+            "agent" => parse_agent_table(value, &mut config.agent),
             _ => log_warning("config_key_unknown", Some(key)),
         }
     }
     config
+}
+
+fn parse_agent_table(value: &toml::Value, agent: &mut AgentConfig) {
+    let Some(table) = value.as_table() else {
+        log_warning("config_value_invalid", Some("agent"));
+        return;
+    };
+    for (key, value) in table {
+        match key.as_str() {
+            "viewer_percent" => match value.as_integer().and_then(|v| u32::try_from(v).ok()) {
+                Some(raw) if (1..=99).contains(&raw) => agent.viewer_percent = Some(raw),
+                _ => log_warning("config_value_invalid", Some("agent.viewer_percent")),
+            },
+            "wait_ms" => match value.as_integer().and_then(|v| u64::try_from(v).ok()) {
+                Some(raw) if raw > 0 => agent.wait_ms = Some(raw),
+                _ => log_warning("config_value_invalid", Some("agent.wait_ms")),
+            },
+            "poll_ms" => match value.as_integer().and_then(|v| u64::try_from(v).ok()) {
+                Some(raw) if raw > 0 => agent.poll_ms = Some(raw),
+                _ => log_warning("config_value_invalid", Some("agent.poll_ms")),
+            },
+            "history_lines" => match value.as_integer().and_then(|v| u32::try_from(v).ok()) {
+                Some(raw) if raw > 0 => agent.history_lines = Some(raw),
+                _ => log_warning("config_value_invalid", Some("agent.history_lines")),
+            },
+            "device_pixel_ratio" => match value.as_integer().and_then(|v| u32::try_from(v).ok()) {
+                Some(raw) if (1..=4).contains(&raw) => agent.device_pixel_ratio = Some(raw),
+                _ => log_warning("config_value_invalid", Some("agent.device_pixel_ratio")),
+            },
+            "viewer_log" => match value.as_bool() {
+                Some(raw) => agent.viewer_log = Some(raw),
+                None => log_warning("config_value_invalid", Some("agent.viewer_log")),
+            },
+            "tmux_transport" => match value.as_str() {
+                Some("client-tty") | Some("passthrough") => {
+                    agent.tmux_transport = Some(value.as_str().unwrap().to_string());
+                }
+                _ => log_warning("config_value_invalid", Some("agent.tmux_transport")),
+            },
+            "allowlist" => match value.as_array() {
+                Some(items) => {
+                    agent.allowlist = items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(PathBuf::from))
+                        .collect();
+                }
+                None => log_warning("config_value_invalid", Some("agent.allowlist")),
+            },
+            _ => log_warning("config_key_unknown", Some(key)),
+        }
+    }
+}
+
+/// Loads the active config file, migrating a legacy `agent-allowlist` file into
+/// `[agent].allowlist` when present.
+pub(crate) fn load_active() -> Config {
+    let Some(path) = config_path() else {
+        return Config::default();
+    };
+    let mut config = load(&path);
+    if config.agent.allowlist.is_empty() {
+        if let Some(legacy_path) = legacy_allowlist_path() {
+            if let Ok(entries) = read_allowlist_lines(&legacy_path) {
+                if !entries.is_empty() {
+                    config.agent.allowlist = entries;
+                    if save(&path, &config).is_ok() {
+                        let _ = fs::remove_file(&legacy_path);
+                    }
+                }
+            }
+        }
+    }
+    config
+}
+
+/// Writes `config` to `path`, creating the parent directory when needed.
+pub(crate) fn save(path: &Path, config: &Config) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "config path has no parent directory".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+
+    let document = ConfigDocument::from_config(config);
+    let text = toml::to_string_pretty(&document)
+        .map_err(|error| format!("config serialize: {error}"))?;
+
+    let mut open_options = fs::OpenOptions::new();
+    open_options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        open_options.mode(0o600);
+    }
+    let mut file = open_options
+        .open(path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn read_allowlist_lines(path: &Path) -> Result<Vec<PathBuf>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(PathBuf::from)
+            .collect()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+/// Adds `dir` to the active config allowlist unless already present.
+pub(crate) fn enable_allowlist_dir(dir: &Path) -> Result<bool, String> {
+    let path = config_path().ok_or_else(|| "config path unavailable".to_string())?;
+    let mut config = load_active();
+    if config.agent.allowlist.iter().any(|entry| entry == dir) {
+        return Ok(false);
+    }
+    config.agent.allowlist.push(dir.to_path_buf());
+    save(&path, &config)?;
+    Ok(true)
+}
+
+/// Removes `dir` from the active config allowlist (exact match).
+pub(crate) fn disable_allowlist_dir(dir: &Path) -> Result<bool, String> {
+    let path = config_path().ok_or_else(|| "config path unavailable".to_string())?;
+    let mut config = load_active();
+    let before = config.agent.allowlist.len();
+    config.agent.allowlist.retain(|entry| entry != dir);
+    if config.agent.allowlist.len() == before {
+        return Ok(false);
+    }
+    save(&path, &config)?;
+    Ok(true)
+}
+
+/// Returns whether `dir` is within any configured allowlist entry.
+pub(crate) fn is_dir_allowlisted(dir: &Path) -> bool {
+    let config = load_active();
+    config
+        .agent
+        .allowlist
+        .iter()
+        .any(|base| dir.starts_with(base))
+}
+
+pub(crate) fn resolve_tmux_transport(config: &AgentConfig) -> Option<String> {
+    env::var(TMUX_TRANSPORT_ENV_VAR)
+        .ok()
+        .filter(|value| value == "client-tty" || value == "passthrough")
+        .or_else(|| config.tmux_transport.clone())
+}
+
+pub(crate) fn resolve_device_pixel_ratio_config(config: &AgentConfig) -> Option<u32> {
+    env::var(DPR_ENV_VAR)
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .filter(|value| (1..=4).contains(value))
+        .or(config.device_pixel_ratio)
+}
+
+pub(crate) fn resolve_viewer_log_config(config: &AgentConfig) -> Option<bool> {
+    env::var(VIEWER_LOG_ENV_VAR)
+        .ok()
+        .map(|raw| matches!(raw.trim(), "1" | "true" | "yes" | "on"))
+        .or(config.viewer_log)
+}
+
+/// Precedence: environment variable > config file > `None` (viewer auto-fit).
+pub(crate) fn resolve_font_size_pt_env_or_config(config: &Config) -> Option<f64> {
+    env_font_size_pt().or(config.font_size_pt)
+}
+
+#[derive(Serialize)]
+struct ConfigDocument {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    font_size_pt: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cjk_font: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_content_width_font_multiple: Option<f64>,
+    agent: AgentConfigDocument,
+}
+
+#[derive(Serialize)]
+struct AgentConfigDocument {
+    viewer_percent: u32,
+    wait_ms: u64,
+    poll_ms: u64,
+    history_lines: u32,
+    allowlist: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_pixel_ratio: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viewer_log: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tmux_transport: Option<String>,
+}
+
+impl ConfigDocument {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            font_size_pt: config.font_size_pt,
+            cjk_font: config.cjk_font.map(|font| font.slug()),
+            max_content_width_font_multiple: config.max_content_width_font_multiple,
+            agent: AgentConfigDocument {
+                viewer_percent: config
+                    .agent
+                    .viewer_percent
+                    .unwrap_or(DEFAULT_AGENT_VIEWER_PERCENT),
+                wait_ms: config.agent.wait_ms.unwrap_or(DEFAULT_AGENT_WAIT_MS),
+                poll_ms: config.agent.poll_ms.unwrap_or(DEFAULT_AGENT_POLL_MS),
+                history_lines: config
+                    .agent
+                    .history_lines
+                    .unwrap_or(DEFAULT_AGENT_HISTORY_LINES),
+                allowlist: config
+                    .agent
+                    .allowlist
+                    .iter()
+                    .map(|entry| entry.display().to_string())
+                    .collect(),
+                device_pixel_ratio: config.agent.device_pixel_ratio,
+                viewer_log: config.agent.viewer_log,
+                tmux_transport: config.agent.tmux_transport.clone(),
+            },
+        }
+    }
 }
 
 /// Resolves the effective CJK font: the config file's `cjk_font` when
@@ -244,6 +513,7 @@ pub(crate) fn resolve_font_size_pt_with_source(
 mod tests {
     use super::*;
     use crate::layout::TerminalFitLayout;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -420,6 +690,7 @@ mod tests {
             font_size_pt: None,
             cjk_font: None,
             max_content_width_font_multiple: Some(40.0),
+            agent: AgentConfig::default(),
         };
         assert_eq!(resolve_max_content_width_font_multiple(&config), 40.0);
     }
@@ -430,6 +701,7 @@ mod tests {
             font_size_pt: Some(18.0),
             cjk_font: None,
             max_content_width_font_multiple: None,
+            agent: AgentConfig::default(),
         };
         let (value, source) =
             resolve_font_size_pt_with_source(Some(20), &config, Some(fitted(15.0)));
@@ -438,11 +710,33 @@ mod tests {
     }
 
     #[test]
+    fn agent_table_parses_viewer_and_allowlist_settings() {
+        let path = temp_config_path(Some(
+            "[agent]\nviewer_percent = 45\nwait_ms = 500\nallowlist = [\"/tmp/proj\"]\n",
+        ));
+        let config = load(&path);
+        assert_eq!(config.agent.viewer_percent, Some(45));
+        assert_eq!(config.agent.wait_ms, Some(500));
+        assert_eq!(config.agent.allowlist, vec![PathBuf::from("/tmp/proj")]);
+    }
+
+    #[test]
+    fn save_round_trips_allowlist_entries() {
+        let path = temp_config_path(None);
+        let mut config = Config::default();
+        config.agent.allowlist = vec![PathBuf::from("/tmp/a")];
+        save(&path, &config).unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded.agent.allowlist, vec![PathBuf::from("/tmp/a")]);
+    }
+
+    #[test]
     fn precedence_config_beats_auto_fit() {
         let config = Config {
             font_size_pt: Some(18.0),
             cjk_font: None,
             max_content_width_font_multiple: None,
+            agent: AgentConfig::default(),
         };
         let (value, source) = resolve_font_size_pt_with_source(None, &config, Some(fitted(15.0)));
         assert_eq!(value, 18.0);

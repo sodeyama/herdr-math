@@ -66,7 +66,7 @@ check "agent-allowed prints nothing" "${#OUT}" 0
 
 # --- AT-2-813: enable is idempotent (no duplicate allowlist entries) --------
 run_tmath agent-enable "$TARGET_DIR" >/dev/null
-ENTRY_COUNT="$(grep -c -F "$(cd "$TARGET_DIR" && pwd)" "$TMP_HOME/.config/tmath/agent-allowlist")"
+ENTRY_COUNT="$(grep -c -F "$(cd "$TARGET_DIR" && pwd)" "$TMP_HOME/.config/tmath/config.toml")"
 check "enable is idempotent (one entry)" "$ENTRY_COUNT" 1
 
 # --- AT-2-813: disable removes only the target, is a no-op when absent -----

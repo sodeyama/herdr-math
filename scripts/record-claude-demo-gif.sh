@@ -6,6 +6,10 @@
 # docs/media/ in the repository.
 #
 # Requires: Ghostty, tmux 3.3+, ffmpeg, python3 (Quartz for window capture).
+#
+# Confirmed demo recipe (2026-08): Ghostty 140×40 cells, terminal font 12 pt,
+# tmath render 16 pt (`TMATH_FONT_SIZE_PT`), release `tmath` with viewer font
+# forwarding and physical-pixel-aware `TMATH_DPR` handling.
 
 set -euo pipefail
 
@@ -17,18 +21,22 @@ DEMO_ROOT="/tmp/tmath-public-demo-$$"
 TMP="$DEMO_ROOT/scratch"
 SOCKET="tmath-demo-$$"
 SESSION="demo"
-FPS=7
-DURATION=14
+FPS=8
+DURATION=50
 
-# Demo-friendly terminal geometry (not full-screen). AppleScript uses points;
-# Quartz capture reports physical pixels (~1.7–2× on Retina).
-GHOSTTY_WIDTH=800
-GHOSTTY_HEIGHT=480
-GHOSTTY_X=180
-GHOSTTY_Y=90
-TMUX_COLS=72
-TMUX_ROWS=22
-GIF_WIDTH=640
+SCROLL_DOWN_START=26
+SCROLL_DOWN_END=40
+SCROLL_UP_START=41
+SCROLL_UP_END=46
+
+# Ghostty window-width/window-height are terminal CELLS, not pixels.
+GHOSTTY_COLS="${GHOSTTY_COLS:-140}"
+GHOSTTY_ROWS="${GHOSTTY_ROWS:-40}"
+GHOSTTY_FONT_SIZE="${GHOSTTY_FONT_SIZE:-12}"
+TMATH_FONT_SIZE_PT="${TMATH_FONT_SIZE_PT:-16}"
+TMUX_COLS=$GHOSTTY_COLS
+TMUX_ROWS=$GHOSTTY_ROWS
+GIF_WIDTH="${GIF_WIDTH:-720}"
 
 tm() { tmux -L "$SOCKET" "$@"; }
 
@@ -48,6 +56,9 @@ fi
 TMATH="$DEMO_ROOT/tmath"
 cp "$TMATH_SRC" "$TMATH"
 chmod +x "$TMATH"
+STREAM_PY="$DEMO_ROOT/stream-answer.py"
+cp "$ROOT/scripts/demo-stream-answer.py" "$STREAM_PY"
+chmod +x "$STREAM_PY"
 
 cat > "$DEMO_ROOT/answer1.txt" <<'EOF'
 The quadratic formula solves $ax^2+bx+c=0$:
@@ -63,6 +74,8 @@ Vertex form: $$y = a(x-h)^2 + k$$
 The vertex is at $(h,k)$. For example, $y = 2(x-3)^2 + 1$ has vertex $(3,1)$.
 EOF
 
+# Kept for reference; streaming uses demo-stream-answer.py instead of cat.
+
 ATTACH_SCRIPT="$DEMO_ROOT/ghostty-attach.sh"
 cat > "$ATTACH_SCRIPT" <<EOF
 #!/bin/zsh
@@ -70,6 +83,14 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:\$PATH"
 exec tmux -L "$SOCKET" attach -t "$SESSION"
 EOF
 chmod +x "$ATTACH_SCRIPT"
+
+GHOSTTY_CFG="$DEMO_ROOT/ghostty-demo.conf"
+cat > "$GHOSTTY_CFG" <<EOF
+window-width = $GHOSTTY_COLS
+window-height = $GHOSTTY_ROWS
+font-size = $GHOSTTY_FONT_SIZE
+window-save-state = never
+EOF
 
 wait_for_window() {
   local wid=""
@@ -104,45 +125,57 @@ for win in wins:
 "
 }
 
-# tmath agent splits the pane and Ghostty often maximizes afterward; force the
-# demo window back to the intended size with AppleScript (CLI flags alone are
-# not enough once tmux relayouts).
-resize_demo_window() {
-  local right=$((GHOSTTY_X + GHOSTTY_WIDTH))
-  local bottom=$((GHOSTTY_Y + GHOSTTY_HEIGHT))
-  /usr/bin/osascript -e 'tell application "Ghostty" to activate' >/dev/null 2>&1 || true
-  /usr/bin/osascript <<EOF
-tell application "System Events"
-  tell process "ghostty"
-    set frontmost to true
-    repeat with win in windows
-      if name of win contains "ghostty-attach.sh" then
-        set bounds of win to {$GHOSTTY_X, $GHOSTTY_Y, $right, $bottom}
-      end if
-    end repeat
-  end tell
-end tell
-EOF
+resize_demo_geometry() {
+  tm resize-window -t "$SESSION" -x "$GHOSTTY_COLS" -y "$GHOSTTY_ROWS" 2>/dev/null || true
 }
 
-ensure_demo_window_size() {
-  local wid="$1"
-  local bounds w h max_w
-  # Retina physical pixels; 800pt ≈ 1300–1600px depending on display scale.
-  max_w=$((GHOSTTY_WIDTH * 2 + 200))
-  for _ in $(seq 1 10); do
-    bounds="$(window_bounds "$wid" || true)"
-    [ -n "$bounds" ] || { sleep 0.3; continue; }
-    read -r w h <<< "$bounds"
-    if [ "${w:-9999}" -le "$max_w" ]; then
-      echo "Ghostty window: ${w}x${h} (target ${GHOSTTY_WIDTH}x${GHOSTTY_HEIGHT}pt)"
+find_viewer_pane() {
+  tm list-panes -t "$SESSION" -F '#{pane_id}' | while read -r pane; do
+    [ "$pane" != "$SRC_PANE" ] && printf '%s\n' "$pane"
+  done | tail -1
+}
+
+scroll_viewer() {
+  local dir="$1"
+  local hex
+  if [ "$dir" = down ]; then
+    hex=$'\033[<65;10;20M'
+  else
+    hex=$'\033[<64;10;20M'
+  fi
+  tm send-keys -t "$VIEWER_PANE" -H "$hex"
+}
+
+crop_filter_for_window() {
+  WID="$1" /usr/bin/python3 -c "
+import os, Quartz
+wid = int(os.environ['WID'])
+wins = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
+for win in wins:
+    if win.get('kCGWindowNumber') == wid:
+        b = win['kCGWindowBounds']
+        w, h = int(b['Width']), int(b['Height'])
+        print(f'crop={w}:{h - 32}:0:32')
+        break
+"
+}
+
+ensure_demo_geometry() {
+  local cols rows
+  for _ in $(seq 1 8); do
+    read -r cols rows <<< "$(tm display-message -p -t "$SESSION" '#{window_width} #{window_height}')"
+    if [ "${cols:-0}" -le $((GHOSTTY_COLS + 2)) ] && [ "${cols:-0}" -ge $((GHOSTTY_COLS - 2)) ] \
+      && [ "${rows:-0}" -le $((GHOSTTY_ROWS + 2)) ] && [ "${rows:-0}" -ge $((GHOSTTY_ROWS - 2)) ]; then
+      bounds="$(window_bounds "$1" 2>/dev/null || true)"
+      echo "Ghostty: ${cols}x${rows} cells (${bounds:-?} px)"
       return 0
     fi
-    resize_demo_window
+    resize_demo_geometry
     sleep 0.35
   done
-  echo "FAIL: Ghostty stayed too large (${w:-unknown}x${h:-unknown}); expected ~${GHOSTTY_WIDTH}x${GHOSTTY_HEIGHT}pt" >&2
-  return 1
+  read -r cols rows <<< "$(tm display-message -p -t "$SESSION" '#{window_width} #{window_height}')"
+  echo "WARN: tmux geometry ${cols:-?}x${rows:-?}, wanted ${GHOSTTY_COLS}x${GHOSTTY_ROWS}" >&2
+  return 0
 }
 
 # --- isolated tmux session + compact Ghostty window --------------------------
@@ -156,7 +189,7 @@ SRC_PANE="$(tm display-message -p -t "$SESSION" '#{pane_id}')"
 
 cat > "$DEMO_ROOT/run-agent.sh" <<EOF
 #!/bin/zsh
-exec env TMATH_DPR=2 "$TMATH" agent --source-pane $SRC_PANE --wait-ms 400 --poll-ms 100 --percent 45
+exec env TMATH_DPR=2 TMATH_FONT_SIZE_PT=$TMATH_FONT_SIZE_PT "$TMATH" agent --source-pane $SRC_PANE --wait-ms 150 --poll-ms 60 --percent 45
 EOF
 chmod +x "$DEMO_ROOT/run-agent.sh"
 
@@ -164,14 +197,15 @@ tm send-keys -l -t "$SRC_PANE" 'PROMPT_EOL_MARK="" ; PS1="❯ " ; clear'
 tm send-keys -t "$SRC_PANE" Enter
 
 open -na Ghostty.app --args \
-  "--window-width=$GHOSTTY_WIDTH" \
-  "--window-height=$GHOSTTY_HEIGHT" \
+  "--config-file=$GHOSTTY_CFG" \
+  "--window-width=$GHOSTTY_COLS" \
+  "--window-height=$GHOSTTY_ROWS" \
   "--window-save-state=never" \
   -e "$ATTACH_SCRIPT" >/dev/null 2>&1 || true
 
-echo "waiting for Ghostty attach (${GHOSTTY_WIDTH}x${GHOSTTY_HEIGHT}pt)..."
+echo "waiting for Ghostty attach (${GHOSTTY_COLS}x${GHOSTTY_ROWS} cells)..."
 wid="$(wait_for_window)" || { echo "FAIL: Ghostty demo window not found" >&2; exit 1; }
-resize_demo_window
+resize_demo_geometry
 sleep 0.5
 
 # --- demo inside attached Ghostty --------------------------------------------
@@ -189,64 +223,69 @@ for _ in $(seq 1 80); do
   sleep 0.25
 done
 [ "$started" = 1 ] || { echo "FAIL: tmath agent did not start" >&2; exit 1; }
-sleep 0.8
+sleep 0.5
+resize_demo_geometry
+sleep 0.4
+wid="$(wait_for_window)" || { echo "FAIL: lost Ghostty demo window" >&2; exit 1; }
+ensure_demo_geometry "$wid"
+
+VIEWER_PANE="$(find_viewer_pane)"
+[ -n "$VIEWER_PANE" ] || { echo "FAIL: viewer pane not found" >&2; exit 1; }
+echo "viewer pane: $VIEWER_PANE"
 
 tm send-keys -l -t "$SRC_PANE" 'clear'
 tm send-keys -t "$SRC_PANE" Enter
 sleep 0.3
 
-tm send-keys -l -t "$SRC_PANE" 'printf "Explain the quadratic formula and when to use it.\n"'
-tm send-keys -t "$SRC_PANE" Enter
-sleep 0.6
-tm send-keys -l -t "$SRC_PANE" "cat '$DEMO_ROOT/answer1.txt'"
-tm send-keys -t "$SRC_PANE" Enter
-sleep 3.5
+crop_vf="$(crop_filter_for_window "$wid"),scale=${GIF_WIDTH}:-1:flags=lanczos"
+[ -n "$crop_vf" ] || { echo "FAIL: could not compute crop for window $wid" >&2; exit 1; }
 
-if tm capture-pane -p -S -200 -t "$SRC_PANE" 2>/dev/null | grep -q 'boundary_failed'; then
-  echo "FAIL: watcher boundary_failed on first answer" >&2
-  exit 1
-fi
-
-tm send-keys -l -t "$SRC_PANE" 'printf "Also show the vertex form.\n"'
-tm send-keys -t "$SRC_PANE" Enter
-sleep 0.6
-tm send-keys -l -t "$SRC_PANE" "cat '$DEMO_ROOT/answer2.txt'"
-tm send-keys -t "$SRC_PANE" Enter
-sleep 3.0
-
-ensure_demo_window_size "$wid"
-
-read -r crop_w crop_h crop_x crop_y <<EOF
-$(WID="$wid" /usr/bin/python3 -c "
-import os, Quartz
-wid = int(os.environ['WID'])
-wins = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
-for win in wins:
-    if win.get('kCGWindowNumber') == wid:
-        b = win['kCGWindowBounds']
-        w, h = int(b['Width']), int(b['Height'])
-        print(w, h - 32, 0, 32)
-        break
-")
-EOF
-
-echo "recording window $wid (${DURATION}s)..."
+echo "recording window $wid (${DURATION}s, drive demo during capture)..."
 frames_dir="$TMP/frames"
 mkdir -p "$frames_dir"
 interval="$(python3 -c "print(f'{1/$FPS:.4f}')")"
 end=$((SECONDS + DURATION))
 i=0
+demo_step=0
 while [ "$SECONDS" -lt "$end" ]; do
+  elapsed=$((DURATION - (end - SECONDS)))
+  case "$demo_step" in
+    0)
+      if [ "$elapsed" -ge 1 ]; then
+        tm send-keys -l -t "$SRC_PANE" \
+          'printf "Summarize quadratic equations with all key formulas.\n"'
+        tm send-keys -t "$SRC_PANE" Enter
+        demo_step=1
+      fi
+      ;;
+    1)
+      if [ "$elapsed" -ge 3 ]; then
+        tm send-keys -l -t "$SRC_PANE" "'$STREAM_PY' long"
+        tm send-keys -t "$SRC_PANE" Enter
+        demo_step=2
+      fi
+      ;;
+  esac
+
+  if [ "$elapsed" -ge "$SCROLL_DOWN_START" ] && [ "$elapsed" -lt "$SCROLL_DOWN_END" ]; then
+    scroll_viewer down
+  elif [ "$elapsed" -ge "$SCROLL_UP_START" ] && [ "$elapsed" -lt "$SCROLL_UP_END" ]; then
+    scroll_viewer up
+  fi
+
   raw="$frames_dir/raw-$i.png"
   out="$frames_dir/frame-$(printf '%04d' "$i").png"
   /usr/sbin/screencapture -x -o -l "$wid" "$raw" 2>/dev/null
-  ffmpeg -y -i "$raw" \
-    -vf "crop=${crop_w}:${crop_h}:${crop_x}:${crop_y},scale=${GIF_WIDTH}:-1:flags=lanczos" \
-    "$out" 2>/dev/null
+  ffmpeg -y -i "$raw" -vf "$crop_vf" "$out" 2>/dev/null
   rm -f "$raw"
   i=$((i + 1))
   sleep "$interval"
 done
+
+if tm capture-pane -p -S -200 -t "$SRC_PANE" 2>/dev/null | grep -q 'boundary_failed'; then
+  echo "FAIL: watcher boundary_failed during demo" >&2
+  exit 1
+fi
 
 frame_count="$(find "$frames_dir" -name 'frame-*.png' | wc -l | tr -d ' ')"
 [ "$frame_count" -ge 6 ] || { echo "FAIL: too few frames ($frame_count)" >&2; exit 1; }

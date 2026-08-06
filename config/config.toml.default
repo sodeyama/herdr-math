@@ -1,0 +1,41 @@
+# Terminal Math user configuration
+# Installed to: ~/.config/tmath/config.toml
+# Override directory with the XDG_CONFIG_HOME environment variable.
+
+# Typeset font size (pt) for the agent viewer and `tmath render` when no CLI
+# flag or terminal auto-fit applies. Valid range: 10–24.
+font_size_pt = 16.0
+
+# Embedded CJK font slug. Currently supported: "m-plus-2".
+cjk_font = "m-plus-2"
+
+# Caps terminal auto-fit content width to font_size_pt × this value (10–60).
+max_content_width_font_multiple = 28.0
+
+[agent]
+# Viewer pane width as a percentage of the tmux window (1–99).
+viewer_percent = 35
+
+# Debounce before treating source-pane output as a finished answer (ms).
+wait_ms = 600
+
+# Source-pane poll interval (ms).
+poll_ms = 250
+
+# Scrollback lines captured from the source pane per poll.
+history_lines = 500
+
+# Directories where shell auto-watch runs (`tmath agent-enable` adds here).
+allowlist = [
+  # "/path/to/your/project",
+]
+
+# Optional: force device pixel ratio inside tmux when viewer text looks blurry
+# or too small on Retina displays. Valid range: 1–4.
+# device_pixel_ratio = 2
+
+# Optional: print viewer diagnostics into the viewer pane.
+# viewer_log = false
+
+# Optional: Kitty graphics transport override: "client-tty" or "passthrough".
+# tmux_transport = "passthrough"

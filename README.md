@@ -57,6 +57,29 @@ font size, and whether the viewer is `following` or `scrolled`.
 Full walkthroughs, options, and per-agent notes: [Getting started](docs/getting-started.md)
 and [Coding agents](docs/coding-agents.md).
 
+## Configuration
+
+All user settings live in `~/.config/tmath/config.toml` (or
+`$XDG_CONFIG_HOME/tmath/config.toml`). The installer creates this file on first
+install from `config/config.toml.default`.
+
+```toml
+font_size_pt = 16.0
+
+[agent]
+viewer_percent = 35
+wait_ms = 600
+poll_ms = 250
+history_lines = 500
+allowlist = [
+  # "/path/to/your/project",
+]
+```
+
+- **`font_size_pt`** — typeset size for the viewer and `tmath render` (CLI/env override).
+- **`[agent].allowlist`** — shell auto-watch directories (`tmath agent-enable` writes here).
+- Other `[agent]` keys set defaults for `tmath agent`; see [Configuration](docs/configuration.md).
+
 ## Product boundaries
 
 - Renders `$...$` / `$$...$$` (and `\(...\)` / `\[...\]`) math plus a strict, allowlisted
@@ -72,6 +95,7 @@ and [Coding agents](docs/coding-agents.md).
 ## Documentation
 
 - [Getting started, install, and troubleshooting](docs/getting-started.md)
+- [Configuration (`~/.config/tmath/config.toml`)](docs/configuration.md)
 - [Coding agents (Claude Code, Codex, opencode, Cursor, pi)](docs/coding-agents.md)
 - [Concept and product boundaries](docs/concept.md)
 - [Architecture](docs/architecture.md)

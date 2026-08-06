@@ -356,8 +356,11 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
     // report logical rather than physical pixels and why an explicit
     // override is needed to correct it.
     let tmath_dpr_env = std::env::var("TMATH_DPR").ok();
-    let dpr_override =
-        crate::layout::resolve_dpr_override(tmath_dpr_env.as_deref(), tmux_passthrough);
+    let dpr_override = crate::layout::resolve_dpr_override(
+        tmath_dpr_env.as_deref(),
+        tmux_passthrough,
+        (measured_cell.0, measured_cell.1),
+    );
     if log_enabled && tmux_passthrough && tmath_dpr_env.is_some() && dpr_override.is_none() {
         // Never log the raw value: it is a stable, small piece of config,
         // but keeping the log purely event-shaped (per AGENTS.md) avoids any

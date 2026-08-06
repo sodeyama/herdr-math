@@ -34,7 +34,9 @@
 //! physical cell used for font size and content width), so `grid_for` and
 //! the viewport end up consistent in physical pixel units. Auto-detection
 //! via a passthrough graphics capability query is future work; this is an
-//! explicit escape hatch, not a general fix.
+//! explicit escape hatch, not a general fix. The override is skipped when
+//! winsize already yields a physical cell (auto-detected DPR > 1), because
+//! scaling the cell again would shrink Kitty placements.
 
 /// Assumed CSS-pixel width of one terminal cell on a standard-density
 /// display; device pixel ratio is derived by comparing this against the
@@ -199,19 +201,25 @@ pub(crate) fn resolve_device_pixel_ratio(fitted: Option<TerminalFitLayout>) -> u
 /// `None`, falling back to today's auto-detected behavior) whenever it is
 /// unset, not an integer, or outside `1..=4` — the override never causes an
 /// error, only a fall-through, so a mistyped value cannot break the viewer.
+/// override is skipped when winsize already reports a physical cell (auto-
+/// detected DPR > 1), because applying it again would double-scale the cell
+/// and shrink rendered placements.
 pub(crate) fn resolve_dpr_override(
     raw: Option<&str>,
     on_tmux_winsize_fallback: bool,
+    measured_cell: (u32, u32),
 ) -> Option<u32> {
     if !on_tmux_winsize_fallback {
         return None;
     }
     let dpr: u32 = raw?.trim().parse().ok()?;
-    if (1..=4).contains(&dpr) {
-        Some(dpr)
-    } else {
-        None
+    if !(1..=4).contains(&dpr) {
+        return None;
     }
+    if device_scale_factor(measured_cell) > 1 {
+        return None;
+    }
+    Some(dpr)
 }
 
 /// Derives the terminal-fitted layout from a connected terminal's measured
@@ -397,32 +405,44 @@ mod tests {
 
     #[test]
     fn resolve_dpr_override_accepts_a_valid_value_on_the_tmux_fallback_path() {
-        assert_eq!(resolve_dpr_override(Some("2"), true), Some(2));
-        assert_eq!(resolve_dpr_override(Some("1"), true), Some(1));
-        assert_eq!(resolve_dpr_override(Some("4"), true), Some(4));
+        assert_eq!(resolve_dpr_override(Some("2"), true, (7, 15)), Some(2));
+        assert_eq!(resolve_dpr_override(Some("1"), true, (7, 15)), Some(1));
+        assert_eq!(resolve_dpr_override(Some("4"), true, (7, 15)), Some(4));
     }
 
     #[test]
     fn resolve_dpr_override_ignores_an_absent_variable() {
-        assert_eq!(resolve_dpr_override(None, true), None);
+        assert_eq!(resolve_dpr_override(None, true, (7, 15)), None);
     }
 
     #[test]
     fn resolve_dpr_override_ignores_an_invalid_value() {
-        assert_eq!(resolve_dpr_override(Some("0"), true), None, "below range");
-        assert_eq!(resolve_dpr_override(Some("5"), true), None, "above range");
         assert_eq!(
-            resolve_dpr_override(Some("abc"), true),
+            resolve_dpr_override(Some("0"), true, (7, 15)),
+            None,
+            "below range"
+        );
+        assert_eq!(
+            resolve_dpr_override(Some("5"), true, (7, 15)),
+            None,
+            "above range"
+        );
+        assert_eq!(
+            resolve_dpr_override(Some("abc"), true, (7, 15)),
             None,
             "not a number"
         );
-        assert_eq!(resolve_dpr_override(Some(""), true), None, "empty");
+        assert_eq!(resolve_dpr_override(Some(""), true, (7, 15)), None, "empty");
         assert_eq!(
-            resolve_dpr_override(Some("2.5"), true),
+            resolve_dpr_override(Some("2.5"), true, (7, 15)),
             None,
             "not an integer"
         );
-        assert_eq!(resolve_dpr_override(Some("-1"), true), None, "negative");
+        assert_eq!(
+            resolve_dpr_override(Some("-1"), true, (7, 15)),
+            None,
+            "negative"
+        );
     }
 
     #[test]
@@ -430,6 +450,14 @@ mod tests {
         // Even a valid value is ignored when the caller reports this session
         // is not on the affected path (e.g. a directly-connected terminal
         // whose cell size came from the real pixel query).
-        assert_eq!(resolve_dpr_override(Some("2"), false), None);
+        assert_eq!(resolve_dpr_override(Some("2"), false, (7, 15)), None);
+    }
+
+    #[test]
+    fn resolve_dpr_override_skips_when_winsize_already_reports_physical_pixels(
+    ) {
+        // A 14px-wide cell auto-detects to dpr 2; forcing TMATH_DPR=2 again
+        // would double-scale the cell and shrink placements.
+        assert_eq!(resolve_dpr_override(Some("2"), true, (14, 28)), None);
     }
 }

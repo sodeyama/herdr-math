@@ -243,6 +243,19 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# User config (~/.config/tmath/config.toml)
+# ----------------------------------------------------------------------------
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmath"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+if [ ! -f "$CONFIG_FILE" ]; then
+  mkdir -p "$CONFIG_DIR"
+  cp "$REPO/config/config.toml.default" "$CONFIG_FILE"
+  echo "tmath: wrote default config $CONFIG_FILE"
+else
+  echo "tmath: keeping existing config $CONFIG_FILE"
+fi
+
+# ----------------------------------------------------------------------------
 # Verify
 # ----------------------------------------------------------------------------
 echo "tmath: installed $VERSION to $APP"
@@ -267,5 +280,6 @@ case ":$PATH:" in
 esac
 echo
 echo "  tmath render notes.md"
+echo "  # edit ~/.config/tmath/config.toml (font size, agent allowlist, ...)"
 echo "  # inside tmux, watch a coding agent pane:"
 echo "  tmath agent --source-pane %0"
