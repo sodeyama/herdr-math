@@ -41,7 +41,7 @@ tmath render ./notes.md
 tmath render --content-width 800 --font-size 18 ./notes.md
 ```
 
-`tmath diagnose` verifies the renderer, node, terminal, and Kitty support.
+`tmath diagnose` verifies the terminal and Kitty support.
 `tmath --help` lists every command.
 
 ## Requirements
@@ -49,8 +49,6 @@ tmath render --content-width 800 --font-size 18 ./notes.md
 - A terminal that supports the Kitty graphics protocol (Ghostty is the verified
   primary; kitty and WezTerm are P1). `tmath diagnose` reports whether the
   current terminal supports it.
-- Node.js 22+ and the installed renderer (handled by `scripts/install.sh`; the
-  binary locates the renderer automatically after install).
 - `tmath agent` requires tmux 3.2+ and opens a separate viewer pane. Graphics
   use the attached tmux client tty by default, while placeholder cells remain
   in tmux for clipping and redraw. Set
@@ -59,7 +57,7 @@ tmath render --content-width 800 --font-size 18 ./notes.md
 
 ## Behavior and privacy
 
-- Formulas and Markdown render locally with KaTeX and a local browser; remote
+- Formulas and Markdown render locally in-process (RaTeX + Typst, embedded fonts); remote
   resources, scripts, raw HTML, and user CSS are never loaded or executed.
 - Document text, formulas, and rendered bytes are never written to logs,
   durable state, or any network service.

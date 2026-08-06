@@ -75,22 +75,16 @@ reference. Do not treat it as current product guidance.
 - The Rust `tmath` binary owns the terminal: raw mode, Kitty negotiation, mouse/keyboard input,
   scroll state machine, and scrollback-anchored placement in the main screen buffer (never the
   alternate screen).
-- Two render engines coexist during the V3 migration
-  (`specs/terminal-math-v3/plans/main.md`):
-  - **Native engine (default)**: the Rust `engine/crates/tmath-render` crate renders
+- Two render engines coexisted during early V3 migration; **only the native engine
+  remains** as of Phase 5 (T3-502):
+  - **Native engine (default and only)**: the Rust `engine/crates/tmath-render` crate renders
     in-process (RaTeX for math, Typst as a library for the Markdown subset) with no
     subprocess and no IPC. It must use only fonts embedded in the binary (no system font
     scan), must disable Typst package resolution and all network and filesystem
     capabilities, must pass user text into Typst only through escaped string literals
     (never as markup), and must enforce the per-block limit, deadline, and fail-closed
     error contracts inside the crate.
-  - **Node engine (deprecated, `tmath render --engine node`)**: the TypeScript
-    `tmath-render` subprocess is one-shot: it reads one bounded JSON request on stdin,
-    renders with KaTeX/Chromium/sharp, writes one bounded JSON response on stdout, and
-    exits. It uses the versioned JSON IPC (`tmath-render/1`) between Rust and the
-    renderer; enforce size, timeout, and trust limits at that boundary. Scheduled for
-    removal in Phase 5 per the V3 plan once single-binary packaging lands.
-- Keep the parser, renderer transport, placement tracker, input decoder, scroll driver, and CLI
+- Keep the parser, renderer, placement tracker, input decoder, scroll driver, and CLI
   as separate modules with narrow interfaces.
 - Never store durable state in the repository; runtime artifacts live in a platform state
   directory. Never add user-specific absolute paths.
@@ -122,20 +116,15 @@ reference. Do not treat it as current product guidance.
 
 ```text
 Cargo.toml                     # Rust workspace
-engine/crates/tmath-core/      # terminal surface: kitty, terminal, mouse, input, scroll, native
+engine/crates/tmath-core/      # terminal surface: kitty, terminal, mouse, input, scroll
+engine/crates/tmath-render/    # native in-process renderer (RaTeX + Typst)
 engine/crates/tmath/           # tmath CLI binary
-src/
-  renderer/                    # TS renderer pipeline (one-shot subprocess)
-  scanner/
-  core/                        # contracts, errors, limits
-tests/
-  unit/
-  integration/
-  fixtures/
+tests/fixtures/                # agent and integration fixtures
 scripts/
 docs/
 specs/herdr-math-v1/           # superseded V1, kept for reference
-specs/terminal-math-v2/        # current specification triad
+specs/terminal-math-v2/        # superseded V2, kept for reference
+specs/terminal-math-v3/        # current specification triad
 ```
 
 Keep generated output under `dist/` and `target/`, coverage under `coverage/`, and local runtime
@@ -176,14 +165,9 @@ Planned command names belong in `package.json`/Cargo manifests until they exist.
 top-level validation surface is:
 
 ```sh
-npm ci
-npm run check
-npm test
-npm run test:integration
-npm run build
-npm run smoke:render
-cargo test
-cargo clippy --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+npm run security:check
 ```
 
 ## Documentation Rules

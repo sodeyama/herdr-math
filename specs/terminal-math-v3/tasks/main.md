@@ -171,11 +171,12 @@
       `--engine node` one release. (Default is now `native`; `tmath agent`
       no longer requires `TMATH_RENDER_WORKER`; `diagnose` treats Node as
       optional. AT-3-206 covered by golden-corpus spike + native CLI tests.)
-- [ ] **T3-502** Remove TS renderer/scanner, Playwright/sharp/KaTeX/markdown-it/
+- [x] **T3-502** Remove TS renderer/scanner, Playwright/sharp/KaTeX/markdown-it/
       highlight.js, postinstall browser fetch, `TMATH_RENDER_WORKER`; re-home the
       security scan. (AT-3-804, AT-3-704)
 - [ ] **T3-503** Single-binary packaging + install.sh without Node; footprint
-      gate. (AT-3-801, AT-3-802)
+      gate. (AT-3-801, AT-3-802; install.sh no longer requires Node; footprint
+      gate and release artifact packaging remain open)
 - [ ] **T3-504** Linux x86_64 build + smoke; record real-terminal evidence before
       claiming support. (AT-3-803)
 - [ ] **T3-505** Docs commit: README, getting-started, compatibility, licensing

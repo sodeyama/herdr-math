@@ -12,7 +12,6 @@ The implementation is developed and validated toward this combination:
 | Operating system | macOS (primary target) |
 | Architecture | arm64 |
 | Outer terminal | Ghostty 1.3.1 stable |
-| Node.js | 22 or later |
 | Rust | recent stable |
 
 A release claim is made only after the release-gate tasks complete: clean build, unit,
@@ -24,7 +23,6 @@ integration, rendering, security, and real Ghostty runtime tests.
   non-zero with a clear message when it is missing.
 - A real terminal for stdout to receive the image; piped stdout prints a bounded text summary
   instead.
-- Node.js 22 or later for the render subprocess.
 
 ## Unverified and unsupported claims
 

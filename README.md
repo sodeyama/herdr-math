@@ -26,8 +26,7 @@ launcher into a user bin directory (an existing install location or a standard u
 already on `PATH`; `~/.local/bin` by default), and links the coding-agent skill into the
 skill directories of supported agents. It never edits `PATH`, and the optional auto-watch
 shell snippet is only added to `~/.zshrc`/`~/.bashrc` when you pass
-`--with-shell-integration`. Rendering runs fully in-process (embedded fonts, no network);
-Node.js is only needed for the deprecated `--engine node` path. Run `tmath diagnose` to
+`--with-shell-integration`. Rendering runs fully in-process (embedded fonts, no network). Run `tmath diagnose` to
 verify the install. Details and troubleshooting: [Getting started](docs/getting-started.md).
 
 ## Usage
@@ -80,11 +79,10 @@ and [Coding agents](docs/coding-agents.md).
 ## Development
 
 ```sh
-cargo build       # Rust terminal frontend + native renderer
+cargo build --release   # tmath binary in target/release/tmath
 cargo test --workspace
-npm ci            # TypeScript renderer (deprecated node engine) and tooling
-npm run check
-npm test
+cargo clippy --workspace --all-targets -- -D warnings
+npm run security:check  # repository privacy/security scan (Node.js optional)
 ```
 
 Read [AGENTS.md](AGENTS.md) before contributing. Public documentation, code comments, logs,

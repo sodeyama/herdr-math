@@ -1,51 +1,49 @@
-# Terminal Math V2 Architecture
+# Terminal Math Architecture
 
 ## Status
 
-- Target release: `0.2.0` (first standalone release; no Herdr runtime)
-- Last updated: August 2, 2026
-- Canonical plan: `specs/terminal-math-v2/plans/main.md`
-- Acceptance contract: `specs/terminal-math-v2/tests/main.md`
+- Current release: **0.3.0** (native-only renderer; Node/Chromium path removed in T3-502)
+- Last updated: August 6, 2026
+- Canonical plan: `specs/terminal-math-v3/plans/main.md`
+- Acceptance contract: `specs/terminal-math-v3/tests/main.md`
+- Superseded: `specs/terminal-math-v2/` (historical reference for the Node subprocess era)
 
-This document describes the target architecture. Behavior labeled **planned** is not released
+This document describes the shipped architecture. Behavior labeled **planned** is not released
 behavior; it becomes verified only when the acceptance tests and runtime evidence exist.
 
 ## System Context
 
-Terminal Math is a standalone CLI: `tmath render` reads a Markdown/LaTeX document, renders it to
-a transparent PNG locally, and places it into the main terminal buffer with the Kitty graphics
-protocol so it scrolls with the shell scrollback.
+Terminal Math is a standalone CLI: `tmath render` reads a Markdown/LaTeX document, renders it
+in-process to transparent PNG blocks, and places them into the main terminal buffer with the
+Kitty graphics protocol so they scroll with the shell scrollback.
 
 ```
 [ input: file | pipe | stdin ]  ──►  tmath (Rust CLI)
                                         │
-                                        │ parses doc → formula/block list
-                                        │ spawns renderer subprocess (one-shot)
+                                        │ parse/split blocks, render in-process
                                         ▼
-                              [ tmath-render (TS) ]
+                              [ tmath-render (Rust crate) ]
                                         │
-                                        │ KaTeX + allowlisted Markdown → transparent PNG
-                                        │ returns PNG bytes + dimensions over stdout
+                                        │ RaTeX math + Typst prose → PNG per block
                                         ▼
-                              [ Rust terminal frontend ]
+                              [ Rust terminal frontend (tmath-core) ]
                                         │
                                         │ raw mode, Kitty negotiation,
                                         │ mouse + scroll parsing, scroll state machine
                                         ▼
                               [ Kitty-graphics terminal: Ghostty / kitty / WezTerm ]
-                                        (one scrollback-anchored placement per block)
+                                        (scrollback-anchored placement per block)
 ```
 
 ## Architectural Decisions
 
-1. **Runtime**: a Rust engine owns the terminal-facing layer; the LaTeX/Markdown→PNG pipeline
-   stays in TypeScript and runs as a short-lived render subprocess. Rust owns the terminal and
-   the render transport.
-2. **Input source**: a standalone CLI. Content comes from a file, a pipe, or stdin. There are no
-   events, no pane watching, and no plugin runtime.
-3. **Rendering model**: scrollback-anchored. One persistent Kitty placement per block in the main
-   screen buffer, glued to real cells with a virtual placement (`U=1,c,r`) and a placeholder
-   grid.
+1. **Runtime**: a single Rust binary owns rendering and the terminal-facing layer. The
+   LaTeX/Markdown→PNG pipeline runs in-process in `engine/crates/tmath-render` (RaTeX +
+   Typst); there is no Node subprocess and no browser.
+2. **Input source**: a standalone CLI. Content comes from a file, a pipe, or stdin. Agent
+   integration watches tmux panes or structured transcripts; there is no plugin runtime.
+3. **Rendering model**: scrollback-anchored, block-based. One Kitty placement per semantic
+   block in the main screen buffer, with virtual placement (`U=1,c,r`) and a placeholder grid.
 4. **Product identity**: a standalone terminal math/document renderer named `tmath`. No Herdr
    socket, manifest, or `HERDR_*` contract.
 
@@ -59,31 +57,27 @@ The CLI owns the terminal:
   `?1016h` pixel mouse, `?2004h` bracketed paste); it does **not** enter the alternate screen, so
   the main-buffer scrollback is preserved.
 - Reads the document from the chosen input (bounded).
-- Sends the document to the render subprocess and receives the PNG payload.
+- Splits and renders blocks through the in-process native engine (`tmath-render`).
 - Negotiates Kitty support; if unsupported it prints a clear message and exits non-zero.
-- Transmits the placement into the main buffer at the cursor row and writes the placeholder grid.
+- Transmits placements into the main buffer and writes placeholder grids.
 - Runs the input loop: mouse wheel/SGR/pixel deltas feed the scroll state machine; keys drive the
   fallback; `q`/`Ctrl-C` reset the terminal on any exit path.
-- `tmath diagnose` reports renderer subprocess availability, node, stdout terminal status, and
-  Kitty graphics support.
+- `tmath diagnose` reports stdout terminal status, PATH launcher health, tmux graphics route,
+  and Kitty graphics support.
 
-### `tmath-render` (TypeScript, one-shot)
+### `tmath-render` (Rust crate, in-process)
 
-The renderer subprocess reuses the existing `src/renderer/*` pipeline:
+The native renderer in `engine/crates/tmath-render`:
 
-- Reads exactly one bounded JSON request on stdin.
-- Runs the scanner (when formulas are not pre-supplied), composes the allowlisted Markdown
-  document, and renders with KaTeX/Chromium/sharp to a transparent PNG.
-- Applies the render timeout and the KaTeX `trust: false` policy.
-- Writes exactly one bounded JSON response (dimensions, byte size, base64 PNG, or a stable error
-  record) on stdout, then exits.
-
-### IPC contract
-
-- Protocol: `tmath-render/1` (shared constants in `src/renderer/ipc-contract.ts` and
-  `engine/crates/tmath-core/src/ipc.rs`).
-- Bounded request/response sizes, a render timeout, and an explicit trust policy.
-- Later, optional shared-memory/file media can avoid pushing large payloads through a pipe.
+- Splits Markdown into semantic blocks (pulldown-cmark, offset-based) and scans math with a
+  Rust port of the V2 scanner corpus.
+- Renders math with RaTeX and prose with Typst as a library; inline formulas embed on the text
+  baseline through a static file resolver.
+- Uses only fonts embedded in the binary; Typst package resolution, network, and filesystem access
+  are structurally unavailable. User text enters Typst exclusively as escaped string literals.
+- Enforces per-block limits (source bytes, image dimensions/pixels/bytes scaled by dpr², render
+  deadline) and per-formula fail-closed error badges; error records carry no input text.
+- Spawns no subprocess; content-hash caching is byte-deterministic per (block, options).
 
 ## Component Boundaries
 
@@ -126,48 +120,17 @@ Replacement emits a scoped delete first. Emissions are structured as `TerminalOp
 (pane bytes) and `TerminalOp::Graphics` (Kitty APC commands) so tmux transports
 can route them separately.
 
-### 6. Scanner (`src/scanner/scan-latex.ts`)
+### 6. Scanner and Markdown (`engine/crates/tmath-render/src/scanner.rs`, `markdown.rs`)
 
-A stateful conservative scanner for `$...$`, `$$...$$`, `\(...\)`, and `\[...\]` that skips fenced
-and inline code, escaped currency, unclosed delimiters, and shell/price patterns, and enforces
-input, delimiter-run, formula-count, and formula-character limits.
+Rust ports of the V2 conservative `$...$` / `$$...$$` / `\(...\)` / `\[...\]` scanner and the
+strict allowlisted Markdown subset, with the V2 fixture corpus retained as acceptance input.
 
-### 7. Renderer (`src/renderer/*`)
+### 7. CLI (`engine/crates/tmath/src/main.rs`)
 
-- `render.ts` enforces count/length/aggregate/timeout/dimension/byte limits and maps errors.
-- `document.ts` composes prose and math segments in source order.
-- `markdown.ts` renders the strict allowlisted Markdown subset with raw HTML disabled.
-- `browser-backend.ts` renders through local Chromium (remote resources denied) and sharp.
-- `ipc-contract.ts` + `subprocess.ts` implement the one-shot JSON transport.
-- `runtime-check.ts` verifies the local browser runtime.
+Parses commands and options, reads the bounded document, drives the native render engine,
+places in a terminal or prints a summary/event stream, and reports diagnostics.
 
-### 8. CLI (`engine/crates/tmath/src/main.rs`)
-
-Parses commands and options, reads the bounded document, drives the selected render engine,
-places in a terminal or prints a summary, and reports diagnostics. `tmath render` accepts
-`--engine node|native` (default `node`).
-
-### 8b. Native render engine (V3, opt-in, experimental)
-
-`engine/crates/tmath-render` is the in-process V3 renderer selected by
-`tmath render --engine native` (see `specs/terminal-math-v3/plans/main.md`):
-
-- Splits Markdown into semantic blocks (pulldown-cmark, offset-based), scans math with a Rust
-  port of the V2 scanner (V2 fixture corpus retained), renders math with RaTeX and prose with
-  Typst as a library, and embeds inline formulas on the text baseline through a static file
-  resolver.
-- Uses only fonts embedded in the binary; Typst package resolution, network, and filesystem
-  access are structurally unavailable. User text enters Typst exclusively as escaped string
-  literals, verified by an injection-corpus test.
-- Enforces per-block limits (source bytes, image dimensions/pixels/bytes scaled by dpr², and a
-  checkpoint-based render deadline) and per-formula fail-closed error badges; error records
-  carry no input text. Rendering is byte-deterministic per (block, options), which makes
-  content-hash caching sound.
-- Currently composes one image per document for the existing placement path; per-block
-  placements, streaming, and caching are Phase 2/3 work. The engine spawns no subprocess and
-  ignores `TMATH_RENDER_WORKER` (asserted by hermetic empty-PATH tests).
-
-### 9. Agent integration (P1, experimental)
+### 8. Agent integration
 
 Phase 8 adds two `tmath` subcommands that reuse the renderer and placement
 pipeline to show a coding agent's finished answers in a separate tmux pane:
@@ -182,11 +145,9 @@ pipeline to show a coding agent's finished answers in a separate tmux pane:
 - `tmath-core::agent::codec` — bounded uns across a Unix socket with
   length-prefixed JSON frames (`document`/`quit`).
 - `tmath agent` (watcher) owns the socket, splits the viewer pane, polls the
-  source pane, debounces, and emits each answer document. It passes the
-  renderer worker path to the viewer on the command line (tmux panes start
-  with the server environment).
-- `tmath agent-viewer` (in the viewer pane) — **Phase 3 in-progress (V3
-  `specs/terminal-math-v3`, decision D6)**: each received document is split
+  source pane (or tails a structured transcript when available), debounces, and
+  emits each answer document to the viewer over a bounded Unix socket.
+- `tmath agent-viewer` (in the viewer pane) splits each received document
   into semantic blocks (`tmath_render::parse_blocks_limited`), rendered
   per-block through the resident `RenderCache`, and diffed against the
   previous document's blocks by a `PlacementPlanner` (`Keep`/`Append`/
@@ -243,8 +204,7 @@ exits only after 30 consecutive unavailable emissions.
 
 Single-invocation semantics keep concurrency simple:
 
-- The render subprocess is one-shot; at most one request is written and one response read.
-- The IPC boundary enforces request/response byte caps and a render timeout.
+- Rendering is in-process; no child renderer subprocess is spawned.
 - Placement reserve is atomic against the limits; a rejected block emits nothing and leaves the
   tracker unchanged.
 - No durable shared state exists; every invocation is self-contained.
@@ -272,10 +232,10 @@ document read capped at the request byte limit.
 
 - **User-input rejection**: invalid LaTeX or a configured limit. Keep earlier placements, emit a
   bounded diagnostic, fail closed.
-- **Capability failure**: no Kitty graphics, no terminal for stdout, or a missing renderer
-  dependency. `tmath diagnose` explains the corrective action; `tmath render` exits non-zero
+- **Capability failure**: no Kitty graphics or no terminal for stdout.
+  `tmath diagnose` explains the corrective action; `tmath render` exits non-zero
   without emitting partial images.
-- **Transient runtime failure**: a render timeout or subprocess failure. Fail closed; do not
+- **Transient runtime failure**: a per-block render timeout. Fail closed; do not
   retry in a tight loop.
 
 Errors serialize only allowlisted fields (code, retryable flag, limit kind, bounded numeric
@@ -291,10 +251,9 @@ details) with no input text.
 
 ## Packaging and Release
 
-- `Cargo.toml` is the Rust workspace contract; `package.json` declares the renderer build and
-  validation commands.
-- The Rust binary locates the built render subprocess via `TMATH_RENDER_WORKER`.
-- Version tags, `Cargo.toml`, and `package.json` must agree.
+- `Cargo.toml` is the Rust workspace contract; `package.json` holds the optional repository
+  security scan (`npm run security:check`).
+- Version tags and `Cargo.toml` versions must agree.
 - Release requires a real Ghostty session, a clean build, and a security/artifact scan.
 
 ## Compatibility Matrix
@@ -313,25 +272,22 @@ recorded as a passed full-matrix run. See [Compatibility](compatibility.md) for 
 
 - Unit tests cover Kitty escapes, terminal init/probes, mouse parsing, the input decoder, the
   scroll state machine, placement limits, scanning, limits, and error mapping.
-- Contract tests validate the `tmath-render/1` IPC fixtures and escape/probe bytes.
-- Integration tests run the built render subprocess end to end and drive the CLI non-tty path.
-- Renderer tests use a fixed formula corpus and image assertions.
-- `npm run security:check` scans source (including `.rs`/`.swift`) and release files for
-  environment dumps, network APIs, dynamic execution, credential formats, private paths,
-  symbolic links, and runtime artifacts; the Rust workspace adds static privacy gates in
-  `cargo test`.
+- Integration tests drive the CLI non-tty path, native stream/watch modes, and agent pipelines.
+- Renderer tests use golden corpora, pixel hashes, and injection fixtures in the Rust crates.
+- `npm run security:check` scans Rust production sources and release files for environment dumps,
+  network APIs, credential formats, private paths, symbolic links, and runtime artifacts; the
+  Rust workspace adds static privacy gates in `cargo test`.
 - Runtime smoke tests use a real Ghostty terminal; install tests use a clean build.
 
 Every acceptance-test id in the specification maps to at least one automated or recorded manual
 test.
 
-## V2 Compatibility Decisions
+## Compatibility Decisions
 
 - macOS arm64 is the primary target; Linux and Windows are P1/P2 and are not claimed.
 - Ghostty 1.3.1 is the primary verified-target terminal; kitty and WezTerm are P1.
-- Node.js 22 or later is required for the render subprocess.
 - The Kitty graphics protocol is the only image transport.
-- V2 does not require Herdr, a manifest, a socket, or any `HERDR_*` environment variable.
+- No Herdr runtime, manifest, socket, or `HERDR_*` environment variable is required.
 
 Changing one of these decisions requires updating the plan, tests, [compatibility
 matrix](compatibility.md), user documentation, and release checklist together.

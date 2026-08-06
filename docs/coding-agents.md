@@ -195,8 +195,6 @@ readable image next to the conversation. If the terminal lacks Kitty support
 
 ## Troubleshooting
 
-- `tmath: renderer subprocess not found` — re-run the installer, or set
-  `TMATH_RENDER_WORKER=/abs/path/dist/renderer/subprocess.js`.
 - Viewer pane opens then closes — run `tmath diagnose` inside the source tmux
   session; it prints the gate inputs (attached client count, outer termname,
   `allow-passthrough`, transport env) and the full refusal reason. The default

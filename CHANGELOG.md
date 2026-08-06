@@ -7,6 +7,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Removed
+
+- The deprecated Node/KaTeX/Chromium renderer (`src/renderer/*`, `--engine node`,
+  `TMATH_RENDER_WORKER`, Playwright postinstall). Rendering is native-only
+  (RaTeX + Typst in-process). Install no longer requires Node.js or npm for
+  runtime; `scripts/install.sh` builds the Rust binary only.
+
 ### Fixed
 
 - The outside-tmux auto-watch launch no longer opens a dedicated watcher pane:
@@ -59,8 +66,8 @@ First tagged release.
 
 ### Notes
 
-- The deprecated Node/KaTeX engine (`--engine node`) still ships; its removal
-  (V3 Phase 5, T3-502..505) is planned for a later release.
+- V3 Phase 5 (T3-502) removed the Node browser renderer; single-binary packaging
+  (T3-503) and Linux smoke evidence (T3-504) remain open.
 
 ## [0.2.0] - Unreleased
 

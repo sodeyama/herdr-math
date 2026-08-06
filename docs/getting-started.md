@@ -23,8 +23,6 @@ directory:
   copy); the first of `~/.local/bin`, `~/bin` that exists and is on `PATH`; otherwise
   `~/.local/bin`. It never writes into other toolchains' bin directories or anywhere
   outside `$HOME`, and it never edits `PATH` (it prints the command if needed).
-- optional Node renderer for the deprecated `--engine node` path:
-  `~/.local/share/tmath/app/renderer`
 - the `tmath` agent skill linked into the Claude Code, Codex, Cursor, opencode, and pi
   skill directories
 - **only with `--with-shell-integration`** (or `TMATH_WITH_SHELL_INTEGRATION=1` for the
@@ -50,8 +48,6 @@ To update later, re-run the same install command. Never copy a freshly built bin
   unverified)
 - For the viewer inside tmux: tmux 3.3+ with `allow-passthrough on` (the default
   graphics route; `tmath diagnose` checks it)
-- Node.js 22+ and npm — **optional**, only for the deprecated `--engine node` render
-  path
 
 Rendering is fully local and in-process: RaTeX for math, Typst as a library for the
 Markdown subset, fonts embedded in the binary. No network access, no browser, no TeX
@@ -79,8 +75,6 @@ so they scroll with the shell scrollback like ordinary output.
   keyboard scroll it, and `q` or Ctrl-C returns to the shell.
 - With a piped document (`tmath render -`), the image is placed and the command returns
   right away; scroll with the normal terminal scrollback.
-- The deprecated Node/KaTeX engine remains available as `tmath render --engine node`
-  (requires the optional renderer install and Node.js).
 
 ## Show a coding agent's answers in a viewer pane
 
@@ -202,15 +196,14 @@ Common results:
   prints a text summary).
 - `kitty graphics: unsupported`: the attached terminal does not support the Kitty
   graphics protocol.
-- `renderer subprocess: unavailable`: only relevant for `--engine node`; the native
-  default does not need it.
 
 ## Build from a checkout (development)
 
 ```sh
-cargo build            # tmath binary in target/debug/tmath
+cargo build --release
 cargo test --workspace
-npm ci && npm run build   # deprecated node engine + TS tooling
+cargo clippy --workspace --all-targets -- -D warnings
+npm run security:check
 ```
 
 ## Known limits

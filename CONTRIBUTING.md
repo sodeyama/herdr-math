@@ -14,26 +14,20 @@ documentation, and design proposals that preserve its local-only and fail-closed
 
 ## Development setup
 
-The verified development environment uses Node.js 22 or later and a recent Rust toolchain on
-macOS arm64:
+The verified development environment uses a recent Rust toolchain on macOS arm64.
+Node.js is optional and only needed for `npm run security:check`:
 
 ```sh
-npm ci
-npm run audit:browser
-npm run build
-cargo build
+cargo build --release
+cargo test --workspace
 ```
 
 Run the complete local validation surface before requesting review:
 
 ```sh
-npm run check
-npm test
-npm run test:integration
-npm run build
-npm run smoke:render
-cargo test
-cargo clippy --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+npm run security:check
 ```
 
 Use synthetic fixtures. A fixture may contain non-English text only when the test explicitly
