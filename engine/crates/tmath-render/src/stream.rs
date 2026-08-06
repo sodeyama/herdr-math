@@ -297,7 +297,9 @@ fn ends_with_closed_fence(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{content_hash, parse_blocks_limited, BlockKind, RenderOptions};
+    use crate::{
+        content_hash, parse_blocks_limited, BlockKind, PlacementPlanner, PlanOp, RenderOptions,
+    };
 
     fn assert_equivalent(input: &str, stride: usize) {
         let limits = Limits::default();
@@ -791,6 +793,158 @@ mod tests {
         assert_eq!(closed.blocks.len(), 2);
         assert_eq!(closed.blocks[1].kind, BlockKind::CodeBlock);
         assert!(!closed.tail_open);
+    }
+
+    // --- Corpus replay (specs/stream-open-tail-v1, T-S-301/302) ---
+
+    /// A fixture modeled on the field answer that triggered the 2026-08-06
+    /// incident (see `specs/stream-open-tail-v1/plans/main.md`'s incident
+    /// summary): Japanese prose, headings, a list, thematic breaks, four
+    /// consecutive `\[...\]` display formulas whose bodies contain
+    /// line-leading `+`, `-`, `(`, and `{` lines (the exact pulldown-cmark
+    /// misread pattern that produced 7 non-tail replaces before the fix), one
+    /// `$$...$$` formula, and one bare-bracket formula with a blank line
+    /// inside its body. Shared by AT-S-201 (block-for-block equivalence) and
+    /// AT-S-202 (no-interior-divergence planner replay).
+    const AT_S_201_CORPUS: &str = concat!(
+        "# 事後分布の更新\n\n",
+        "正規逆ウィシャート分布の事後パラメータは、観測データを用いて逐次的に更新される。\n",
+        "以下の手順で計算する。\n\n",
+        "## 更新式\n\n",
+        "- 平均パラメータ `mu` を更新する\n",
+        "- 精度パラメータ `kappa` を更新する\n",
+        "- 自由度 `nu` を更新する\n\n",
+        "---\n\n",
+        "まず平均の更新式は次の通り。\n\n",
+        "\\[\n",
+        "\\boldsymbol{\\mu}_n\n",
+        "=\n",
+        "\\frac{\\kappa_0 \\boldsymbol{\\mu}_0 + n \\bar{\\boldsymbol{x}}}{\\kappa_0 + n}\n",
+        "+\n",
+        "(\\boldsymbol{0})\n",
+        "\\]\n\n",
+        "次に精度パラメータの更新式。\n\n",
+        "\\[\n",
+        "\\kappa_n\n",
+        "=\n",
+        "\\kappa_0\n",
+        "+ n\n",
+        "- 0\n",
+        "\\]\n\n",
+        "続いて自由度の更新式。\n\n",
+        "\\[\n",
+        "\\nu_n\n",
+        "=\n",
+        "\\nu_0\n",
+        "+ n\n",
+        "{\\nu_0}\n",
+        "\\]\n\n",
+        "最後に散布行列の更新式。\n\n",
+        "\\[\n",
+        "\\boldsymbol{\\Lambda}_n\n",
+        "=\n",
+        "\\boldsymbol{\\Lambda}_0\n",
+        "+\\boldsymbol{S}\n",
+        "+\n",
+        "\\frac{\\kappa_0 n}{\\kappa_0 + n}\n",
+        "(\\bar{\\boldsymbol{x}} - \\boldsymbol{\\mu}_0)\n",
+        "\\]\n\n",
+        "これらをまとめると、同時分布は次のように書ける。\n\n",
+        "$$\n",
+        "p(\\boldsymbol{\\mu}, \\boldsymbol{\\Lambda}) \\propto\n",
+        "|\\boldsymbol{\\Lambda}|^{(\\nu_0 - d - 1)/2}\n",
+        "$$\n\n",
+        "エージェントによっては `\\[` を落として次のように出力することがある。\n\n",
+        "[ \\boldsymbol{x}_n\n",
+        "\n",
+        "= \\boldsymbol{\\mu}_n + \\boldsymbol{\\epsilon}_n ]\n\n",
+        "以上が更新手順の全体像である。\n"
+    );
+
+    #[test]
+    fn at_s_201_corpus_replay_final_revision_matches_one_shot_for_every_stride() {
+        // AT-S-201: for every stride, streaming the corpus chunk by chunk
+        // then finishing must yield the same block list (kind + source,
+        // block for block) as the one-shot parser over the full text.
+        let limits = Limits::default();
+        let expected = parse_blocks_limited(AT_S_201_CORPUS, &limits).unwrap();
+
+        for stride in [1usize, 3, 7, 64, 1024] {
+            let mut splitter = StreamSplitter::new(limits);
+            for chunk in AT_S_201_CORPUS.as_bytes().chunks(stride) {
+                splitter.push(chunk).unwrap();
+            }
+            let finished = splitter.finish().unwrap();
+
+            assert_eq!(finished.blocks, expected, "stride {stride}");
+            assert!(!finished.tail_open, "stride {stride}");
+        }
+    }
+
+    #[test]
+    fn at_s_202_corpus_replay_never_produces_a_non_tail_replace_or_any_remove() {
+        // AT-S-202: across every revision of the AT-S-201 replay (every
+        // stride), every `Replace` in the planner-derived plan must target
+        // the block that was the last planned block of the previous
+        // revision (a pure tail replace), and no `Remove` may ever be
+        // planned. This is the regression guard for the incident's root
+        // cause: before the open-tail bundling fix, the same corpus
+        // produced interior (non-tail) replaces when a split-apart open
+        // formula later merged into one DisplayMath block.
+        let limits = Limits::default();
+        let options = RenderOptions::default();
+
+        for stride in [1usize, 3, 7, 64, 1024] {
+            let mut splitter = StreamSplitter::new(limits);
+            let mut planner = PlacementPlanner::new();
+
+            for chunk in AT_S_201_CORPUS.as_bytes().chunks(stride) {
+                let revision = splitter.push(chunk).unwrap();
+                assert_planner_replay_is_tail_only(&mut planner, &revision, &options, stride);
+            }
+            let finished = splitter.finish().unwrap();
+            assert_planner_replay_is_tail_only(&mut planner, &finished, &options, stride);
+        }
+    }
+
+    /// Feeds one revision's blocks into `planner` the same way
+    /// `native_stream.rs::apply_revision` does (hash each block with
+    /// `content_hash`, pair it with placeholder width/height dimensions —
+    /// the planner is dimension-agnostic for this invariant, so a fixed
+    /// stand-in is sufficient — and call `PlacementPlanner::plan`), then
+    /// asserts every `Replace` targets the id that was the previous
+    /// revision's last planned block and no `Remove` is ever produced.
+    fn assert_planner_replay_is_tail_only(
+        planner: &mut PlacementPlanner,
+        revision: &Revision,
+        options: &RenderOptions,
+        stride: usize,
+    ) {
+        let previous_last_id = planner.blocks().last().map(|block| block.id);
+        let inputs: Vec<([u8; 32], u32, u32)> = revision
+            .blocks
+            .iter()
+            .map(|block| (content_hash(block, options), 320, 20))
+            .collect();
+
+        let plan = planner.plan(&inputs);
+
+        for op in &plan.ops {
+            match op {
+                PlanOp::Replace { old_id, .. } => {
+                    assert_eq!(
+                        Some(*old_id),
+                        previous_last_id,
+                        "stride {stride}: Replace targeted a non-tail block (old_id {old_id}, \
+                         previous tail was {previous_last_id:?})"
+                    );
+                }
+                PlanOp::Remove { id } => {
+                    panic!("stride {stride}: unexpected Remove of block {id}");
+                }
+                PlanOp::Keep { .. } | PlanOp::Append { .. } => {}
+            }
+        }
     }
 
     #[test]
