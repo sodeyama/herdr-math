@@ -53,6 +53,12 @@ tmath agent --source-pane %0
 tmath agent-enable
 ```
 
+![tmath render — piped Markdown/LaTeX typeset in the terminal](docs/media/render-pipe-demo.gif)
+
+*`cat demo.md | tmath render -` inside Ghostty + tmux: equations stream in as
+typeset images anchored to the scrollback. Recorded with
+`scripts/record-render-pipe-gif.sh`; synthetic content only.*
+
 In the viewer pane: the mouse wheel and arrow keys scroll with momentum, `End` or `F`
 re-engages follow mode (pin to the newest answer), a transient scrollbar shows your position
 while scrolled back, and `q` or Ctrl-C closes the viewer. The status bar shows block count,
