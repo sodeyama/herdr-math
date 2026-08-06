@@ -20,12 +20,15 @@ SESSION="demo"
 FPS=7
 DURATION=14
 
-# Demo-friendly terminal geometry (not full-screen).
-GHOSTTY_WIDTH=880
-GHOSTTY_HEIGHT=520
-TMUX_COLS=80
-TMUX_ROWS=24
-GIF_WIDTH=720
+# Demo-friendly terminal geometry (not full-screen). AppleScript uses points;
+# Quartz capture reports physical pixels (~1.7–2× on Retina).
+GHOSTTY_WIDTH=800
+GHOSTTY_HEIGHT=480
+GHOSTTY_X=180
+GHOSTTY_Y=90
+TMUX_COLS=72
+TMUX_ROWS=22
+GIF_WIDTH=640
 
 tm() { tmux -L "$SOCKET" "$@"; }
 
@@ -88,6 +91,60 @@ for win in wins:
   printf '%s' "$wid"
 }
 
+window_bounds() {
+  WID="$1" /usr/bin/python3 -c "
+import os, Quartz
+wid = int(os.environ['WID'])
+wins = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
+for win in wins:
+    if win.get('kCGWindowNumber') == wid:
+        b = win['kCGWindowBounds']
+        print(int(b['Width']), int(b['Height']))
+        break
+"
+}
+
+# tmath agent splits the pane and Ghostty often maximizes afterward; force the
+# demo window back to the intended size with AppleScript (CLI flags alone are
+# not enough once tmux relayouts).
+resize_demo_window() {
+  local right=$((GHOSTTY_X + GHOSTTY_WIDTH))
+  local bottom=$((GHOSTTY_Y + GHOSTTY_HEIGHT))
+  /usr/bin/osascript -e 'tell application "Ghostty" to activate' >/dev/null 2>&1 || true
+  /usr/bin/osascript <<EOF
+tell application "System Events"
+  tell process "ghostty"
+    set frontmost to true
+    repeat with win in windows
+      if name of win contains "ghostty-attach.sh" then
+        set bounds of win to {$GHOSTTY_X, $GHOSTTY_Y, $right, $bottom}
+      end if
+    end repeat
+  end tell
+end tell
+EOF
+}
+
+ensure_demo_window_size() {
+  local wid="$1"
+  local bounds w h max_w
+  # Retina physical pixels; 800pt ≈ 1300–1600px depending on display scale.
+  max_w=$((GHOSTTY_WIDTH * 2 + 200))
+  for _ in $(seq 1 10); do
+    bounds="$(window_bounds "$wid" || true)"
+    [ -n "$bounds" ] || { sleep 0.3; continue; }
+    read -r w h <<< "$bounds"
+    if [ "${w:-9999}" -le "$max_w" ]; then
+      echo "Ghostty window: ${w}x${h} (target ${GHOSTTY_WIDTH}x${GHOSTTY_HEIGHT}pt)"
+      return 0
+    fi
+    resize_demo_window
+    sleep 0.35
+  done
+  echo "FAIL: Ghostty stayed too large (${w:-unknown}x${h:-unknown}); expected ~${GHOSTTY_WIDTH}x${GHOSTTY_HEIGHT}pt" >&2
+  return 1
+}
+
 # --- isolated tmux session + compact Ghostty window --------------------------
 tm new-session -d -s "$SESSION" -c "$TMP/workspace" -n "Terminal Math demo" \
   -x "$TMUX_COLS" -y "$TMUX_ROWS" 'zsh -f' >/dev/null
@@ -109,12 +166,13 @@ tm send-keys -t "$SRC_PANE" Enter
 open -na Ghostty.app --args \
   "--window-width=$GHOSTTY_WIDTH" \
   "--window-height=$GHOSTTY_HEIGHT" \
+  "--window-save-state=never" \
   -e "$ATTACH_SCRIPT" >/dev/null 2>&1 || true
 
-echo "waiting for Ghostty attach (${GHOSTTY_WIDTH}x${GHOSTTY_HEIGHT})..."
+echo "waiting for Ghostty attach (${GHOSTTY_WIDTH}x${GHOSTTY_HEIGHT}pt)..."
 wid="$(wait_for_window)" || { echo "FAIL: Ghostty demo window not found" >&2; exit 1; }
-/usr/bin/osascript -e 'tell application "Ghostty" to activate' >/dev/null 2>&1 || true
-sleep 1.0
+resize_demo_window
+sleep 0.5
 
 # --- demo inside attached Ghostty --------------------------------------------
 # Start the watcher in the background so only source + viewer panes remain.
@@ -155,6 +213,8 @@ sleep 0.6
 tm send-keys -l -t "$SRC_PANE" "cat '$DEMO_ROOT/answer2.txt'"
 tm send-keys -t "$SRC_PANE" Enter
 sleep 3.0
+
+ensure_demo_window_size "$wid"
 
 read -r crop_w crop_h crop_x crop_y <<EOF
 $(WID="$wid" /usr/bin/python3 -c "
