@@ -16,7 +16,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMATH_SRC="${TMATH_BIN:-$ROOT/target/release/tmath}"
 OUT_DIR="$ROOT/docs/media"
-OUT_GIF="$OUT_DIR/claude-code-demo.gif"
+OUT_GIF="${OUT_GIF:-$OUT_DIR/claude-code-demo.gif}"
+DEMO_ANSWER="${DEMO_ANSWER:-long}"
+DEMO_PROMPT="${DEMO_PROMPT:-Summarize quadratic equations with all key formulas.}"
+DEMO_PS1="${DEMO_PS1:-❯ }"
 DEMO_ROOT="/tmp/tmath-public-demo-$$"
 TMP="$DEMO_ROOT/scratch"
 SOCKET="tmath-demo-$$"
@@ -193,7 +196,7 @@ exec env TMATH_DPR=2 TMATH_FONT_SIZE_PT=$TMATH_FONT_SIZE_PT "$TMATH" agent --sou
 EOF
 chmod +x "$DEMO_ROOT/run-agent.sh"
 
-tm send-keys -l -t "$SRC_PANE" 'PROMPT_EOL_MARK="" ; PS1="❯ " ; clear'
+tm send-keys -l -t "$SRC_PANE" "PROMPT_EOL_MARK=\"\" ; PS1=\"$DEMO_PS1\" ; clear"
 tm send-keys -t "$SRC_PANE" Enter
 
 open -na Ghostty.app --args \
@@ -253,14 +256,14 @@ while [ "$SECONDS" -lt "$end" ]; do
     0)
       if [ "$elapsed" -ge 1 ]; then
         tm send-keys -l -t "$SRC_PANE" \
-          'printf "Summarize quadratic equations with all key formulas.\n"'
+          "printf '%s\n' $(printf '%q' "$DEMO_PROMPT")"
         tm send-keys -t "$SRC_PANE" Enter
         demo_step=1
       fi
       ;;
     1)
       if [ "$elapsed" -ge 3 ]; then
-        tm send-keys -l -t "$SRC_PANE" "'$STREAM_PY' long"
+        tm send-keys -l -t "$SRC_PANE" "'$STREAM_PY' '$DEMO_ANSWER'"
         tm send-keys -t "$SRC_PANE" Enter
         demo_step=2
       fi
