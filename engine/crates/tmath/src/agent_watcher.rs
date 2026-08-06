@@ -30,9 +30,6 @@ use crate::transcript_adapter::{
 const MAX_HOLD_MS: u64 = 3000;
 /// Re-check which Claude Code transcript file is live every N poll ticks.
 const TRANSCRIPT_RERESOLVE_POLLS: u64 = 4;
-/// Fall back to tmux capture when the transcript adapter stays idle this
-/// many poll ticks without ever sending a document to the viewer.
-const TRANSCRIPT_IDLE_FALLBACK_POLLS: u64 = 120;
 /// Safety cap on a single captured snapshot.
 const SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// Separator inserted between two accumulated answers (and between a
@@ -108,11 +105,11 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
 
     // D5's source-adapter priority: prefer a Claude Code transcript when one
     // can be located and opened, since it yields the original Markdown
-    // source with no capture-side heuristics. `transcript` being `None`
-    // (not found, or a later read/parse failure) always means "use the
-    // existing tmux capture-pane path below" — the two never run at once,
-    // and there is no separate error state to recover from: `None` itself
-    // is the fallback.
+    // source with no capture-side heuristics. While the transcript file is
+    // quiet between JSONL appends, the watcher falls through to tmux capture
+    // so Claude Code pane streaming can still drive incremental viewer updates.
+    // A read/parse failure clears `transcript` and capture owns the session
+    // until a live file can be opened again.
     let watcher_started = std::time::SystemTime::now();
     let transcript_project_dir = transcript_project_dir_for(&source);
     let transcript = transcript_project_dir
@@ -127,8 +124,6 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
         }
     );
     let mut transcript = transcript;
-    let mut transcript_idle_polls = 0u64;
-    let mut transcript_sent_any = false;
     let mut poll_tick = 0u64;
     // AT-3-604: one history model, shared across whichever source is
     // active this session — the transcript path grows it incrementally
@@ -162,16 +157,37 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
                 return finish(&mut peer, &viewer_pane);
             }
             match adapter.poll() {
-                Ok(deltas) => {
-                    if !deltas.is_empty() {
-                        transcript_idle_polls = 0;
-                    } else {
-                        transcript_idle_polls += 1;
-                    }
+                Ok(deltas) if !deltas.is_empty() => {
                     for delta in deltas {
                         emit_transcript_delta(&mut peer, &mut history, delta);
-                        transcript_sent_any = true;
                     }
+                    poll_tick += 1;
+                    if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) {
+                        if let Some(dir) = transcript_project_dir.as_deref() {
+                            try_reresolve_transcript(
+                                dir,
+                                watcher_started,
+                                transcript.as_mut().unwrap(),
+                            );
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(parsed.poll_ms));
+                    continue;
+                }
+                Ok(_) => {
+                    poll_tick += 1;
+                    if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) {
+                        if let Some(dir) = transcript_project_dir.as_deref() {
+                            try_reresolve_transcript(
+                                dir,
+                                watcher_started,
+                                transcript.as_mut().unwrap(),
+                            );
+                        }
+                    }
+                    // JSONL is quiet — fall through to tmux capture so Claude
+                    // Code pane streaming can update the viewer while the
+                    // transcript file waits for its next complete line.
                 }
                 Err(_) => {
                     // Fail closed: degrade to the capture adapter for the
@@ -180,25 +196,6 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
                     // the event name, ever reaches this log line.
                     eprintln!("tmath agent: source=capture (transcript_degraded)");
                     transcript = None;
-                }
-            }
-            if transcript.is_some() {
-                poll_tick += 1;
-                if poll_tick.is_multiple_of(TRANSCRIPT_RERESOLVE_POLLS) {
-                    if let Some(dir) = transcript_project_dir.as_deref() {
-                        try_reresolve_transcript(
-                            dir,
-                            watcher_started,
-                            transcript.as_mut().unwrap(),
-                        );
-                    }
-                }
-                if !transcript_sent_any && transcript_idle_polls >= TRANSCRIPT_IDLE_FALLBACK_POLLS {
-                    eprintln!("tmath agent: source=capture (transcript_idle)");
-                    transcript = None;
-                } else {
-                    std::thread::sleep(Duration::from_millis(parsed.poll_ms));
-                    continue;
                 }
             }
         }
@@ -300,7 +297,6 @@ pub(crate) fn run_agent(args: &[String]) -> Result<i32, String> {
                 transcript = open_transcript_in(dir, watcher_started, TranscriptAttach::JoinLive);
                 if transcript.is_some() {
                     eprintln!("tmath agent: source=transcript");
-                    transcript_idle_polls = 0;
                 }
             }
         }

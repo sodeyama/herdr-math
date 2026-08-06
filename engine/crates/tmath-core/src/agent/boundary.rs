@@ -35,6 +35,9 @@ pub fn is_prompt_line(line: &str) -> bool {
 /// while they are still working. A changed working frame is not answer content.
 pub fn is_status_line(line: &str) -> bool {
     let lower = line.trim_start().to_lowercase();
+    if is_reasoning_or_completion_status(line) {
+        return true;
+    }
     [
         "• working",
         "* working",
@@ -66,6 +69,14 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
             }
             return Some(answer);
         }
+        if let Some(answer) = claude_in_progress_answer(&cl) {
+            let baseline_answer = prompt_delimited_answer(&bl)
+                .or_else(|| claude_in_progress_answer(&bl));
+            if baseline_answer.as_ref() == Some(&answer) {
+                return None;
+            }
+            return Some(answer);
+        }
         // Idle prompt-delimited extraction failed (streaming command output
         // under a non-idle `❯ cmd`, or Claude still repainting). Fall through
         // to prefix-based detection so growing pane snapshots can still emit
@@ -74,6 +85,14 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
     }
 
     let (tail, _) = if completion.starts_with(baseline) {
+        if !completion.contains('⏺')
+            && baseline
+                .lines()
+                .last()
+                .is_some_and(|line| is_user_input_line(line) || line.trim_start().starts_with('>'))
+        {
+            return None;
+        }
         (
             completion
                 .strip_prefix(baseline)
@@ -106,6 +125,10 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
         }
         (tail_lines.join("\n"), index)
     };
+
+    if !completion.contains('⏺') && tail_is_only_user_input(&tail) {
+        return None;
+    }
 
     if let Some(text) = clean_tail(&tail) {
         if text.trim().is_empty() {
@@ -141,17 +164,32 @@ fn prompt_delimited_answer(completion: &[&str]) -> Option<Answer> {
         .rposition(|line| is_delimited_prompt_line(line))?
         + 1;
     let mut body = completion[start..end].to_vec();
-    while body.first().is_some_and(|line| {
-        let trimmed = line.trim();
-        trimmed.is_empty() || is_status_line(trimmed)
-    }) {
-        body.remove(0);
+    body = filter_answer_body_lines(body);
+    let text = clean_tail(&body.join("\n"))?;
+    (!text.trim().is_empty()).then(|| Answer {
+        text: normalize_captured_answer(&strip_tool_activity_prefix(&text)),
+    })
+}
+
+/// Extracts a Claude Code answer that is still streaming: the pane shows the
+/// user prompt and growing `⏺` body but not yet the idle trailing `❯`.
+fn claude_in_progress_answer(completion: &[&str]) -> Option<Answer> {
+    if !completion
+        .iter()
+        .any(|line| line.trim_start().starts_with('⏺'))
+    {
+        return None;
     }
-    while body.last().is_some_and(|line| {
-        let trimmed = line.trim();
-        trimmed.is_empty() || is_completion_status(trimmed) || is_tui_rule(trimmed)
-    }) {
-        body.pop();
+    let start = completion
+        .iter()
+        .rposition(|line| is_delimited_prompt_line(line) && !is_idle_prompt_line(line))?
+        + 1;
+    let body = filter_answer_body_lines(completion.get(start..)?.to_vec());
+    if !body
+        .iter()
+        .any(|line| line.trim_start().starts_with('⏺'))
+    {
+        return None;
     }
     let text = clean_tail(&body.join("\n"))?;
     (!text.trim().is_empty()).then(|| Answer {
@@ -164,6 +202,23 @@ fn is_delimited_prompt_line(line: &str) -> bool {
     trimmed.starts_with("❯") || trimmed.starts_with("›") || trimmed.starts_with("┃ prompt:")
 }
 
+/// Whether a line is user input being composed, not assistant answer text.
+fn is_user_input_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('⏺') || is_idle_prompt_line(line) {
+        return false;
+    }
+    trimmed.starts_with("> ")
+        || trimmed.starts_with('❯')
+        || trimmed.starts_with('›')
+        || trimmed.starts_with("┃ prompt:")
+}
+
+fn tail_is_only_user_input(tail: &str) -> bool {
+    let lines: Vec<&str> = tail.lines().filter(|line| !line.trim().is_empty()).collect();
+    lines.is_empty() || lines.iter().all(|line| is_user_input_line(line))
+}
+
 fn is_idle_prompt_line(line: &str) -> bool {
     let trimmed = line.trim();
     matches!(trimmed, "❯" | "›" | "┃ prompt:")
@@ -171,6 +226,92 @@ fn is_idle_prompt_line(line: &str) -> bool {
 
 fn is_completion_status(line: &str) -> bool {
     line.starts_with('✻')
+}
+
+/// Claude Code reasoning/timing frames (`* Pontificating…`, `✻ Brewed…`, etc.).
+fn is_reasoning_or_completion_status(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !(trimmed.starts_with('✻') || trimmed.starts_with('*')) {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    [
+        "pontificat",
+        "thinking",
+        "tokens",
+        "brewed",
+        "sautéed",
+        "sauteed",
+        "churned",
+        "cooked",
+        "working",
+        "escuargot",
+        "ferment",
+        "marinating",
+        "simmer",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn answer_line_text(line: &str) -> &str {
+    line.trim_start()
+        .strip_prefix("⏺ ")
+        .or_else(|| line.trim_start().strip_prefix('⏺'))
+        .map(str::trim_start)
+        .unwrap_or_else(|| line.trim())
+}
+
+fn filter_answer_body_lines(body: Vec<&str>) -> Vec<&str> {
+    let flags: Vec<bool> = body
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if line.trim().is_empty() {
+                let prev_display = body[..index]
+                    .iter()
+                    .rev()
+                    .find(|candidate| !candidate.trim().is_empty())
+                    .is_some_and(|line| is_display_answer_line(line));
+                let next_display = body[index + 1..]
+                    .iter()
+                    .find(|candidate| !candidate.trim().is_empty())
+                    .is_some_and(|line| is_display_answer_line(line));
+                prev_display && next_display
+            } else {
+                is_display_answer_line(line)
+            }
+        })
+        .collect();
+    body.into_iter()
+        .zip(flags)
+        .filter_map(|(line, keep)| keep.then_some(line))
+        .collect()
+}
+
+fn is_display_answer_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || is_user_input_line(line)
+        || is_idle_prompt_line(line)
+        || is_tui_rule(trimmed)
+    {
+        return false;
+    }
+    let content = answer_line_text(trimmed);
+    if content.is_empty() {
+        return false;
+    }
+    if is_reasoning_or_completion_status(trimmed)
+        || is_reasoning_or_completion_status(content)
+        || is_status_line(content)
+        || is_completion_status(content)
+        || is_tool_activity_line(content)
+        || content.starts_with("$ ")
+    {
+        return false;
+    }
+    true
 }
 
 fn is_tui_rule(line: &str) -> bool {
@@ -329,8 +470,11 @@ fn is_tool_activity_line(line: &str) -> bool {
         "Read ",
         "Grepped ",
         "Searched ",
+        "Searched for ",
         "Listed ",
         "Ran ",
+        "Running shell command",
+        "Running ",
         "Edited ",
         "Wrote ",
         "Viewed ",
@@ -503,11 +647,67 @@ mod tests {
     }
 
     #[test]
-    fn claude_repaint_without_idle_prompt_is_not_complete() {
+    fn claude_repaint_without_idle_prompt_still_exposes_streaming_text() {
         let baseline = "Old answer\n────────────────────────\n❯\n────────────────────────\n";
         let completion =
             "Earlier screen content\n❯ Show equations\n\n⏺ Partial answer\n✻ Churned for 2s\n";
+        assert_eq!(
+            answer(baseline, completion).as_deref(),
+            Some("Partial answer")
+        );
+    }
+
+    #[test]
+    fn claude_reasoning_and_tool_lines_are_not_answer_content() {
+        let baseline = "❯ 数学アプリの6章表示して\n";
+        let completion = "❯ 数学アプリの6章表示して\n\n* Pontificating... (25s · ↓ 536 tokens · thinking with high effort)\nSearched for 1 pattern, read 1 file\n$ open \"https://math-notes.example/ch6\"\n";
         assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_final_answer_strips_reasoning_tool_and_timing_lines() {
+        let baseline = "❯ 数学アプリの6章表示して\n";
+        let completion = "\
+❯ 数学アプリの6章表示して\n\n\
+* Pontificating... (35s · ↓ 824 tokens)\n\
+Searched for 1 pattern, read 1 file\n\
+$ open \"https://math-notes.example/ch6\"\n\
+⏺ 6章を math-notes で開きました。\n\
+✻ Sautéed for 35s\n\n\
+────────────────────────\n\
+❯\n\
+────────────────────────\n";
+        assert_eq!(
+            answer(baseline, completion).as_deref(),
+            Some("6章を math-notes で開きました。")
+        );
+    }
+
+    #[test]
+    fn claude_code_input_line_growth_is_not_answer_content() {
+        let baseline = "Earlier screen content\n> 数学";
+        let completion = "Earlier screen content\n> 数学アプリの6章表示して";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn typing_a_new_prompt_does_not_reemit_a_prior_streaming_answer() {
+        let baseline = "❯ Old question\n\n⏺ Old answer text\n✻ Done\n────────────────────────\n❯\n> 数";
+        let completion =
+            "❯ Old question\n\n⏺ Old answer text\n✻ Done\n────────────────────────\n❯\n> 数学";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_streaming_text_grows_incrementally_before_the_idle_prompt() {
+        let baseline =
+            "Earlier screen content\n❯ Show equations\n\n⏺ Partial answer\n✻ Churned for 2s\n";
+        let completion =
+            "Earlier screen content\n❯ Show equations\n\n⏺ Partial answer continues with more math $x=2$.\n✻ Churned for 3s\n";
+        assert_eq!(
+            answer(baseline, completion).as_deref(),
+            Some("Partial answer continues with more math $x=2$.")
+        );
     }
 
     #[test]
