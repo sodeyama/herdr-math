@@ -37,9 +37,6 @@ DEFAULT_SESSIONS_BEFORE="$("$REAL_TMUX" ls 2>/dev/null || true)"
 if [ ! -x "$TMATH" ]; then
   (cd "$ROOT" && cargo build --workspace >/dev/null)
 fi
-if [ ! -f "$ROOT/dist/renderer/subprocess.js" ]; then
-  (cd "$ROOT" && npm run build >/dev/null)
-fi
 
 TMP_HOME="$(mktemp -d)"
 BIN_DIR="$TMP_HOME/bin"
@@ -81,7 +78,6 @@ TARGET_DIR="$TMP_HOME/proj"
 NOT_ALLOWED_DIR="$TMP_HOME/other"
 mkdir -p "$NOT_ALLOWED_DIR"
 
-RENDER_WORKER="$ROOT/dist/renderer/subprocess.js"
 HOME="$TMP_HOME" "$BIN_DIR/tmath" agent-enable "$TARGET_DIR" >/dev/null
 
 LOG="$(mktemp -t tmath-wrapper-smoke.XXXXXX)"
@@ -104,7 +100,7 @@ SRC_PANE="$(tm display-message -p -t "$SESSION" '#{pane_id}')"
 
 setup_shell() {
   tm send-keys -l -t "$SRC_PANE" \
-    "export HOME='$TMP_HOME'; export PATH='$SHIM_DIR:$BIN_DIR:/usr/bin:/bin:/opt/homebrew/bin'; export TMATH_RENDER_WORKER='$RENDER_WORKER'; hash -r; source '$WRAPPER'"
+    "export HOME='$TMP_HOME'; export PATH='$SHIM_DIR:$BIN_DIR:/usr/bin:/bin:/opt/homebrew/bin'; hash -r; source '$WRAPPER'"
   tm send-keys -t "$SRC_PANE" Enter
 }
 
@@ -159,7 +155,7 @@ NESTED_WRAPPER="$TMP_HOME/tmath-agent-nested.sh"
 sed "s#tmath agent --source-pane \"\$pane\" >/dev/null 2>&1#tmath agent --source-pane \"\$pane\" >>'$NESTED_LOG' 2>\&1#" \
   "$ROOT/scripts/shell/tmath-agent.sh" > "$NESTED_WRAPPER"
 (
-  export HOME="$TMP_HOME" TMATH_RENDER_WORKER="$RENDER_WORKER" TMATH_TMUX_TRANSPORT=passthrough
+  export HOME="$TMP_HOME" TMATH_TMUX_TRANSPORT=passthrough
   export PATH="$SHIM_DIR:$BIN_DIR:/usr/bin:/bin"
   # shellcheck disable=SC1090
   source "$NESTED_WRAPPER"

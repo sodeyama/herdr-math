@@ -21,7 +21,7 @@ struct WatchProcess {
 impl WatchProcess {
     fn spawn(path: &Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tmath"))
-            .args(["watch", "--engine", "native", path.to_str().unwrap()])
+            .args(["watch", path.to_str().unwrap()])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -248,8 +248,8 @@ fn missing_file_waits_once_and_reappearing_file_is_diffed() {
 }
 
 #[test]
-fn node_engine_is_rejected_for_watch() {
-    let sandbox = Sandbox::new("node-error", "Only block.\n");
+fn unknown_engine_option_is_rejected_for_watch() {
+    let sandbox = Sandbox::new("engine-error", "Only block.\n");
     let output = Command::new(env!("CARGO_BIN_EXE_tmath"))
         .args([
             "watch",
@@ -262,7 +262,7 @@ fn node_engine_is_rejected_for_watch() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("watch supports only '--engine native'"),
+        stderr.contains("unknown option"),
         "{stderr}"
     );
 }

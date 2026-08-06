@@ -6,72 +6,17 @@
   "type": "module",
   "license": "MIT",
   "author": "sodeyama",
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "packageManager": "npm@10.9.4",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sodeyama/terminal-math.git"
   },
-  "bugs": {
-    "url": "https://github.com/sodeyama/terminal-math/issues"
+  "scripts": {
+    "security:check": "node scripts/security-check.mjs"
   },
-  "homepage": "https://github.com/sodeyama/terminal-math#readme",
-  "keywords": [
-    "latex",
-    "math",
-    "terminal"
-  ],
   "files": [
-    "dist/",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
-    "scripts/audit-runtime.mjs"
-  ],
-  "scripts": {
-    "audit:browser": "node scripts/audit-runtime.mjs --browser",
-    "audit:runtime": "node scripts/audit-runtime.mjs",
-    "build": "tsc -p tsconfig.build.json",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run audit:runtime && npm run security:check",
-    "format": "prettier --write package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
-    "format:check": "prettier --check package.json tsconfig.json tsconfig.build.json eslint.config.js \"src/**/*.ts\" \"tests/**/*.ts\"",
-    "install:browser": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install --only-shell chromium",
-    "install:local": "bash scripts/install.sh",
-    "lint": "eslint src tests eslint.config.js",
-    "postinstall": "npm run install:browser",
-    "security:check": "node scripts/security-check.mjs",
-    "test": "vitest run",
-    "test:integration": "vitest run tests/integration",
-    "test:performance": "cargo test -p tmath performance -- --ignored",
-    "test:unit": "vitest run tests/unit",
-    "typecheck": "tsc --noEmit",
-    "smoke:install-launcher": "bash scripts/smoke-install-launcher.sh",
-    "smoke:render": "vitest run tests/integration/renderer.spec.ts --reporter=verbose"
-  },
-  "prettier": {
-    "printWidth": 120,
-    "semi": true,
-    "singleQuote": false,
-    "trailingComma": "none"
-  },
-  "devDependencies": {
-    "@eslint/js": "10.0.1",
-    "@types/markdown-it": "^14.1.2",
-    "@types/node": "22.20.1",
-    "ajv": "8.20.0",
-    "eslint": "10.8.0",
-    "prettier": "3.9.6",
-    "typescript": "6.0.3",
-    "typescript-eslint": "8.65.0",
-    "vitest": "4.1.10"
-  },
-  "dependencies": {
-    "highlight.js": "11.11.1",
-    "katex": "0.18.1",
-    "markdown-it": "14.3.0",
-    "playwright": "1.62.1",
-    "sharp": "0.35.3"
-  }
+    "scripts/security-check.mjs"
+  ]
 }

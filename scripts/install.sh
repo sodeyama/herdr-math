@@ -2,7 +2,7 @@
 #
 # tmath — local installer (mirrors terminal-browser's install model).
 #
-# Builds the release binary and the TypeScript renderer, installs them under
+# Builds the release binary and installs it under
 # ~/.local/share/tmath/app (or $TMATH_INSTALL_ROOT), creates a `tmath` launcher
 # in ~/.local/bin, and links a SKILL.md into each coding agent's skills dir so
 # agents know how to render LaTeX/Markdown with tmath.
@@ -40,7 +40,7 @@ find_repo() {
   local root
   for root in "${TMATH_BUILD_ROOT:-}" "$PWD" "$(dirname "${BASH_SOURCE[0]:-$0}")/.."; do
     [ -n "$root" ] || continue
-    if [ -f "$root/Cargo.toml" ] && [ -d "$root/engine/crates/tmath" ] && [ -f "$root/package.json" ]; then
+    if [ -f "$root/Cargo.toml" ] && [ -d "$root/engine/crates/tmath" ]; then
       echo "$(cd "$root" && pwd)"
       return 0
     fi
@@ -113,13 +113,11 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "tmath: unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
 command -v cargo >/dev/null || { echo "tmath: the Rust toolchain (cargo) is required" >&2; exit 1; }
-command -v node >/dev/null || { echo "tmath: Node.js 22+ is required" >&2; exit 1; }
-command -v npm >/dev/null || { echo "tmath: npm is required" >&2; exit 1; }
 
 # ----------------------------------------------------------------------------
-# Build: release Rust binary + TypeScript renderer (dist/)
+# Build: release Rust binary
 # ----------------------------------------------------------------------------
-VERSION="$(node -p "require('$REPO/package.json').version")"
+VERSION="$(grep '^version' "$REPO/engine/crates/tmath/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')"
 
 if [ "${TMATH_FORCE_REBUILD:-0}" != "1" ] && [ -x "$REPO/target/release/tmath" ]; then
   echo "tmath $VERSION: using existing release binary"
@@ -128,36 +126,16 @@ else
   (cd "$REPO" && cargo build --release)
 fi
 
-if [ ! -d "$REPO/node_modules" ]; then
-  echo "tmath: installing renderer dependencies (npm ci)…"
-  (cd "$REPO" && npm ci)
-fi
-echo "tmath: compiling the renderer (npm run build)…"
-(cd "$REPO" && npm run build >/dev/null)
-
 # ----------------------------------------------------------------------------
 # Assemble the app tree (idempotent: swaps in a fresh .new, no partial state)
 # ----------------------------------------------------------------------------
 echo "tmath: installing to $APP"
 rm -rf "$APP.new"
-mkdir -p "$APP.new/bin" "$APP.new/renderer" "$APP.new/skill" "$APP.new/shell"
+mkdir -p "$APP.new/bin" "$APP.new/skill" "$APP.new/shell"
 cp "$REPO/target/release/tmath" "$APP.new/bin/tmath"
-cp -R "$REPO/dist" "$APP.new/renderer/dist"
-cp "$REPO/package.json" "$REPO/package-lock.json" "$APP.new/renderer/"
-cp "$REPO/scripts/audit-runtime.mjs" "$APP.new/renderer/scripts/" 2>/dev/null || {
-  mkdir -p "$APP.new/renderer/scripts"
-  cp "$REPO/scripts/audit-runtime.mjs" "$APP.new/renderer/scripts/"
-}
 cp "$REPO/skill/tmath/SKILL.md" "$APP.new/skill/SKILL.md"
 cp "$REPO/scripts/shell/tmath-agent.sh" "$APP.new/shell/tmath-agent.sh"
 printf '%s\n' "$VERSION" > "$APP.new/VERSION"
-
-# Production renderer dependencies (omits devDependencies; the postinstall
-# fetches the pinned local Chromium headless shell used by the renderer).
-if [ ! -d "$APP.new/renderer/node_modules" ]; then
-  echo "tmath: installing renderer runtime dependencies (npm ci --omit=dev)…"
-  (cd "$APP.new/renderer" && npm ci --omit=dev >/dev/null)
-fi
 
 rm -rf "$APP"
 mv "$APP.new" "$APP"

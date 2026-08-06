@@ -16,7 +16,7 @@ struct StreamProcess {
 impl StreamProcess {
     fn spawn() -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tmath"))
-            .args(["render", "--engine", "native", "-"])
+            .args(["render", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -95,7 +95,7 @@ fn one_shot_bytes(source: &str) -> usize {
     let input = root.join("input.md");
     std::fs::write(&input, source).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tmath"))
-        .args(["render", "--engine", "native", input.to_str().unwrap()])
+        .args(["render", input.to_str().unwrap()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -189,7 +189,7 @@ fn unchanged_prefix_id_is_never_mentioned_again() {
 #[test]
 fn repeated_content_reports_a_cache_hit() {
     let output = Command::new(env!("CARGO_BIN_EXE_tmath"))
-        .args(["render", "--engine", "native", "-"])
+        .args(["render", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -222,7 +222,7 @@ fn stream_error_is_safe_json_without_input() {
     let marker = "STREAM_PRIVATE_MARKER";
     let oversized = format!("{marker}{}", "x".repeat(70 * 1024));
     let output = Command::new(env!("CARGO_BIN_EXE_tmath"))
-        .args(["render", "--engine", "native", "-"])
+        .args(["render", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -24,11 +24,6 @@ DEFAULT_SESSIONS_BEFORE="$(tmux ls 2>/dev/null || true)"
 if [ ! -x "$TMATH" ]; then
   (cd "$ROOT" && cargo build --workspace >/dev/null)
 fi
-if [ ! -f "$ROOT/dist/renderer/subprocess.js" ]; then
-  (cd "$ROOT" && npm run build >/dev/null)
-fi
-
-export TMATH_RENDER_WORKER="$ROOT/dist/renderer/subprocess.js"
 LOG=""
 
 # A scratch cwd for the source pane, outside this repository. `tmath agent`

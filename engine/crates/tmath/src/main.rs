@@ -1,12 +1,11 @@
 //! `tmath` — standalone terminal math/document renderer CLI.
 //!
-//! `tmath render <file | ->` reads a document, forwards it to the one-shot
-//! TypeScript renderer subprocess over stdin/stdout, and — when running against
-//! a real Kitty-graphics terminal — places the rendered image as a
-//! scrollback-anchored placement in the main buffer. When stdout is not a
-//! terminal, it reports the bounded response instead. `tmath diagnose` reports
-//! local capability status. `tmath agent` watches a tmux pane running a coding
-//! agent and shows each finished answer (with its math) in a split viewer pane.
+//! `tmath render <file | ->` reads a document and renders it with the in-process
+//! native engine. When running against a real Kitty-graphics terminal, the image
+//! is placed as a scrollback-anchored placement in the main buffer. When stdout
+//! is not a terminal, it reports the bounded response instead. `tmath diagnose`
+//! reports local capability status. `tmath agent` watches a tmux pane running a
+//! coding agent and shows each finished answer in a split viewer pane.
 
 use std::env;
 use std::ffi::OsStr;
@@ -16,10 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
-use serde_json::json;
-use tmath_core::ipc::{RenderOptions as IpcRenderOptions, RenderResponse, IPC_MAX_REQUEST_BYTES};
+use tmath_core::ipc::IPC_MAX_REQUEST_BYTES;
 use tmath_core::placement::{
     decode_png, emit_placed_block_cursor, CellSize, PlacementError, PlacementLimits,
     PlacementTracker,
@@ -27,8 +23,6 @@ use tmath_core::placement::{
 use tmath_core::terminal::{StdioTty, Terminal, Tty};
 
 type ConnectedTerminal = (Terminal<StdioTty>, (u32, u32));
-
-use crate::render::{render_document_text, renderer_worker_path};
 
 mod agent_allowlist;
 mod agent_viewer;
@@ -38,7 +32,6 @@ mod layout;
 mod native_render;
 mod native_stream;
 mod native_watch;
-mod render;
 mod scroll_region;
 mod terminal_output;
 mod transcript_adapter;
@@ -89,10 +82,8 @@ fn help_text() -> String {
          USAGE:\n  tmath render [OPTIONS] <file | ->\n  tmath watch [OPTIONS] <file>\n  tmath agent [OPTIONS]\n  tmath agent-viewer <socket-path>\n  tmath agent-enable [<dir>]\n  tmath agent-disable [<dir>]\n  tmath agent-allowed [<dir>]\n  tmath diagnose\n  tmath --help\n  tmath --version\n\
          \n\
          OPTIONS (render):\n  --content-width <px>  Render width in pixels (overrides auto-fit; default 480 without a terminal)\n  --font-size <px>      Base font size in pixels (overrides auto-fit; default 14 without a terminal)\n\
-  --engine <engine>     Renderer: native or node (default native; node is deprecated)\n\
          \n\
          OPTIONS (watch):\n  --content-width <px>  Render width in pixels (overrides auto-fit; default 480 without a terminal)\n  --font-size <px>      Base font size in pixels (overrides auto-fit; default 14 without a terminal)\n\
-  --engine <engine>     Renderer: native only (default native)\n\
   --poll-ms <ms>        Fallback poll interval when native watching fails (default 250)\n\
          \n\
          OPTIONS (agent):\n  --source-pane <id>  tmux pane to watch (default: current pane)\n  --percent <p>       Viewer split width in percent (default 35)\n  --wait-ms <ms>      Answer settle debounce (default 600)\n  --poll-ms <ms>      Pane poll interval (default 250)\n  --history <lines>   Scrollback lines to capture (default 500)\n\
@@ -108,16 +99,13 @@ fn help_text() -> String {
          `tmath watch` monitors the file's parent directory and updates only\n\
          changed blocks. Ctrl-C exits; non-terminal mode also exits on SIGTERM.\n\
          \n\
-         With the default `native` engine and a connected terminal, content width, font\n\
-         size, and device pixel ratio are auto-fit to the terminal's measured\n\
-         cell size and pane width so the image fits the pane and its text size\n\
-         matches the surrounding terminal text. Precedence: an explicit\n\
-         `--content-width`/`--font-size` value always wins; otherwise the\n\
-         auto-fit value applies when a terminal is connected; otherwise the\n\
-         fixed defaults above apply. `--engine node` and a non-terminal\n\
-         destination always use the fixed defaults (plus any explicit\n\
-         override). `tmath agent-viewer` always auto-fits its pane; it has no\n\
-         CLI override.\n\
+         With a connected terminal, content width, font size, and device pixel\n\
+         ratio are auto-fit to the terminal's measured cell size and pane width\n\
+         so the image fits the pane and its text size matches the surrounding\n\
+         terminal text. Precedence: an explicit `--content-width`/`--font-size`\n\
+         value always wins; otherwise the auto-fit value applies when a terminal\n\
+         is connected; otherwise the fixed defaults above apply. `tmath\n\
+         agent-viewer` always auto-fits its pane; it has no CLI override.\n\
          \n\
          `tmath agent` runs inside tmux, watches a pane running a coding agent\n\
          (Claude Code, Codex, opencode, and similar), and shows each finished\n\
@@ -132,19 +120,12 @@ fn help_text() -> String {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RenderEngine {
-    Node,
-    Native,
-}
-
 /// Parsed render arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenderArgs {
     input: String,
     content_width: Option<u32>,
     font_size: Option<u32>,
-    engine: RenderEngine,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,7 +133,6 @@ struct WatchArgs {
     input: String,
     content_width: Option<u32>,
     font_size: Option<u32>,
-    engine: RenderEngine,
     poll_ms: u64,
 }
 
@@ -160,7 +140,6 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
     let mut input: Option<String> = None;
     let mut content_width: Option<u32> = None;
     let mut font_size: Option<u32> = None;
-    let mut engine = RenderEngine::Native;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -180,19 +159,6 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
                         .parse()
                         .map_err(|_| format!("invalid font size {value:?}"))?,
                 );
-                index += 2;
-            }
-            "--engine" => {
-                let value = args.get(index + 1).ok_or("--engine needs a value")?;
-                engine = match value.as_str() {
-                    "node" => RenderEngine::Node,
-                    "native" => RenderEngine::Native,
-                    _ => {
-                        return Err(format!(
-                            "invalid render engine {value:?}; expected 'node' or 'native'"
-                        ))
-                    }
-                };
                 index += 2;
             }
             "--help" | "-h" => return Err("use 'tmath --help'".into()),
@@ -213,7 +179,6 @@ fn parse_render_args(args: &[String]) -> Result<RenderArgs, String> {
         input,
         content_width,
         font_size,
-        engine,
     })
 }
 
@@ -221,7 +186,6 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
     let mut input: Option<String> = None;
     let mut content_width: Option<u32> = None;
     let mut font_size: Option<u32> = None;
-    let mut engine = RenderEngine::Native;
     let mut poll_ms = 250u64;
     let mut index = 0;
     while index < args.len() {
@@ -242,15 +206,6 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
                         .parse()
                         .map_err(|_| format!("invalid font size {value:?}"))?,
                 );
-                index += 2;
-            }
-            "--engine" => {
-                let value = args.get(index + 1).ok_or("--engine needs a value")?;
-                engine = match value.as_str() {
-                    "node" => RenderEngine::Node,
-                    "native" => RenderEngine::Native,
-                    _ => return Err(format!("invalid watch engine {value:?}; expected 'native'")),
-                };
                 index += 2;
             }
             "--poll-ms" => {
@@ -281,14 +236,13 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
         input,
         content_width,
         font_size,
-        engine,
         poll_ms,
     })
 }
 
 fn render(args: &[String]) -> Result<i32, String> {
     let parsed = parse_render_args(args)?;
-    if parsed.engine == RenderEngine::Native && parsed.input == "-" && !io::stdin().is_terminal() {
+    if parsed.input == "-" && !io::stdin().is_terminal() {
         return render_native_stream(&parsed);
     }
     let source = read_document(&parsed.input)?;
@@ -299,17 +253,11 @@ fn render(args: &[String]) -> Result<i32, String> {
         None
     };
 
-    match parsed.engine {
-        RenderEngine::Node => render_with_node(&parsed, &source, connected),
-        RenderEngine::Native => render_with_native(&parsed, &source, connected),
-    }
+    render_with_native(&parsed, &source, connected)
 }
 
 fn watch(args: &[String]) -> Result<i32, String> {
     let parsed = parse_watch_args(args)?;
-    if parsed.engine == RenderEngine::Node {
-        return Err("watch supports only '--engine native'; the node engine is unavailable".into());
-    }
     if !io::stdout().is_terminal() && env::var_os("TMATH_WATCH_WORKER").is_none() {
         return exec_watch_supervisor(args);
     }
@@ -384,56 +332,6 @@ fn try_connect_terminal_for_render() -> Result<Option<ConnectedTerminal>, String
     let tty = StdioTty::from_control_terminal()
         .map_err(|error| format!("open control terminal: {error}"))?;
     Ok(Some(connect_terminal_with(tty)?))
-}
-
-fn render_with_node(
-    parsed: &RenderArgs,
-    source: &str,
-    connected: Option<(Terminal<StdioTty>, (u32, u32))>,
-) -> Result<i32, String> {
-    // The node engine is out of scope for terminal-fit auto layout (V3 native
-    // paths only); it keeps its own fixed-default behavior and only applies
-    // an explicit CLI override or the measured device pixel ratio.
-    let mut node_layout = serde_json::Map::new();
-    if let Some(width) = parsed.content_width {
-        node_layout.insert("contentWidthPx".into(), json!(width));
-    }
-    if let Some(size) = parsed.font_size {
-        node_layout.insert("fontSizePx".into(), json!(size));
-    }
-    if let Some((_, cell)) = &connected {
-        let scale = layout::device_scale_factor(*cell);
-        node_layout.insert("deviceScaleFactor".into(), json!(scale));
-    }
-    let options = (!node_layout.is_empty()).then_some(IpcRenderOptions {
-        limits: None,
-        layout: Some(serde_json::Value::Object(node_layout)),
-    });
-
-    match render_document_text(source, options)? {
-        RenderResponse::Success(success) => {
-            let png = BASE64
-                .decode(success.base64.as_bytes())
-                .map_err(|_| "renderer returned invalid base64 PNG".to_string())?;
-            match connected {
-                Some((terminal, cell)) => place_in_terminal(terminal, cell, &png),
-                None => {
-                    println!(
-                        "ok width={} height={} bytes={} renderer={}",
-                        success.width, success.height, success.bytes, success.renderer
-                    );
-                    Ok(0)
-                }
-            }
-        }
-        RenderResponse::Failure(failure) => {
-            eprintln!(
-                "tmath: render failed: {} (retryable={})",
-                failure.error.code, failure.error.retryable
-            );
-            Ok(1)
-        }
-    }
 }
 
 fn render_with_native(
@@ -802,24 +700,7 @@ fn diagnose(args: &[String]) -> Result<i32, String> {
     }
     let mut problems = 0u32;
 
-    println!("native renderer: in-process (default)");
-
-    match renderer_worker_path() {
-        Ok(_) => println!("renderer subprocess: available (optional; --engine node)"),
-        Err(message) => {
-            println!("renderer subprocess: unavailable ({message}; optional for --engine node)")
-        }
-    }
-
-    match Command::new("node")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        Ok(status) if status.success() => println!("node: available (optional; --engine node)"),
-        _ => println!("node: unavailable (optional; --engine node)"),
-    }
+    println!("native renderer: in-process");
 
     if io::stdout().is_terminal() {
         println!("stdout: terminal");
@@ -889,22 +770,18 @@ mod tests {
         let parsed = parse_render_args(&args(&["doc.md"])).unwrap();
         assert_eq!(parsed.input, "doc.md");
         assert_eq!(parsed.content_width, None);
-        assert_eq!(parsed.engine, RenderEngine::Native);
 
         let parsed = parse_render_args(&args(&[
             "--content-width",
             "800",
             "--font-size",
             "18",
-            "--engine",
-            "node",
             "-",
         ]))
         .unwrap();
         assert_eq!(parsed.input, "-");
         assert_eq!(parsed.content_width, Some(800));
         assert_eq!(parsed.font_size, Some(18));
-        assert_eq!(parsed.engine, RenderEngine::Node);
     }
 
     #[test]
@@ -921,10 +798,6 @@ mod tests {
         assert!(
             parse_render_args(&args(&["--bogus", "-"])).is_err(),
             "unknown option"
-        );
-        assert!(
-            parse_render_args(&args(&["--engine", "unknown", "-"])).is_err(),
-            "unknown engine"
         );
     }
 
@@ -948,7 +821,6 @@ mod tests {
         assert!(help.contains("agent-allowed"));
         assert!(help.contains("--content-width"));
         assert!(help.contains("--font-size"));
-        assert!(help.contains("--engine"));
         assert!(help.contains("--source-pane"));
         assert!(help.contains("--poll-ms"));
     }
@@ -957,7 +829,6 @@ mod tests {
     fn parses_watch_arguments() {
         let parsed = parse_watch_args(&args(&["doc.md"])).unwrap();
         assert_eq!(parsed.input, "doc.md");
-        assert_eq!(parsed.engine, RenderEngine::Native);
         assert_eq!(parsed.poll_ms, 250);
 
         let parsed = parse_watch_args(&args(&[
@@ -965,8 +836,6 @@ mod tests {
             "800",
             "--font-size",
             "18",
-            "--engine",
-            "native",
             "--poll-ms",
             "100",
             "doc.md",

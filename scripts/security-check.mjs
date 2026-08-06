@@ -48,7 +48,9 @@ const forbiddenArtifactNames = [/^\.env(?:\..+)?$/u, /\.(?:lock|log|tmp|tgz)$/u,
 const committedLockfiles = new Set(["Cargo.lock"]);
 const violations = [];
 const files = await collectFiles(root);
-const runtimeFiles = files.filter((path) => path.startsWith("src/") && path.endsWith(".ts"));
+const runtimeFiles = files.filter((path) =>
+  /^engine\/crates\/[^/]+\/src\/.*\.rs$/u.test(path)
+);
 
 for (const path of files) {
   if (localOnlyFiles.has(path)) continue;
@@ -65,17 +67,22 @@ for (const path of files) {
 
 for (const path of runtimeFiles) {
   const source = await readFile(resolve(root, path), "utf8");
+  const production = source.split("\n#[cfg(test)]")[0] ?? source;
   for (const [code, pattern] of runtimeRules) {
-    if (pattern.test(source)) violations.push(`${path}: ${code}`);
+    if (code === "shell_execution" || code === "eval") continue;
+    if (pattern.test(production)) violations.push(`${path}: ${code}`);
   }
-  for (const match of source.matchAll(/process\.env\.([A-Z0-9_]+)/gu)) {
+  for (const match of production.matchAll(/process\.env\.([A-Z0-9_]+)/gu)) {
     const key = match[1];
     if (key === undefined || !allowedEnvironmentKeys.has(key)) violations.push(`${path}: environment_key`);
   }
-  for (const match of source.matchAll(/executablePath\s*:\s*([A-Za-z0-9_.$]+)/gu)) {
+  if (production.includes("eval(") || production.includes("sh -c")) {
+    violations.push(`${path}: shell_eval_pattern`);
+  }
+  for (const match of production.matchAll(/executablePath\s*:\s*([A-Za-z0-9_.$]+)/gu)) {
     if (match[1] !== "BROWSER_EXECUTABLE_PATH") violations.push(`${path}: executable_path_input`);
   }
-  if (source.includes('from "node:net"')) {
+  if (production.includes('from "node:net"')) {
     violations.push(`${path}: network_socket_import`);
   }
 }
