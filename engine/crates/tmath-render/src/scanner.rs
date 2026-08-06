@@ -267,6 +267,186 @@ fn scan_candidate(
     })
 }
 
+/// Finds the earliest display-math opener in `text` that never sees its
+/// closing delimiter before the end of the text.
+///
+/// This supports the streaming open-tail bundling fix
+/// (`specs/stream-open-tail-v1`): while a display formula is still being
+/// streamed in, the splitter must withhold everything from the opener to
+/// the end of the buffer as one provisional tail block, instead of letting
+/// pulldown-cmark misread the raw, still-unclosed LaTeX as Markdown
+/// structure (line-leading `+`, `-`, `#`, `---`).
+///
+/// Recognized openers, in the same precedence order `scan_latex` uses:
+///
+/// - `$$` (a delimiter run of exactly 2 dollars; longer runs are never
+///   openers, matching `scan_latex`'s treatment of ambiguous runs)
+/// - `\[` (unescaped)
+/// - a line-leading, unescaped bare `[` that passes the scanner's existing
+///   bare-bracket plausibility heuristics (`has_bare_bracket_latex_hint`,
+///   no [`is_japanese_punctuation`]) applied to the text from just after
+///   the `[` to the end of the input
+///
+/// Inline math (`$...$`, `\(...\)`) is out of scope: an unclosed inline
+/// opener is never reported, since inline math never meaningfully spans
+/// stream revisions. Delimiters inside a fenced code block (`` ``` ``/`~~~`)
+/// or inline code span, and escaped delimiters, are never treated as
+/// openers, reusing the same fence/backtick/escape tracking `scan_latex`
+/// uses so fenced content and code spans are immune (mirrors AT-S-106).
+///
+/// Returns the byte offset of the opening delimiter's first byte, or
+/// `None` when every opener in `text` closes before EOF (including when
+/// there is no opener at all). Runs in O(n) time over `text` and never
+/// panics.
+///
+/// # Complexity
+///
+/// A *successful* closer search advances `index` past the match, so the
+/// total work across all successful searches telescopes to O(n). A failed
+/// `\]` or `$$` search returns immediately (an unclosed `\[`/`$$` is
+/// always the answer), so those two never repeat. A *rejected* bare `[`
+/// is the one case that falls through without consuming a closer —
+/// scanning resumes one byte at a time — so a document with many
+/// line-leading `[` openers whose closer search also fails (no `]` at
+/// all before EOF) would otherwise re-run `find_unescaped` to EOF for
+/// every one of them, making the function O(n²) on pathological input
+/// (and the stream splitter calls this once per revision on accumulated
+/// text, which would amplify the cost further). Each bare-bracket closer
+/// search always starts at a strictly later offset than the previous one,
+/// so once one such search fails to find a `]` before EOF, no later
+/// search can find one either; `no_bare_closer` records that fact and
+/// turns every later search into an O(1) lookup.
+pub fn open_display_math_start(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut fence: Option<Fence> = None;
+    let mut inline_ticks = 0;
+    let mut no_bare_closer = false;
+
+    while index < bytes.len() {
+        if is_line_start(bytes, index) {
+            if let Some(detected) = read_fence(bytes, index) {
+                match fence {
+                    None => fence = Some(detected),
+                    Some(active)
+                        if active.marker == detected.marker && detected.length >= active.length =>
+                    {
+                        fence = None;
+                    }
+                    Some(_) => {}
+                }
+                index = skip_line(bytes, index);
+                continue;
+            }
+        }
+
+        if fence.is_some() {
+            index += 1;
+            continue;
+        }
+
+        if bytes[index] == b'`' && !is_escaped(bytes, index) {
+            let ticks = count_run(bytes, index, b'`');
+            if inline_ticks == 0 {
+                inline_ticks = ticks;
+            } else if ticks == inline_ticks {
+                inline_ticks = 0;
+            }
+            index += ticks;
+            continue;
+        }
+
+        if inline_ticks > 0 {
+            index += 1;
+            continue;
+        }
+
+        if bytes[index] == b'\\' && !is_escaped(bytes, index) && bytes.get(index + 1) == Some(&b'[')
+        {
+            let content_start = index + 2;
+            return match find_unescaped(bytes, content_start, b"\\]") {
+                Some(closer_end) => {
+                    index = closer_end;
+                    continue;
+                }
+                None => Some(index),
+            };
+        }
+
+        if bytes[index] == b'[' && !is_escaped(bytes, index) && is_line_start(bytes, index) {
+            let content_start = index + 1;
+            let closer = if no_bare_closer {
+                None
+            } else {
+                find_unescaped(bytes, content_start, b"]")
+            };
+            match closer {
+                Some(closer_end) => {
+                    // Only treat this as having consumed a real opener when
+                    // it also passes the same plausibility heuristics the
+                    // scanner applies to a closed bare bracket; otherwise it
+                    // is ordinary prose and scanning continues one byte at a
+                    // time, exactly like `scan_latex` falls through.
+                    let latex = &text[content_start..closer_end - 1];
+                    if is_plausible_block_latex(latex) && bytes.get(closer_end) != Some(&b'(') {
+                        index = closer_end;
+                        continue;
+                    }
+                }
+                None => {
+                    no_bare_closer = true;
+                    // No closing `]` before EOF: only an open tail when the
+                    // remaining text still looks like plausible LaTeX (the
+                    // same guard `is_plausible_block_latex` applies to a
+                    // closed bracket, minus the "must not contain `[`/`]`"
+                    // check, which cannot be evaluated without a closer).
+                    let remainder = &text[content_start..];
+                    if has_bare_bracket_latex_hint(remainder)
+                        && !remainder.chars().any(is_japanese_punctuation)
+                    {
+                        return Some(index);
+                    }
+                }
+            }
+        }
+
+        if bytes[index] != b'$' || is_escaped(bytes, index) {
+            index += 1;
+            continue;
+        }
+
+        let run_length = count_run(bytes, index, b'$');
+        if run_length != 2 {
+            index += run_length;
+            continue;
+        }
+
+        let content_start = index + 2;
+        match find_unescaped(bytes, content_start, b"$$") {
+            Some(closer_end) => {
+                index = closer_end;
+                continue;
+            }
+            None => return Some(index),
+        }
+    }
+
+    None
+}
+
+/// Finds the byte offset just past the first unescaped occurrence of
+/// `needle` at or after `start`, or `None` if it never occurs.
+fn find_unescaped(bytes: &[u8], start: usize, needle: &[u8]) -> Option<usize> {
+    let mut cursor = start;
+    while cursor + needle.len() <= bytes.len() {
+        if bytes[cursor..].starts_with(needle) && !is_escaped(bytes, cursor) {
+            return Some(cursor + needle.len());
+        }
+        cursor += 1;
+    }
+    None
+}
+
 fn validate_limits(limits: &ScannerLimits) {
     assert!(
         limits.max_input_bytes > 0
@@ -1078,6 +1258,200 @@ mod tests {
                 .map(|formula| (formula.latex.clone(), formula.display))
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "corpus case {id} diverged");
+        }
+    }
+
+    // --- open_display_math_start (specs/stream-open-tail-v1) ---
+
+    #[test]
+    fn open_display_math_start_reports_an_unclosed_bracket_formula_with_markdown_like_lines() {
+        let input = "Update:\n\\[\n\\Lambda_{n+1} = \\Lambda_n\n+ \\alpha\n- \\beta\n# not a heading\n---\n";
+        let expected = input.find("\\[").unwrap();
+        assert_eq!(open_display_math_start(input), Some(expected));
+    }
+
+    #[test]
+    fn open_display_math_start_returns_the_second_opener_after_a_closed_one() {
+        let input = "\\[a+b\\]\n\nThen an unclosed one:\n\\[\nc + d\n";
+        let expected = input.rfind("\\[").unwrap();
+        assert_eq!(open_display_math_start(input), Some(expected));
+    }
+
+    #[test]
+    fn open_display_math_start_returns_none_for_a_fully_closed_document() {
+        let input = concat!(
+            "Inline $x$ stays inline.\n\n",
+            "$$a^2+b^2=c^2$$\n\n",
+            "\\[\\int_0^1 x\\,dx\\]\n\n",
+            "[ \\boldsymbol{x} ]\n\n",
+            "Done.\n"
+        );
+        assert_eq!(open_display_math_start(input), None);
+    }
+
+    #[test]
+    fn open_display_math_start_reports_an_unclosed_double_dollar_run() {
+        assert_eq!(
+            open_display_math_start("Before\n\n$$a+b\n"),
+            Some("Before\n\n".len())
+        );
+    }
+
+    #[test]
+    fn open_display_math_start_returns_none_for_a_closed_double_dollar_run() {
+        assert_eq!(open_display_math_start("Before\n\n$$a+b$$\nAfter\n"), None);
+    }
+
+    #[test]
+    fn open_display_math_start_reports_an_unclosed_bare_bracket_with_a_latex_hint() {
+        let input = "Density is\n\n[ p(\\boldsymbol{x}\\mid\\boldsymbol{\\mu})\nkeeps growing\n";
+        let expected = input.find('[').unwrap();
+        assert_eq!(open_display_math_start(input), Some(expected));
+    }
+
+    #[test]
+    fn open_display_math_start_ignores_an_unclosed_bare_bracket_that_looks_like_prose() {
+        let input = "Notes:\n\n[note this line never closes and has no latex hint\n";
+        assert_eq!(open_display_math_start(input), None);
+    }
+
+    #[test]
+    fn open_display_math_start_ignores_an_unclosed_bare_bracket_with_japanese_punctuation() {
+        let input = "ただし、\n\n[ \\text{事後精度}\nこれは、まだ続く文章です\n";
+        assert_eq!(open_display_math_start(input), None);
+    }
+
+    #[test]
+    fn open_display_math_start_ignores_openers_inside_an_unclosed_fenced_code_block() {
+        let input = "Before.\n\n```text\n\\[\nnever closes\n$$\nalso never closes\n";
+        assert_eq!(open_display_math_start(input), None);
+    }
+
+    #[test]
+    fn open_display_math_start_ignores_an_escaped_backslash_before_a_bare_bracket() {
+        // `\\` is an escaped backslash (a literal `\`), so the following `[`
+        // is a plain, unescaped bare bracket to the scanner's escape rule
+        // (an even run of backslashes escapes only itself). It still needs
+        // a LaTeX hint and line-leading position to count as an opener; this
+        // input has neither the hint nor a line-leading `[`, so it must not
+        // be reported.
+        assert_eq!(
+            open_display_math_start("prose \\\\[ \\alpha never closes"),
+            None
+        );
+    }
+
+    #[test]
+    fn open_display_math_start_ignores_a_mid_line_bare_bracket() {
+        assert_eq!(
+            open_display_math_start("Inline text with [ \\alpha never closes mid-sentence"),
+            None
+        );
+    }
+
+    #[test]
+    fn open_display_math_start_returns_none_for_empty_text() {
+        assert_eq!(open_display_math_start(""), None);
+    }
+
+    #[test]
+    fn open_display_math_start_returns_none_for_plain_prose() {
+        assert_eq!(
+            open_display_math_start("Just an ordinary paragraph with no delimiters at all."),
+            None
+        );
+    }
+
+    #[test]
+    fn open_display_math_start_ignores_delimiter_runs_longer_than_two_dollars() {
+        assert_eq!(
+            open_display_math_start("Ambiguous run: $$$ never closes"),
+            None
+        );
+    }
+
+    #[test]
+    fn open_display_math_start_ignores_unclosed_inline_math() {
+        assert_eq!(open_display_math_start("Inline $x+y never closes"), None);
+        assert_eq!(open_display_math_start("Inline \\(x+y never closes"), None);
+    }
+
+    #[test]
+    fn open_display_math_start_stays_correct_across_many_rejected_bare_brackets() {
+        // Every line-leading `[` here has no closing `]` anywhere in the
+        // rest of the document, and no LaTeX hint, so each one is rejected
+        // by the bare-bracket branch and falls through without consuming a
+        // closer. Before the no_bare_closer memo this drove one O(n) scan
+        // to EOF per rejected `[`; the memo turns every search after the
+        // first failure into an O(1) lookup. The whole document still has
+        // no genuine opener, so the correct result is None.
+        let mut input = String::new();
+        for line in 0..2000 {
+            input.push_str(&format!("[note line {line} with no closing bracket\n"));
+        }
+        assert_eq!(open_display_math_start(&input), None);
+    }
+
+    #[test]
+    fn open_display_math_start_memo_does_not_hide_a_later_genuine_opener() {
+        // Every bare `[...]` here closes (so the no_bare_closer memo is
+        // never armed) but is rejected as implausible prose, exercising the
+        // ordinary reject-and-fall-through path many times in a row before
+        // a later, genuinely unclosed `\[` appears. The `\]` closer search
+        // for that final formula must still run to completion and report
+        // its offset — proving the bare-bracket memo (armed only by an
+        // *unclosed* bare bracket) never interferes with `\[` detection.
+        let mut input = String::new();
+        for line in 0..500 {
+            input.push_str(&format!("[note {line}]\n"));
+        }
+        input.push_str("\\[\n\\Lambda_n = \\Lambda_{n-1} + 1\n");
+        let expected = input.rfind("\\[").unwrap();
+        assert_eq!(open_display_math_start(&input), Some(expected));
+    }
+
+    #[test]
+    fn open_display_math_start_bare_bracket_memo_does_not_hide_a_later_genuine_bare_bracket() {
+        // The bare-bracket branch is checked before the `\[`/`$$` branches
+        // in the loop, so it needs its own direct proof: many earlier bare
+        // brackets are rejected because their remainder (up to EOF) lacks a
+        // LaTeX hint at the time they are scanned, arming no_bare_closer —
+        // but the true test is that a later bare bracket whose own closer
+        // search would still succeed, or whose remainder is plausible, is
+        // not masked by an over-eager memo. Here every earlier bracket
+        // closes and is rejected for implausibility (never touching
+        // no_bare_closer), and the final bracket is unclosed with a
+        // genuine hint, so it must still be reported.
+        let mut input = String::new();
+        for line in 0..500 {
+            input.push_str(&format!("[note {line}]\n"));
+        }
+        input.push_str("[ \\boldsymbol{x} stays open\n");
+        let expected = input.rfind('[').unwrap();
+        assert_eq!(open_display_math_start(&input), Some(expected));
+    }
+
+    #[test]
+    fn open_display_math_start_never_panics_under_deterministic_fuzz() {
+        let mut seed = 0x0BED_5EED_u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed
+        };
+        let tokens = [
+            "$", "$$", "\\[", "\\]", "[", "]", "\\", "\\\\", "`", "```", "\n", " ", "\\alpha", "+",
+            "-", "#", "---", "。", "、", "x",
+        ];
+
+        for _ in 0..512 {
+            let length = 1 + next() % 40;
+            let mut text = String::new();
+            for _ in 0..length {
+                text.push_str(tokens[(next() as usize) % tokens.len()]);
+            }
+            if let Some(offset) = open_display_math_start(&text) {
+                assert!(text.is_char_boundary(offset));
+            }
         }
     }
 }

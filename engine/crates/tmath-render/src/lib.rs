@@ -26,7 +26,7 @@ pub use options::{
 };
 pub use planner::{BlockId, PlacementPlanner, Plan, PlanOp, PlannedBlock};
 pub use prose::{render_prose_block, RenderedImage};
-pub use scanner::{scan_latex, Formula, ScannerLimits};
+pub use scanner::{open_display_math_start, scan_latex, Formula, ScannerLimits};
 pub use stream::{Revision, StreamSplitter};
 pub use typst_doc::{compose_block, TypstSource};
 
