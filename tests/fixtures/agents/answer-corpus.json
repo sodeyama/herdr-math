@@ -100,6 +100,13 @@
       "coverage": ["bare_bracket", "markdown_link"],
       "answer": "See the [link](https://example.com) and a [note] in prose.",
       "expected": []
+    },
+    {
+      "id": "claude-bare-bracket-multiline-japanese-text-label",
+      "agent": "claude",
+      "coverage": ["valid_math", "display", "bare_bracket", "multiline", "unicode"],
+      "answer": "ただし、\n\n[ \\text{事後精度}\n\n\\text{事前精度} + \\text{データの精度} ]\n\nです。",
+      "expected": [{ "latex": "\\text{事後精度}\n\n\\text{事前精度} + \\text{データの精度}", "display": true }]
     }
   ],
   "boundaryCases": [

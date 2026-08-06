@@ -339,10 +339,18 @@ fn is_plausible_block_latex(latex: &str) -> bool {
     if latex.is_empty() || latex.contains('[') || latex.contains(']') {
         return false;
     }
-    if latex.chars().any(is_japanese_prose_character) {
+    // Unlike inline `$...$` math, a display block may legitimately carry a
+    // Japanese label inside `\text{...}` (e.g. `\text{事後精度}`); only
+    // full-width punctuation is treated as a sign of ordinary prose, not any
+    // CJK character.
+    if latex.chars().any(is_japanese_punctuation) {
         return false;
     }
     has_bare_bracket_latex_hint(latex)
+}
+
+fn is_japanese_punctuation(character: char) -> bool {
+    matches!(character, '\u{3001}' | '\u{3002}')
 }
 
 fn has_bare_bracket_latex_hint(latex: &str) -> bool {
@@ -728,6 +736,34 @@ mod tests {
     fn ignores_bare_brackets_not_at_the_start_of_a_line() {
         let formulas = scan_latex(
             "Inline text with [ \\alpha ] mid-sentence is not display math.",
+            &ScannerLimits::default(),
+        )
+        .unwrap();
+        assert!(formulas.is_empty());
+    }
+
+    #[test]
+    fn matches_bare_bracket_math_with_a_japanese_text_label_across_multiple_lines() {
+        // \text{...} may legitimately carry a Japanese label; only full-width
+        // punctuation (a sign of ordinary prose) should reject the block.
+        let formulas = scan_latex(
+            "ただし、\n\n[ \\text{事後精度}\n\n\\text{事前精度} + \\text{データの精度} ]\n\nです。",
+            &ScannerLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            summaries(&formulas),
+            vec![(
+                "\\text{事後精度}\n\n\\text{事前精度} + \\text{データの精度}",
+                true
+            )]
+        );
+    }
+
+    #[test]
+    fn ignores_bare_brackets_containing_full_width_punctuation() {
+        let formulas = scan_latex(
+            "[ \\text{これは、文章です} ]\n\nDone.",
             &ScannerLimits::default(),
         )
         .unwrap();

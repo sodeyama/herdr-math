@@ -283,7 +283,11 @@ function isPlausibleBlockLatex(latex: string): boolean {
   if (latex.length === 0 || latex.includes("[") || latex.includes("]")) {
     return false;
   }
-  if (/[、。\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(latex)) {
+  // Unlike inline `$...$` math, a display block may legitimately carry a
+  // Japanese label inside `\text{...}` (e.g. `\text{事後精度}`); only
+  // full-width punctuation is treated as a sign of ordinary prose, not any
+  // CJK character.
+  if (/[、。]/u.test(latex)) {
     return false;
   }
   return BARE_BRACKET_LATEX_HINT.test(latex);
