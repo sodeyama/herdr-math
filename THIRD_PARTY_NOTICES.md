@@ -1,51 +1,65 @@
 # Third-Party Notices
 
-Terminal Math is MIT licensed. The renderer also installs the third-party components below. Each component remains under its own license.
+Terminal Math (`tmath`) is MIT licensed. The release binary embeds or links the
+third-party components below. Each component remains under its own license.
 
-`npm ci` installs JavaScript packages and native Sharp artifacts from the npm registry. Its postinstall step runs `npm run install:browser`, which installs the Playwright-managed Chromium headless shell and companion FFmpeg artifact under `node_modules/playwright-core/.local-browsers`. Runtime rendering performs no downloads.
+This inventory summarizes the native renderer stack shipped in `0.3.0` after the
+Node/Chromium renderer was removed (V3 Phase 5, T3-502). It does not replace the
+full license texts in each upstream repository or crate.
 
-The installed packages retain their complete license and notice files under `node_modules`. The Chromium artifact retains `LICENSE.headless_shell` next to the executable. This inventory does not replace those license texts.
+## Embedded fonts (OFL)
 
-## Renderer Packages
+| Font | Files | License |
+| --- | --- | --- |
+| M PLUS 2 | `engine/crates/tmath-render/assets/fonts/MPlus2-Regular.ttf`, `MPlus2-Bold.ttf` | [SIL Open Font License 1.1](engine/crates/tmath-render/assets/fonts/OFL.txt) |
 
-| Component                                            | Locked version | License                                          | Retained license or notice                              |
-| ---------------------------------------------------- | -------------: | ------------------------------------------------ | ------------------------------------------------------- |
-| KaTeX and its packaged fonts                         |         0.18.1 | MIT                                              | `node_modules/katex/LICENSE`                            |
-| commander                                            |          8.3.0 | MIT                                              | `node_modules/commander/LICENSE`                        |
-| Playwright                                           |         1.62.1 | Apache-2.0                                       | `node_modules/playwright/LICENSE` and `NOTICE`          |
-| Playwright Core                                      |         1.62.1 | Apache-2.0                                       | `node_modules/playwright-core/LICENSE` and `NOTICE`     |
-| fsevents                                             |          2.3.2 | MIT                                              | `node_modules/playwright/node_modules/fsevents/LICENSE` |
-| Sharp                                                |         0.35.3 | Apache-2.0                                       | `node_modules/sharp/LICENSE`                            |
-| @img/colour                                          |          1.1.0 | MIT                                              | `node_modules/@img/colour/LICENSE.md`                   |
-| detect-libc                                          |          2.1.2 | Apache-2.0                                       | `node_modules/detect-libc/LICENSE`                      |
-| semver                                               |          7.8.5 | ISC                                              | `node_modules/semver/LICENSE`                           |
-| Sharp macOS native addon, arm64 and x64 lock entries |         0.35.3 | Apache-2.0                                       | Native package `LICENSE`                                |
-| Sharp libvips bundle, arm64 and x64 lock entries     |          1.3.2 | LGPL-3.0-or-later and bundled component licenses | Native package `README.md` licensing inventory          |
-| markdown-it                                         |         14.3.0 | MIT                                              | `node_modules/markdown-it/LICENSE`                      |
-| highlight.js                                        |         11.11.1 | BSD-3-Clause                                     | `node_modules/highlight.js/LICENSE`                     |
+M PLUS 2 is bundled with `include_bytes!` and selected through the `cjk_font`
+configuration key (`m-plus-2`). The complete OFL text ships in
+`engine/crates/tmath-render/assets/fonts/OFL.txt`.
 
-markdown-it is MIT licensed and parses Markdown text into safe HTML with raw HTML disabled. highlight.js is BSD-3-Clause licensed and provides the code-block syntax highlighting theme used by the renderer.
+## Typst embedded font assets
 
-The npm 10 optional-dependency resolver may also install the locked `@img/sharp-wasm32` 0.35.3 package and its `@emnapi/runtime` and `tslib` dependencies on macOS. They are not selected at runtime when the native macOS addon loads. Their package metadata declares `Apache-2.0 AND LGPL-3.0-or-later AND MIT`, MIT, and 0BSD respectively, and their installed license files are retained.
+The `typst-as-lib` crate (with `typst-kit-embed-fonts`) embeds Typst's default font
+collection into the binary for prose layout. Typst and its font bundle are
+Apache-2.0 licensed. See the [Typst repository](https://github.com/typst/typst) and
+the `typst-assets` crate for the authoritative font inventory and notices.
 
-The Sharp libvips bundle contains dynamically linked or bundled image libraries under permissive, MPL-2.0, and LGPL licenses. Its installed `README.md` records the exact component inventory, including libvips, glib, librsvg, pango, libexif, libheif, fontconfig, freetype, libpng, libtiff, libwebp, and their applicable terms. Corresponding source and build materials are published by the [sharp-libvips project](https://github.com/lovell/sharp-libvips).
+## Rust renderer dependencies (pinned in `Cargo.lock`)
 
-## KaTeX Fonts
+| Component | Locked version (workspace) | License |
+| --- | --- | --- |
+| RaTeX parser/layout/SVG/types | 0.1.14 | MIT |
+| typst | 0.13.x (via typst-as-lib 0.14.4) | Apache-2.0 |
+| typst-as-lib | 0.14.4 | MIT |
+| typst-render | 0.13.x | Apache-2.0 |
+| pulldown-cmark | 0.13.x | MIT |
+| png | 0.18.x | MIT OR Apache-2.0 |
+| serde / serde_json | 1.x | MIT OR Apache-2.0 |
+| rustix | 1.x | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| base64 | 0.22.x | MIT OR Apache-2.0 |
 
-KaTeX 0.18.1 contains 60 TTF, WOFF, and WOFF2 font files referenced by its packaged CSS. The package provides one MIT `LICENSE` covering the distributed package and no separate font license. Terminal Math loads these files directly from the installed KaTeX package and does not copy or modify them.
+RaTeX embeds KaTeX-compatible math fonts through its `embed-fonts` feature. Those
+font files and notices are carried in the `ratex-katex-fonts` and related RaTeX
+crates under MIT terms.
 
-KaTeX documents the packaged formats and the expected sibling `fonts` directory in its [font documentation](https://github.com/KaTeX/KaTeX/blob/v0.18.1/docs/font.md).
+## Terminal frontend dependencies
 
-## Playwright Notice
+The `tmath-core` and `tmath` crates add only standard Rust ecosystem dependencies
+(serde, png, rustix, toml, etc.) for Kitty escape construction, terminal I/O, and
+CLI parsing. No Node.js, Chromium, Playwright, or Sharp artifacts are installed or
+loaded at runtime.
 
-Playwright is copyright Microsoft Corporation and contains code derived from the Puppeteer project under the Apache License 2.0. The complete upstream notice remains in both installed Playwright packages.
+## Repository tooling (optional, not required to run `tmath`)
 
-## Chromium Headless Shell
+| Component | Purpose | License |
+| --- | --- | --- |
+| Node.js (optional) | runs `scripts/security-check.mjs` in CI | Node.js license |
 
-Playwright 1.62.1 locks Chromium headless shell revision 1234, browser version 151.0.7922.34. The browser download contains `LICENSE.headless_shell`, including the Chromium BSD terms and bundled third-party license texts. The installation audit requires this file to remain next to the executable.
+Running `tmath` after `scripts/install.sh` does not require Node.js.
 
-Chromium is not copied into this Git repository or npm source package. If a distributor bundles the browser artifact separately, that distributor must include its complete `LICENSE.headless_shell` file without truncation.
+## Historical Node renderer (removed)
 
-## Playwright FFmpeg Artifact
-
-The Playwright installation also downloads FFmpeg revision 1011 even though Terminal Math does not request video recording. The artifact retains the complete LGPL-2.1 license in `COPYING.LGPLv2.1`. The installation audit requires both the executable and this license file to be present.
+Prior to `0.3.0`, Terminal Math shipped a deprecated TypeScript renderer using KaTeX,
+Playwright/Chromium, Sharp, markdown-it, and highlight.js. That stack was removed
+in commit `feat(renderer): remove Node/Chromium browser renderer stack`. Distributors
+must not rely on the pre-0.3.0 notices for current binaries.

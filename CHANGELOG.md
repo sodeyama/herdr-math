@@ -14,8 +14,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   (RaTeX + Typst in-process). Install no longer requires Node.js or npm for
   runtime; `scripts/install.sh` builds the Rust binary only.
 
+### Added
+
+- Phase 5 portability smokes: release footprint gate (`scripts/smoke-footprint.sh`,
+  ≤ 60 MiB, no Node/browser dynamic deps), pipe render smoke, install-without-Node
+  smoke, and a Linux x86_64 CI job (AT-3-801..803 build scope).
+
 ### Fixed
 
+- `scripts/install.sh` reads the workspace version from the root `Cargo.toml` again
+  (the crate manifest uses `version.workspace = true`).
 - The outside-tmux auto-watch launch no longer opens a dedicated watcher pane:
   the watcher runs as a background process, so the session shows only the
   wrapped command and the viewer pane. Transport env

@@ -24,12 +24,21 @@ integration, rendering, security, and real Ghostty runtime tests.
 - A real terminal for stdout to receive the image; piped stdout prints a bounded text summary
   instead.
 
+## Build-verified (not runtime-verified)
+
+GitHub Actions runs a **Linux x86_64** job that builds the release binary, passes the
+60 MiB footprint gate, and completes a pipe render smoke (`scripts/smoke-render-pipe.sh`).
+See [Linux build smoke evidence](evidence/2026-08-06-v3-linux-build-smoke.md). This does
+**not** make Linux a supported platform for end users until real Kitty-graphics terminal
+evidence is recorded.
+
 ## Unverified and unsupported claims
 
 The following combinations are not verified and must not be described as supported:
 
 - macOS x64;
-- Linux and Windows;
+- Linux and Windows for interactive terminal use (Linux **build** smoke only; see
+  [build-verified](#build-verified-not-runtime-verified));
 - Kitty, WezTerm, and other outer terminals (P1);
 - remote sessions or non-graphics transports.
 
@@ -53,6 +62,7 @@ the complete live-agent matrix remain unverified.
 
 ## Evidence
 
+- [Linux build smoke (CI, 2026-08-06)](evidence/2026-08-06-v3-linux-build-smoke.md)
 - [Phase 0 terminal surface](evidence/2026-08-02-tmath-v2-phase0.md)
 - [Phase 1 render transport](evidence/2026-08-02-tmath-v2-phase1.md)
 - [Phase 2 placement](evidence/2026-08-02-tmath-v2-phase2.md)

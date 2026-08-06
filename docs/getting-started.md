@@ -204,6 +204,9 @@ cargo build --release
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm run security:check
+scripts/smoke-footprint.sh
+scripts/smoke-render-pipe.sh
+scripts/smoke-install-no-node.sh   # optional; needs cargo, no Node on PATH prefix
 ```
 
 ## Known limits

@@ -174,12 +174,14 @@
 - [x] **T3-502** Remove TS renderer/scanner, Playwright/sharp/KaTeX/markdown-it/
       highlight.js, postinstall browser fetch, `TMATH_RENDER_WORKER`; re-home the
       security scan. (AT-3-804, AT-3-704)
-- [ ] **T3-503** Single-binary packaging + install.sh without Node; footprint
-      gate. (AT-3-801, AT-3-802; install.sh no longer requires Node; footprint
-      gate and release artifact packaging remain open)
-- [ ] **T3-504** Linux x86_64 build + smoke; record real-terminal evidence before
-      claiming support. (AT-3-803)
-- [ ] **T3-505** Docs commit: README, getting-started, compatibility, licensing
+- [x] **T3-503** Single-binary packaging + install.sh without Node; footprint
+      gate. (AT-3-801, AT-3-802; `scripts/smoke-footprint.sh`,
+      `scripts/smoke-install-no-node.sh`, release binary ~43 MiB on macOS arm64)
+- [x] **T3-504** Linux x86_64 build + smoke; record real-terminal evidence before
+      claiming support. (AT-3-803 build/pipe smoke in CI;
+      `docs/evidence/2026-08-06-v3-linux-build-smoke.md`; real Kitty terminal
+      evidence still pending before a Linux support claim)
+- [x] **T3-505** Docs commit: README, getting-started, compatibility, licensing
       (OFL font attribution, THIRD_PARTY_NOTICES), CHANGELOG.
 
 ## Phase 6 — Hardening + release gate 0.3.0

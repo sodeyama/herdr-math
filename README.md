@@ -83,6 +83,8 @@ cargo build --release   # tmath binary in target/release/tmath
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm run security:check  # repository privacy/security scan (Node.js optional)
+scripts/smoke-footprint.sh
+scripts/smoke-render-pipe.sh
 ```
 
 Read [AGENTS.md](AGENTS.md) before contributing. Public documentation, code comments, logs,
