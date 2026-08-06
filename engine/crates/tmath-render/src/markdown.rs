@@ -59,7 +59,13 @@ pub fn parse_blocks_limited(input: &str, limits: &Limits) -> Result<Vec<Block>, 
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     if let Some((kind, start)) = open_block.take() {
-                        push_block(&mut blocks, &protected_input, kind, start..range.end, limits)?;
+                        push_block(
+                            &mut blocks,
+                            &protected_input,
+                            kind,
+                            start..range.end,
+                            limits,
+                        )?;
                     }
                 }
             }

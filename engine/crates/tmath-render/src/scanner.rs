@@ -138,7 +138,9 @@ pub fn scan_latex(input: &str, limits: &ScannerLimits) -> Result<Vec<Formula>, R
         }
 
         if bytes[index] == b'[' && !is_escaped(bytes, index) && is_line_start(bytes, index) {
-            if let Some((formula, next_index)) = scan_bare_bracket_math(input, bytes, index, limits)? {
+            if let Some((formula, next_index)) =
+                scan_bare_bracket_math(input, bytes, index, limits)?
+            {
                 formulas.push(formula);
                 check_limit(
                     formulas.len(),
@@ -537,7 +539,10 @@ fn has_bare_bracket_latex_hint(latex: &str) -> bool {
     let bytes = latex.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'\\' && index + 1 < bytes.len() && bytes[index + 1].is_ascii_alphabetic() {
+        if bytes[index] == b'\\'
+            && index + 1 < bytes.len()
+            && bytes[index + 1].is_ascii_alphabetic()
+        {
             return true;
         }
         if (bytes[index] == b'_' || bytes[index] == b'^') && bytes.get(index + 1) == Some(&b'{') {
