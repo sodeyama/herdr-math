@@ -86,16 +86,14 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
 
     let (tail, _) = if completion.starts_with(baseline) {
         if !completion.contains('⏺') {
-            if baseline.lines().last().is_some_and(|line| {
-                is_user_input_line(line) || line.trim_start().starts_with('>')
-            }) {
+            if baseline.lines().last().is_some_and(is_user_input_line) {
                 return None;
             }
             if !tail_contains_newline_after_prefix(baseline, completion)
                 && baseline
                     .lines()
                     .last()
-                    .is_some_and(|line| line.trim_start().starts_with('>'))
+                    .is_some_and(is_claude_compose_input_line)
             {
                 return None;
             }
@@ -140,7 +138,13 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
     }
 
     if let Some(text) = clean_tail(&tail) {
-        let text = strip_chrome_and_system_lines(&text);
+        let mut text = strip_chrome_and_system_lines(&text);
+        if !completion.contains('⏺') {
+            text = strip_claude_compose_lines(&text);
+            if is_prompt_suffix_fragment(&text) {
+                return None;
+            }
+        }
         if text.trim().is_empty() {
             return None;
         }
@@ -218,10 +222,16 @@ fn is_user_input_line(line: &str) -> bool {
     if trimmed.starts_with('⏺') || is_idle_prompt_line(line) {
         return false;
     }
-    trimmed.starts_with("> ")
+    is_claude_compose_input_line(line)
         || trimmed.starts_with('❯')
         || trimmed.starts_with('›')
         || trimmed.starts_with("┃ prompt:")
+}
+
+/// Claude Code's `>` compose prompt, distinct from the `❯` delimiter glyph.
+fn is_claude_compose_input_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('>') && !trimmed.starts_with('⏺')
 }
 
 fn tail_is_only_user_input(tail: &str) -> bool {
@@ -235,7 +245,7 @@ fn tail_is_non_answer_noise(tail: &str) -> bool {
         || lines.iter().all(|line| {
             is_agent_chrome_or_system_line(line)
                 || is_reasoning_or_completion_status(line)
-                || line.trim_start().starts_with("> ")
+                || is_claude_compose_input_line(line)
                 || is_tool_activity_line(line.trim())
         })
 }
@@ -252,13 +262,25 @@ fn is_agent_chrome_or_system_line(line: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    if trimmed.starts_with('→') && trimmed.contains('←') {
+    if trimmed.starts_with('→') {
+        return true;
+    }
+    if trimmed.contains("git:(")
+        && trimmed.contains('[')
+        && (trimmed.contains("/rc") || trimmed.contains("for agents"))
+    {
         return true;
     }
     if trimmed.contains("for agents") {
         return true;
     }
-    if trimmed.contains("auto-mode on") || trimmed.contains("shift+tab to cycle") {
+    if trimmed.contains("auto mode on")
+        || trimmed.contains("auto-mode on")
+        || trimmed.contains("shift+tab to cycle")
+    {
+        return true;
+    }
+    if trimmed.starts_with('▸') {
         return true;
     }
     if trimmed.contains("tmux focus-events")
@@ -271,6 +293,25 @@ fn is_agent_chrome_or_system_line(line: &str) -> bool {
         return true;
     }
     trimmed.starts_with("tmath agent:")
+}
+
+fn strip_claude_compose_lines(text: &str) -> String {
+    text.lines()
+        .filter(|line| !is_claude_compose_input_line(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_prompt_suffix_fragment(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.lines().count() == 1
+        && !trimmed.starts_with('#')
+        && !trimmed.starts_with("**")
+        && !trimmed.contains('$')
+        && !trimmed.starts_with('|')
+        && !trimmed.starts_with('•')
+        && !trimmed.starts_with("❯")
+        && trimmed.chars().count() <= 16
 }
 
 fn strip_chrome_and_system_lines(text: &str) -> String {
@@ -354,6 +395,7 @@ fn is_display_answer_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty()
         || is_user_input_line(line)
+        || is_claude_compose_input_line(line)
         || is_idle_prompt_line(line)
         || is_tui_rule(trimmed)
         || is_agent_chrome_or_system_line(line)
@@ -766,6 +808,30 @@ $ open \"https://math-notes.example/ch6\"\n\
 → obsidian git:(main) [Sonnet 5] /rc auto-mode on (shift+tab to cycle) ← for agents\n\
 > 数式を出して\n\
 tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking\n";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_code_status_bar_without_arrow_suffix_is_not_answer_content() {
+        let baseline = "Earlier screen\n";
+        let completion = "\
+→ terminal-math git:(main) [Sonnet 5]                      /rc\n\
+> 数式を５０個だして\n\
+▸▸ auto mode on (shift+tab to cycle)\n";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_code_compose_prompt_growth_is_not_answer_content() {
+        let baseline = "→ terminal-math git:(main) [Sonnet 5] /rc\n> s";
+        let completion = "→ terminal-math git:(main) [Sonnet 5] /rc\n> suu";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_code_prompt_suffix_fragment_is_not_answer_content() {
+        let baseline = "→ terminal-math git:(main) [Sonnet 5] /rc\n> 数";
+        let completion = "→ terminal-math git:(main) [Sonnet 5] /rc\n> 数式を";
         assert_eq!(answer(baseline, completion), None);
     }
 
