@@ -14,10 +14,14 @@ Current release: **v0.3.0** ([release notes](https://github.com/sodeyama/termina
 Verified on macOS with Ghostty + tmux; kitty and WezTerm are expected to work (they speak the
 same protocol) but are not yet part of the verified matrix.
 
-![Claude Code with tmath agent viewer](docs/media/claude-code-demo.gif)
+![Claude Code with tmath agent viewer — English (Bayesian statistics)](docs/media/claude-code-demo-bayes-en.gif)
 
-*Synthetic demo: a Claude Code–style shell (left) and the live typeset viewer (right). Recorded
-with `scripts/record-claude-demo-gif.sh`; no personal paths or transcripts.*
+![Claude Code with tmath agent viewer — Japanese (Bayesian statistics)](docs/media/claude-code-demo-bayes-ja.gif)
+
+*Synthetic demos: a Claude Code–style shell (left) and the live typeset viewer (right),
+streaming Bayesian statistics reference content. Recorded with
+`DEMO_ANSWER=bayes-en|bayes-ja scripts/record-claude-demo-gif.sh`; no personal paths or
+transcripts.*
 
 ## Install
 
