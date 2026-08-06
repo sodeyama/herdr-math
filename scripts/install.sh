@@ -117,7 +117,7 @@ command -v cargo >/dev/null || { echo "tmath: the Rust toolchain (cargo) is requ
 # ----------------------------------------------------------------------------
 # Build: release Rust binary
 # ----------------------------------------------------------------------------
-VERSION="$(grep '^version' "$REPO/engine/crates/tmath/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+VERSION="$(grep '^version' "$REPO/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')"
 
 if [ "${TMATH_FORCE_REBUILD:-0}" != "1" ] && [ -x "$REPO/target/release/tmath" ]; then
   echo "tmath $VERSION: using existing release binary"

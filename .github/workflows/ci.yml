@@ -58,6 +58,42 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Build release binary
+        run: cargo build --release -p tmath
+
+      - name: Run footprint smoke (AT-3-801)
+        run: scripts/smoke-footprint.sh
+
+      - name: Run pipe render smoke
+        run: scripts/smoke-render-pipe.sh
+
+  linux-x86_64:
+    name: Linux x86_64 build and render smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Verify runner architecture
+        run: test "$(uname -m)" = x86_64
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      - name: Build release binary
+        run: cargo build --release -p tmath
+
+      - name: Run footprint smoke (AT-3-801)
+        run: scripts/smoke-footprint.sh
+
+      - name: Run pipe render smoke (AT-3-803 build smoke)
+        run: scripts/smoke-render-pipe.sh
+
   tmux-smokes:
     name: tmux and installer smokes
     runs-on: macos-14
@@ -77,7 +113,10 @@ jobs:
         run: brew install tmux
 
       - name: Build Rust workspace
-        run: cargo build --workspace
+        run: cargo build --release --workspace
+
+      - name: Run scripts/smoke-install-no-node.sh
+        run: scripts/smoke-install-no-node.sh
 
       - name: Run scripts/smoke-agent-tmux.sh
         run: scripts/smoke-agent-tmux.sh
