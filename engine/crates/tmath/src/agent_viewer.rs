@@ -407,13 +407,21 @@ pub(crate) fn run_agent_viewer(args: &[String]) -> Result<i32, String> {
             font_size_source.label()
         );
     }
-    let options = RenderOptions::new(
-        fitted.content_width_pt,
+    let content_width_pt = crate::layout::resolve_content_width_pt(
+        None,
+        Some(fitted),
         font_size_pt,
-        fitted.device_pixel_ratio,
-    )
-    .map_err(|_| "invalid agent-viewer render options".to_string())?
-    .with_cjk_font(crate::config::resolve_cjk_font(&font_config));
+        crate::config::resolve_max_content_width_font_multiple(&font_config),
+    );
+    if log_enabled && content_width_pt < fitted.content_width_pt {
+        eprintln!(
+            "agent-viewer: content_width capped fitted_pt={:.1} capped_pt={:.1}",
+            fitted.content_width_pt, content_width_pt
+        );
+    }
+    let options = RenderOptions::new(content_width_pt, font_size_pt, fitted.device_pixel_ratio)
+        .map_err(|_| "invalid agent-viewer render options".to_string())?
+        .with_cjk_font(crate::config::resolve_cjk_font(&font_config));
     let device_pixel_ratio = fitted.device_pixel_ratio;
     let limits = Limits::default();
     let scaled = limits.scaled(device_pixel_ratio);

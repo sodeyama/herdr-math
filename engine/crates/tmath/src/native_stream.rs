@@ -243,7 +243,12 @@ pub(crate) fn run(
     let (font_size_pt, _font_size_source) =
         crate::config::resolve_font_size_pt_with_source(font_size, &config, fitted);
     let options = RenderOptions::new(
-        crate::layout::resolve_content_width_pt(content_width, fitted),
+        crate::layout::resolve_content_width_pt(
+            content_width,
+            fitted,
+            font_size_pt,
+            crate::config::resolve_max_content_width_font_multiple(&config),
+        ),
         font_size_pt,
         device_pixel_ratio,
     )

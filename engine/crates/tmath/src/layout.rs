@@ -161,16 +161,26 @@ pub(crate) fn device_scale_factor(cell: (u32, u32)) -> u32 {
 
 /// Resolves the effective content width in points: an explicit CLI override
 /// (already in pixels, treated as CSS/Typst points like the rest of the
-/// native pipeline) takes precedence; otherwise the terminal-fit value when
-/// connected, otherwise the fixed default.
+/// native pipeline) takes precedence and is never capped — it states an
+/// exact width, not a fitting preference. Otherwise the terminal-fit value
+/// applies, capped at `font_size_pt * max_content_width_font_multiple` (see
+/// `config`'s module doc for why), or the fixed default when no terminal is
+/// connected.
 pub(crate) fn resolve_content_width_pt(
     explicit_px: Option<u32>,
     fitted: Option<TerminalFitLayout>,
+    font_size_pt: f64,
+    max_content_width_font_multiple: f64,
 ) -> f64 {
-    explicit_px
-        .map(f64::from)
-        .or_else(|| fitted.map(|layout| layout.content_width_pt))
-        .unwrap_or(DEFAULT_CONTENT_WIDTH_PT)
+    if let Some(explicit_px) = explicit_px {
+        return f64::from(explicit_px);
+    }
+    match fitted {
+        Some(layout) => layout
+            .content_width_pt
+            .min(font_size_pt * max_content_width_font_multiple),
+        None => DEFAULT_CONTENT_WIDTH_PT,
+    }
 }
 
 /// Resolves the effective device pixel ratio: the terminal-fit value when a
@@ -290,30 +300,53 @@ mod tests {
     }
 
     #[test]
-    fn explicit_overrides_take_precedence_over_the_fitted_layout() {
+    fn explicit_overrides_take_precedence_over_the_fitted_layout_and_are_never_capped() {
         let fitted = terminal_fit_layout(20, 40, 120, None);
-        assert_eq!(resolve_content_width_pt(Some(800), Some(fitted)), 800.0);
+        // A cap of 1x the font size would reject 800pt if it applied to the
+        // explicit override; it must not, since `--content-width` states an
+        // exact width rather than a fitting preference.
+        assert_eq!(
+            resolve_content_width_pt(Some(800), Some(fitted), fitted.font_size_pt, 1.0),
+            800.0
+        );
     }
 
     #[test]
     fn no_terminal_falls_back_to_fixed_defaults() {
         assert_eq!(
-            resolve_content_width_pt(None, None),
+            resolve_content_width_pt(None, None, DEFAULT_FONT_SIZE_PT, 28.0),
             DEFAULT_CONTENT_WIDTH_PT
         );
         assert_eq!(resolve_device_pixel_ratio(None), 1);
     }
 
     #[test]
-    fn connected_terminal_without_explicit_override_uses_the_fitted_layout() {
+    fn connected_terminal_without_explicit_override_uses_the_fitted_layout_when_under_the_cap() {
         let fitted = terminal_fit_layout(20, 40, 120, None);
+        // A generous multiple keeps the fitted width unchanged.
         assert_eq!(
-            resolve_content_width_pt(None, Some(fitted)),
+            resolve_content_width_pt(None, Some(fitted), fitted.font_size_pt, 1000.0),
             fitted.content_width_pt
         );
         assert_eq!(
             resolve_device_pixel_ratio(Some(fitted)),
             fitted.device_pixel_ratio
+        );
+    }
+
+    #[test]
+    fn fitted_layout_is_capped_at_font_size_times_the_multiple() {
+        // A wide pane (200 cols) fits well past a modest cap.
+        let fitted = terminal_fit_layout(20, 40, 200, None);
+        let cap_multiple = 28.0;
+        let expected_cap = fitted.font_size_pt * cap_multiple;
+        assert!(
+            fitted.content_width_pt > expected_cap,
+            "fixture should exceed the cap to exercise it"
+        );
+        assert_eq!(
+            resolve_content_width_pt(None, Some(fitted), fitted.font_size_pt, cap_multiple),
+            expected_cap
         );
     }
 

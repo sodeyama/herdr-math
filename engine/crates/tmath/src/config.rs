@@ -23,6 +23,18 @@
 //! extra override layer would have nothing to override *to*. Add one only
 //! when a second embedded family exists and per-run selection becomes a
 //! real use case.
+//!
+//! `max_content_width_font_multiple` (D-CONFIG phase 3) caps how wide the
+//! terminal auto-fit path (only) is allowed to stretch `content_width_pt`:
+//! the effective cap is `font_size_pt * multiple`. Wide panes (200+ columns)
+//! otherwise stretch math and prose to widths well past comfortable reading
+//! measure, no matter how large the font — a textbook page doesn't get wider
+//! just because the desk it sits on does. The default, 28, holds a 15pt
+//! render to 420pt, matching a B5 textbook's printed text width (roughly
+//! 397-425pt / 140-150mm) regardless of font size. An explicit
+//! `--content-width` CLI value is never capped — it states an exact pixel
+//! width, not a fitting preference — so this key only ever narrows the
+//! auto-fit result.
 
 use std::env;
 use std::fs;
@@ -35,6 +47,17 @@ use crate::layout::{MAX_FONT_SIZE_PT, MIN_FONT_SIZE_PT};
 /// Environment variable checked between the CLI flag and the config file.
 const FONT_SIZE_ENV_VAR: &str = "TMATH_FONT_SIZE_PT";
 
+/// Valid range for `max_content_width_font_multiple`: from a pocket-book-like
+/// measure (10x a 15pt font is 150pt, narrower than a paperback's ~227pt but
+/// still a deliberately narrow column) up to a large-format technical book
+/// (60x a 15pt font is 900pt). The default (28) sits in the middle of this
+/// range, at B5 textbook width.
+pub(crate) const MIN_CONTENT_WIDTH_FONT_MULTIPLE: f64 = 10.0;
+pub(crate) const MAX_CONTENT_WIDTH_FONT_MULTIPLE: f64 = 60.0;
+/// B5 textbook text width (~397-425pt / 140-150mm) at the 15pt font size the
+/// terminal auto-fit path typically resolves to.
+pub(crate) const DEFAULT_CONTENT_WIDTH_FONT_MULTIPLE: f64 = 28.0;
+
 /// Parsed, validated configuration. Every field is optional: an absent file,
 /// an absent key, or a value that fails validation all resolve to `None`
 /// here (fail closed to "no override" rather than propagating an error),
@@ -43,6 +66,7 @@ const FONT_SIZE_ENV_VAR: &str = "TMATH_FONT_SIZE_PT";
 pub(crate) struct Config {
     pub(crate) font_size_pt: Option<f64>,
     pub(crate) cjk_font: Option<CjkFont>,
+    pub(crate) max_content_width_font_multiple: Option<f64>,
 }
 
 /// Where the config file resolution and precedence decisions get their
@@ -126,6 +150,18 @@ pub(crate) fn load(path: &Path) -> Config {
                 Some(font) => config.cjk_font = Some(font),
                 None => log_warning("config_value_invalid", Some(key)),
             },
+            "max_content_width_font_multiple" => match value
+                .as_float()
+                .or_else(|| value.as_integer().map(|v| v as f64))
+            {
+                Some(raw)
+                    if (MIN_CONTENT_WIDTH_FONT_MULTIPLE..=MAX_CONTENT_WIDTH_FONT_MULTIPLE)
+                        .contains(&raw) =>
+                {
+                    config.max_content_width_font_multiple = Some(raw);
+                }
+                _ => log_warning("config_value_invalid", Some(key)),
+            },
             _ => log_warning("config_key_unknown", Some(key)),
         }
     }
@@ -138,6 +174,17 @@ pub(crate) fn load(path: &Path) -> Config {
 /// here yet.
 pub(crate) fn resolve_cjk_font(config: &Config) -> CjkFont {
     config.cjk_font.unwrap_or_default()
+}
+
+/// Resolves the effective `max_content_width_font_multiple`: the config
+/// file's value when present and valid, otherwise
+/// [`DEFAULT_CONTENT_WIDTH_FONT_MULTIPLE`]. No CLI/env layer — an explicit
+/// `--content-width` bypasses this cap entirely rather than needing its own
+/// override (see the module doc).
+pub(crate) fn resolve_max_content_width_font_multiple(config: &Config) -> f64 {
+    config
+        .max_content_width_font_multiple
+        .unwrap_or(DEFAULT_CONTENT_WIDTH_FONT_MULTIPLE)
 }
 
 /// Logs one bounded, content-free warning event to stderr: an event name
@@ -321,11 +368,68 @@ mod tests {
         assert_eq!(resolve_cjk_font(&Config::default()), CjkFont::default());
     }
 
+    // --- D-CONFIG phase 3: max_content_width_font_multiple ---
+
+    #[test]
+    fn valid_content_width_multiple_is_applied() {
+        let path = temp_config_path(Some("max_content_width_font_multiple = 20.0\n"));
+        let config = load(&path);
+        assert_eq!(config.max_content_width_font_multiple, Some(20.0));
+    }
+
+    #[test]
+    fn integer_content_width_multiple_is_accepted_as_a_float() {
+        let path = temp_config_path(Some("max_content_width_font_multiple = 20\n"));
+        let config = load(&path);
+        assert_eq!(config.max_content_width_font_multiple, Some(20.0));
+    }
+
+    #[test]
+    fn out_of_range_content_width_multiple_is_rejected() {
+        let path = temp_config_path(Some("max_content_width_font_multiple = 5.0\n"));
+        assert_eq!(load(&path).max_content_width_font_multiple, None);
+        let path = temp_config_path(Some("max_content_width_font_multiple = 200.0\n"));
+        assert_eq!(load(&path).max_content_width_font_multiple, None);
+    }
+
+    #[test]
+    fn wrong_type_content_width_multiple_is_rejected() {
+        let path = temp_config_path(Some("max_content_width_font_multiple = \"wide\"\n"));
+        assert_eq!(load(&path).max_content_width_font_multiple, None);
+    }
+
+    #[test]
+    fn content_width_multiple_boundary_values_are_accepted() {
+        let path = temp_config_path(Some("max_content_width_font_multiple = 10.0\n"));
+        assert_eq!(load(&path).max_content_width_font_multiple, Some(10.0));
+        let path = temp_config_path(Some("max_content_width_font_multiple = 60.0\n"));
+        assert_eq!(load(&path).max_content_width_font_multiple, Some(60.0));
+    }
+
+    #[test]
+    fn resolve_max_content_width_font_multiple_falls_back_to_the_b5_default_when_unset() {
+        assert_eq!(
+            resolve_max_content_width_font_multiple(&Config::default()),
+            DEFAULT_CONTENT_WIDTH_FONT_MULTIPLE
+        );
+    }
+
+    #[test]
+    fn resolve_max_content_width_font_multiple_uses_the_configured_value() {
+        let config = Config {
+            font_size_pt: None,
+            cjk_font: None,
+            max_content_width_font_multiple: Some(40.0),
+        };
+        assert_eq!(resolve_max_content_width_font_multiple(&config), 40.0);
+    }
+
     #[test]
     fn precedence_cli_beats_everything() {
         let config = Config {
             font_size_pt: Some(18.0),
             cjk_font: None,
+            max_content_width_font_multiple: None,
         };
         let (value, source) =
             resolve_font_size_pt_with_source(Some(20), &config, Some(fitted(15.0)));
@@ -338,6 +442,7 @@ mod tests {
         let config = Config {
             font_size_pt: Some(18.0),
             cjk_font: None,
+            max_content_width_font_multiple: None,
         };
         let (value, source) = resolve_font_size_pt_with_source(None, &config, Some(fitted(15.0)));
         assert_eq!(value, 18.0);

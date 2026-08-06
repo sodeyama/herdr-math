@@ -442,7 +442,6 @@ fn render_with_native(
     connected: Option<(Terminal<StdioTty>, (u32, u32))>,
 ) -> Result<i32, String> {
     let fitted = layout::fitted_layout_for_connected(&connected);
-    let content_width_pt = layout::resolve_content_width_pt(parsed.content_width, fitted);
     let font_config = config::config_path()
         .map(|path| config::load(&path))
         .unwrap_or_default();
@@ -451,6 +450,12 @@ fn render_with_native(
     eprintln!(
         "tmath: font_size source={} value={font_size_pt}",
         font_size_source.label()
+    );
+    let content_width_pt = layout::resolve_content_width_pt(
+        parsed.content_width,
+        fitted,
+        font_size_pt,
+        config::resolve_max_content_width_font_multiple(&font_config),
     );
     let device_pixel_ratio = layout::resolve_device_pixel_ratio(fitted);
     let cjk_font = config::resolve_cjk_font(&font_config);
