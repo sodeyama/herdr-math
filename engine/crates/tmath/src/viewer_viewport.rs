@@ -9,21 +9,21 @@
 //!
 //! State transitions:
 //! - [`Viewport::scroll_by`] moves the offset by a row delta, clamps it to
-//!   `[0, max_offset]`, and sets follow to whether the RESULT landed on the
-//!   bottom (`new_offset == max_offset()`) — any manual scroll input maps
-//!   here through [`tmath_core::scroll_driver::scroll_delta`]. This means a
-//!   scroll step that starts and ends at the bottom (e.g. one wheel-down
-//!   notch while already following) never disengages follow, and a scroll
-//!   step that lands back on the bottom (by wheel or by momentum decay)
-//!   re-engages it — the standard tmux/iTerm-style re-pin-at-bottom
-//!   behavior.
-//! - [`Viewport::jump_to_bottom_and_follow`] is `End`/`F`: it re-engages
-//!   follow and pins the offset to the bottom in one step.
+//!   `[0, max_offset]`, and sets follow to whether the RESULT landed at the
+//!   top (`new_offset == 0`) — any manual scroll input maps here through
+//!   [`tmath_core::scroll_driver::scroll_delta`]. A scroll step that starts
+//!   and ends at the top (e.g. a wheel-up notch while already following at
+//!   offset `0`) never disengages follow, and a scroll step that lands back
+//!   on the top re-engages it.
+//! - [`Viewport::jump_to_bottom`] is `End`/`F`: it disengages follow and
+//!   pins the offset to the bottom so the newest content is visible.
+//! - [`Viewport::jump_to_top_and_follow`] is `Home`: it re-engages follow
+//!   and pins the offset to the top.
 //! - [`Viewport::set_block_heights`] applies a new block-height list after an
 //!   append/replace. While follow is engaged the window stays pinned to the
-//!   bottom (the newest block is visible); while disengaged the offset is
-//!   left unchanged (clamped only if content shrank under it), so scrolled-up
-//!   reading position survives new output arriving below.
+//!   top (content grows downward from the start); while disengaged the offset
+//!   is left unchanged (clamped only if content shrank under it), so a
+//!   scrolled reading position survives new output arriving below.
 
 /// A block's height in terminal rows, as placed by the emitter.
 pub type Rows = u32;
@@ -84,40 +84,43 @@ impl Viewport {
     /// Applies a manual scroll delta in rows (positive scrolls down/forward,
     /// negative scrolls up/backward) and clamps the result. Follow tracks
     /// the RESULTING position, not the act of scrolling: it disengages the
-    /// instant the window leaves the bottom (`new_offset != max_offset()`)
-    /// and re-engages the instant a scroll lands it back on the bottom —
-    /// this is the standard tmux/iTerm-style re-pin-at-bottom behavior, and
-    /// it is what keeps a single wheel-down notch at the tail (delta 0 or
-    /// otherwise clamped back to `max_offset`) from spuriously disengaging
-    /// follow: the offset never actually leaves the bottom, so follow never
-    /// leaves either. When content fits the pane (`max_offset() == 0`), the
-    /// offset is always `0 == max`, so follow stays permanently engaged and
-    /// this function is inert — correct, since there is nothing to scroll.
-    /// Returns whether the offset actually changed.
+    /// instant the window leaves the top (`new_offset != 0`) and re-engages
+    /// the instant a scroll lands it back on the top. A wheel-up notch while
+    /// already at offset `0` (delta clamped back to `0`) never disengages
+    /// follow. When content fits the pane (`max_offset() == 0`), the offset
+    /// is always `0`, so follow stays permanently engaged and this function
+    /// is inert — correct, since there is nothing to scroll. Returns whether
+    /// the offset actually changed.
     pub fn scroll_by(&mut self, delta_rows: f32) -> bool {
         let before = self.offset;
         let max = self.max_offset();
         let target = (self.offset as f32 + delta_rows).clamp(0.0, max as f32);
         self.offset = target.round().clamp(0.0, max as f32) as Rows;
-        self.follow = self.offset == max;
+        self.follow = self.offset == 0;
         self.offset != before
     }
 
-    /// `End`/`F`: re-engages follow and pins the window to the bottom.
-    pub fn jump_to_bottom_and_follow(&mut self) {
-        self.follow = true;
+    /// `End`/`F`: disengages follow and pins the window to the bottom.
+    pub fn jump_to_bottom(&mut self) {
+        self.follow = false;
         self.offset = self.max_offset();
     }
 
+    /// `Home`: re-engages follow and pins the window to the top.
+    pub fn jump_to_top_and_follow(&mut self) {
+        self.follow = true;
+        self.offset = 0;
+    }
+
     /// Applies a new block-height list after an append/replace/remove. While
-    /// follow is engaged the window is re-pinned to the bottom; while
-    /// disengaged the offset is preserved (clamped down only if the content
-    /// is now shorter than the previous offset).
+    /// follow is engaged the window is re-pinned to the top; while disengaged
+    /// the offset is preserved (clamped down only if the content is now
+    /// shorter than the previous offset).
     pub fn set_block_heights(&mut self, heights: Vec<Rows>) {
         self.heights = heights;
         self.reclamp();
         if self.follow {
-            self.offset = self.max_offset();
+            self.offset = 0;
         }
     }
 
@@ -264,73 +267,71 @@ mod tests {
         viewport.set_block_heights(vec![10, 10, 10]); // total 30, max_offset 25
         assert!(
             viewport.following(),
-            "append pinned to bottom while following"
+            "append pinned to top while following"
         );
-        assert_eq!(viewport.offset(), 25);
+        assert_eq!(viewport.offset(), 0);
 
-        assert!(viewport.scroll_by(-100.0));
+        assert!(viewport.scroll_by(10.0));
         assert!(!viewport.following(), "manual scroll disengages follow");
-        assert_eq!(viewport.offset(), 0, "clamped at the top");
+        assert_eq!(viewport.offset(), 10);
 
         assert!(viewport.scroll_by(100.0));
         assert_eq!(viewport.offset(), 25, "clamped at the bottom");
         assert!(
-            viewport.following(),
-            "landing back on the bottom re-engages follow (tmux/iTerm-style re-pin)"
+            !viewport.following(),
+            "landing on the bottom does not re-engage follow"
         );
 
-        assert!(viewport.scroll_by(-3.0));
-        assert_eq!(viewport.offset(), 22);
+        assert!(viewport.scroll_by(-100.0));
+        assert_eq!(viewport.offset(), 0, "clamped at the top");
+        assert!(
+            viewport.following(),
+            "landing back on the top re-engages follow"
+        );
+
+        assert!(viewport.scroll_by(3.0));
+        assert_eq!(viewport.offset(), 3);
         assert!(
             !viewport.following(),
-            "moving off the bottom again disengages follow"
+            "moving off the top again disengages follow"
         );
     }
 
-    /// The coordinator's fix ruling, case (a): a wheel-down notch while
-    /// already following at the tail must NOT disengage follow — the
-    /// offset never actually leaves the bottom, so follow must not either.
-    /// This is the exact "spontaneous follow=false" mechanism a stray
-    /// down-notch from a hovering pointer used to trigger.
+    /// A wheel-up notch while already following at the top must NOT
+    /// disengage follow — the offset never actually leaves zero.
     #[test]
-    fn scroll_by_at_the_bottom_that_stays_at_the_bottom_never_disengages_follow() {
+    fn scroll_by_at_the_top_that_stays_at_the_top_never_disengages_follow() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![10, 10, 10]); // max_offset 25
         assert!(viewport.following());
-        assert_eq!(viewport.offset(), 25);
+        assert_eq!(viewport.offset(), 0);
 
-        // A wheel-down notch (positive delta) while already at the bottom:
-        // clamps right back to 25, offset does not change, follow must stay
-        // engaged and the step must report no movement.
-        assert!(!viewport.scroll_by(3.0), "no actual movement at the clamp");
+        assert!(!viewport.scroll_by(-3.0), "no actual movement at the clamp");
         assert!(
             viewport.following(),
-            "a down-notch that cannot move past the bottom must not disengage follow"
+            "an up-notch that cannot move past the top must not disengage follow"
         );
 
-        // The literal zero-delta case `handle_scroll_input`'s wheel branch
-        // uses to disengage-check without moving yet (see agent_viewer.rs)
-        // must also leave follow engaged when already at the bottom.
         assert!(!viewport.scroll_by(0.0));
         assert!(viewport.following());
     }
 
-    /// Case (b): scrolling up (disengaging) and then all the way back down
-    /// re-engages follow, without needing End/F.
+    /// Scrolling down (disengaging) and then all the way back up re-engages
+    /// follow, without needing Home.
     #[test]
-    fn scrolling_back_down_to_the_bottom_reengages_follow() {
+    fn scrolling_back_up_to_the_top_reengages_follow() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![10, 10, 10]); // max_offset 25
-        assert!(viewport.scroll_by(-10.0)); // offset -> 15, disengages
+        assert!(viewport.scroll_by(10.0)); // offset -> 10, disengages
         assert!(!viewport.following());
 
-        assert!(viewport.scroll_by(5.0)); // offset -> 20, still short of 25
-        assert!(!viewport.following(), "not back at the bottom yet");
+        assert!(viewport.scroll_by(10.0)); // offset -> 20, still short of 0
+        assert!(!viewport.following(), "not back at the top yet");
 
-        assert!(viewport.scroll_by(5.0)); // offset -> 25, exactly the bottom
+        assert!(viewport.scroll_by(-20.0)); // offset -> 0, exactly the top
         assert!(
             viewport.following(),
-            "landing exactly on max_offset re-engages follow"
+            "landing exactly on offset 0 re-engages follow"
         );
     }
 
@@ -360,34 +361,46 @@ mod tests {
     }
 
     #[test]
-    fn end_or_f_reengages_follow_and_jumps_to_bottom() {
+    fn end_or_f_jumps_to_bottom_and_disengages_follow() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![10, 10, 10]);
-        viewport.scroll_by(-100.0);
-        assert!(!viewport.following());
+        assert!(viewport.following());
         assert_eq!(viewport.offset(), 0);
 
-        viewport.jump_to_bottom_and_follow();
-        assert!(viewport.following());
+        viewport.jump_to_bottom();
+        assert!(!viewport.following());
         assert_eq!(viewport.offset(), 25);
     }
 
     #[test]
-    fn append_while_following_pins_the_new_tail_visible() {
+    fn home_reengages_follow_and_jumps_to_top() {
+        let mut viewport = Viewport::new(5);
+        viewport.set_block_heights(vec![10, 10, 10]);
+        viewport.jump_to_bottom();
+        assert!(!viewport.following());
+        assert_eq!(viewport.offset(), 25);
+
+        viewport.jump_to_top_and_follow();
+        assert!(viewport.following());
+        assert_eq!(viewport.offset(), 0);
+    }
+
+    #[test]
+    fn append_while_following_keeps_the_viewport_pinned_to_the_top() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![10]);
         assert_eq!(
             viewport.offset(),
-            5,
-            "max_offset for a 10-row block in a 5-row pane"
+            0,
+            "follow keeps the window pinned to the top"
         );
 
         viewport.set_block_heights(vec![10, 8]); // total 18, max_offset 13
         assert!(viewport.following());
         assert_eq!(
             viewport.offset(),
-            13,
-            "follow keeps pinning to the bottom as blocks are appended"
+            0,
+            "follow keeps pinning to the top as blocks are appended"
         );
     }
 
@@ -395,14 +408,14 @@ mod tests {
     fn append_while_disengaged_keeps_the_offset_stable() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![10, 10]); // total 20, max_offset 15
-        viewport.scroll_by(-15.0); // offset -> 0, follow disengaged
-        assert_eq!(viewport.offset(), 0);
+        viewport.scroll_by(10.0); // offset -> 10, follow disengaged
+        assert_eq!(viewport.offset(), 10);
 
         viewport.set_block_heights(vec![10, 10, 10]); // total 30, max_offset 25
         assert!(!viewport.following(), "append does not re-engage follow");
         assert_eq!(
             viewport.offset(),
-            0,
+            10,
             "offset measured from the top stays stable across an append"
         );
     }
@@ -411,8 +424,8 @@ mod tests {
     fn disengaged_offset_is_clamped_down_if_content_shrinks_under_it() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![10, 10, 10]); // max_offset 25
-        viewport.scroll_by(-10.0); // offset -> 15
-        assert_eq!(viewport.offset(), 15);
+        viewport.scroll_by(10.0); // offset -> 10
+        assert_eq!(viewport.offset(), 10);
 
         viewport.set_block_heights(vec![10]); // total 10, max_offset 5
         assert!(!viewport.following());
@@ -427,8 +440,8 @@ mod tests {
     fn set_pane_rows_reclamps_offset() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![10, 10, 10]);
-        viewport.scroll_by(-10.0); // offset -> 15, max_offset 25
-        assert_eq!(viewport.offset(), 15);
+        viewport.scroll_by(10.0); // offset -> 10, max_offset 25
+        assert_eq!(viewport.offset(), 10);
 
         viewport.set_pane_rows(28); // max_offset becomes 2
         assert_eq!(viewport.offset(), 2, "resize clamps an out-of-range offset");
@@ -438,7 +451,7 @@ mod tests {
     fn visible_blocks_reports_the_intersecting_index_range() {
         let mut viewport = Viewport::new(5);
         viewport.set_block_heights(vec![3, 4, 6]); // total 13, max_offset 8
-        viewport.jump_to_bottom_and_follow();
+        viewport.jump_to_bottom();
         assert_eq!(viewport.offset(), 8);
 
         let visible = viewport.visible_blocks();
@@ -460,7 +473,7 @@ mod tests {
     fn visible_blocks_spans_multiple_blocks_within_the_window() {
         let mut viewport = Viewport::new(10);
         viewport.set_block_heights(vec![3, 4, 6]); // total 13, pane 10, max_offset 3
-        viewport.jump_to_bottom_and_follow();
+        viewport.jump_to_bottom();
         assert_eq!(viewport.offset(), 3);
         // Window [3, 13): block0 [0,3) excluded (block_end 3 > window_start 3
         // is false), block1 [3,7) included, block2 [7,13) included.
@@ -497,7 +510,7 @@ mod tests {
     fn scrollbar_thumb_rows_at_the_bottom_ends_the_thumb_flush_with_the_pane() {
         let mut viewport = Viewport::new(10);
         viewport.set_block_heights(vec![100]); // total 100, pane 10, max_offset 90
-        viewport.jump_to_bottom_and_follow(); // offset -> max_offset (90)
+        viewport.jump_to_bottom(); // offset -> max_offset (90)
         let thumb = viewport.scrollbar_thumb_rows().expect("scrollbar needed");
         assert_eq!(
             thumb.end, 10,

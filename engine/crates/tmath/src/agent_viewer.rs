@@ -16,33 +16,28 @@
 //!
 //! The viewer owns an explicit visibility window over the placed blocks
 //! ([`crate::viewer_viewport::Viewport`]), per plan section D6. Follow mode
-//! pins that window to the newest block as answers stream in; any manual
-//! scroll input disengages follow and `End`/`F` re-engage it (AT-3-502). A
-//! window change syncs the terminal from cached PNGs
-//! (see [`native_stream::StreamSink::sync_window`]): placements that left
-//! the window are deleted, and the window's current blocks are re-emitted —
-//! no block is re-rendered, and the transmitted bytes are bounded by the
-//! window size, independent of how much history exists outside it
-//! (AT-3-503). While follow is disengaged, `apply_revision`'s writes for
-//! new/changed blocks are suppressed (state still updates; see
-//! [`native_stream::StreamSink::set_suppress_writes`]) since they would
-//! land outside the window, and `sync_visible_window` reconciles the screen
-//! afterward instead. `q`/`Ctrl-C` close the viewer. Render failures leave
-//! earlier placements intact (fail closed).
+//! pins that window to the top as answers stream in (content grows downward
+//! from the start); any manual scroll input disengages follow. `Home`
+//! re-engages follow at the top; `End`/`F` jump to the newest content at
+//! the bottom (AT-3-502). A window change syncs the terminal from cached
+//! PNGs (see [`native_stream::StreamSink::sync_window`]): placements that
+//! left the window are deleted, and the window's current blocks are
+//! re-emitted from the content home row — no block is re-rendered, and the
+//! transmitted bytes are bounded by the window size, independent of how
+//! much history exists outside it (AT-3-503). Terminal writes during
+//! `apply_revision` are always suppressed; `sync_visible_window` reconciles
+//! the screen after every revision (see
+//! [`native_stream::StreamSink::set_suppress_writes`]). `q`/`Ctrl-C` close
+//! the viewer. Render failures leave earlier placements intact (fail closed).
 //!
 //! Retained PNGs are bounded (AT-3-504): every `render_and_place` call
 //! evicts blocks more than `Limits::retained_window_blocks` positions
-//! outside the current visibility window, unconditionally — not only on the
-//! disengaged-follow/`sync_window` path. This matters because while
-//! following, `sync_window` is never called at all (`apply_revision` streams
-//! straight to the pane bottom, and the window is always the tail), so a
-//! mainline streamed session with follow engaged the whole time is exactly
-//! where eviction needs to run on every append, or a long session would
-//! retain every block's PNG forever. The block's state (id, rows, source
-//! text) is kept regardless of eviction — only the rendered bytes are
-//! dropped — so memory stays flat across a long session even as
-//! `planner`/`block_sources` keep growing. Scrolling back onto an evicted
-//! block restores it (`restore_missing_pngs`/`restore_png_for_id`) via a
+//! outside the current visibility window, unconditionally — on every
+//! append via the shared `sync_visible_window` path. The block's state
+//! (id, rows, source text) is kept regardless of eviction — only the
+//! rendered bytes are dropped — so memory stays flat across a long session
+//! even as `planner`/`block_sources` keep growing. Scrolling back onto an
+//! evicted block restores it (`restore_missing_pngs`/`restore_png_for_id`) via a
 //! `RenderCache` content-hash hit or, failing that, a real re-render from
 //! the retained source — never by re-fetching from the watcher. A restore
 //! failure leaves that one block showing nothing rather than disturbing the
@@ -78,7 +73,7 @@ use tmath_render::{
     Block, CacheBudget, Limits, PlacementPlanner, RenderCache, RenderOptions, StreamSplitter,
 };
 
-use crate::native_stream::{self, EmitOutcome, StatusBarState, StreamSink};
+use crate::native_stream::{self, StatusBarState, StreamSink};
 use crate::viewer_viewport::{self, Viewport};
 
 const CONNECT_RETRIES: u32 = 50;
@@ -550,9 +545,9 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
             }
         }
 
-        // Terminal input: `q`/Ctrl-C close the viewer. `End`/`F` re-engage
-        // follow and jump the viewport to the bottom; a wheel notch is
-        // COALESCED into `pending_wheel_rows` rather than moving the
+        // Terminal input: `q`/Ctrl-C close the viewer. `End`/`F` jump to
+        // the bottom and disengage follow; `Home` re-engages follow at the
+        // top. A wheel notch is COALESCED into `pending_wheel_rows` rather than moving the
         // viewport immediately (stage 2: momentum takes over the actual
         // motion, applied once per tick below, so several notches arriving
         // in the same 40ms read are summed into one impulse instead of each
@@ -607,8 +602,8 @@ fn run_viewer_loop(viewer: &mut Viewer) -> Result<i32, String> {
     }
 }
 
-/// Routes one decoded input event (AT-3-502): `End`/`F` re-engage follow,
-/// jump to the bottom, and cancel any in-flight momentum. A wheel notch
+/// Routes one decoded input event (AT-3-502): `End`/`F` jump to the bottom
+/// and disengage follow, canceling any in-flight momentum. A wheel notch
 /// (`ScrollUp`/`ScrollDown`) is coalesced into `pending_wheel_rows` for
 /// `apply_momentum_tick` to pick up this tick — it does NOT move the
 /// viewport or disengage follow itself; that happens once, from the
@@ -631,6 +626,25 @@ fn handle_scroll_input(
     use tmath_core::mouse::{Key, MouseKind};
 
     if let Event::Key(KeyEvent {
+        key: Key::Home,
+        ctrl: false,
+        ..
+    }) = event
+    {
+        let following_before = viewer.viewport.following();
+        let before = viewer.viewport.offset();
+        viewer.viewport.jump_to_top_and_follow();
+        viewer.momentum.cancel();
+        viewer.pending_wheel_rows = 0.0;
+        viewer.momentum_remainder = 0.0;
+        let moved = viewer.viewport.offset() != before;
+        let follow_changed = viewer.viewport.following() != following_before;
+        log_follow_change(viewer, follow_changed, event);
+        finish_scroll_step(viewer, moved, follow_changed)?;
+        return Ok(());
+    }
+
+    if let Event::Key(KeyEvent {
         key: Key::End,
         ctrl: false,
         ..
@@ -643,7 +657,7 @@ fn handle_scroll_input(
     {
         let following_before = viewer.viewport.following();
         let before = viewer.viewport.offset();
-        viewer.viewport.jump_to_bottom_and_follow();
+        viewer.viewport.jump_to_bottom();
         viewer.momentum.cancel();
         viewer.pending_wheel_rows = 0.0;
         viewer.momentum_remainder = 0.0;
@@ -666,15 +680,13 @@ fn handle_scroll_input(
                 // `scroll_by(0.0)` clamps the CURRENT offset against the
                 // CURRENT max and re-derives follow from where that lands
                 // (see `Viewport::scroll_by`'s doc comment): while already
-                // at the bottom this is a genuine no-op (follow stays
-                // engaged, matching the coordinator's fix — a wheel-down
-                // notch at the tail must never disengage follow), and while
-                // scrolled up it correctly keeps follow disengaged. The
-                // actual offset MOVE (if any) still happens on the next
-                // tick via the coalesced impulse; this call exists only to
-                // react to a follow-state change immediately, so the status
-                // bar and diagnostic log update on the same input rather
-                // than one tick later.
+                // at the top this is a genuine no-op (follow stays
+                // engaged), and while scrolled down it correctly keeps
+                // follow disengaged. The actual offset MOVE (if any) still
+                // happens on the next tick via the coalesced impulse; this
+                // call exists only to react to a follow-state change
+                // immediately, so the status bar and diagnostic log update
+                // on the same input rather than one tick later.
                 let moved = viewer.viewport.scroll_by(0.0);
                 let follow_changed = viewer.viewport.following() != following_before;
                 log_follow_change(viewer, follow_changed, event);
@@ -734,22 +746,22 @@ fn handle_scroll_input(
 /// the notch into `pending_wheel_rows` for this function to pick up. So while
 /// following is still true the very first time this function's own
 /// `scroll_by(whole_rows)` call below actually moves the offset off the
-/// bottom, and that first tick is exactly where the true→false transition
+/// top, and that first tick is exactly where the true→false transition
 /// becomes visible: it must be treated like any other follow-changing step
 /// (status bar redraw, scrollbar shown), not silently deferred to whatever
 /// follow-changing step happens to run next.
 ///
-/// Momentum CAN also carry the window back onto the bottom mid-decay
-/// (scrolling down toward the tail while a flick is still running) — this
-/// is the sister false→true transition, unlike a jump: `Viewport::scroll_by`
-/// re-engages follow the instant `scroll_by`'s result lands on
-/// `max_offset()` (the coordinator's fix), so a momentum tick must react to
-/// it exactly like any other follow-changing step: cancel the now-stale
-/// momentum and pending impulse (continuing to "coast" past the bottom
-/// under decaying velocity would fight the re-pin), hide the scrollbar
-/// immediately (a thumb position is meaningless while following, same as
-/// the End/F path), and log the transition with its own distinct cause so
-/// it reads differently from an explicit End/F/keyboard jump in the log.
+/// Momentum CAN also carry the window back onto the top mid-decay
+/// (scrolling up toward the document start while a flick is still running)
+/// — this is the sister false→true transition: `Viewport::scroll_by`
+/// re-engages follow the instant `scroll_by`'s result lands on offset `0`,
+/// so a momentum tick must react to it exactly like any other
+/// follow-changing step: cancel the now-stale momentum and pending impulse
+/// (continuing to "coast" past the top under decaying velocity would fight
+/// the re-pin), hide the scrollbar immediately (a thumb position is
+/// meaningless while following, same as the Home path), and log the
+/// transition with its own distinct cause so it reads differently from an
+/// explicit Home/keyboard jump in the log.
 fn apply_momentum_tick(viewer: &mut Viewer) -> Result<(), String> {
     if viewer.pending_wheel_rows != 0.0 {
         viewer
@@ -777,34 +789,34 @@ fn apply_momentum_tick(viewer: &mut Viewer) -> Result<(), String> {
     let following_before = viewer.viewport.following();
     let moved = viewer.viewport.scroll_by(whole_rows);
     if viewer.viewport.following() && !following_before {
-        // Momentum carried the window back onto the bottom: this IS a real
+        // Momentum carried the window back onto the top: this IS a real
         // follow transition (re-pin), not the "always false" case the rest
         // of this function's per-tick machinery assumes. Stop the decay
         // outright rather than let it keep nudging a now-re-pinned window,
-        // and reconcile everything a discrete re-engage (End/F) already
+        // and reconcile everything a discrete re-engage (Home) already
         // resets.
         viewer.momentum.cancel();
         viewer.pending_wheel_rows = 0.0;
         viewer.momentum_remainder = 0.0;
-        log_follow_change_with_cause(viewer, true, "momentum-bottom");
+        log_follow_change_with_cause(viewer, true, "momentum-top");
         finish_scroll_step(viewer, moved, true)?;
         return Ok(());
     }
     if following_before && !viewer.viewport.following() {
         // The sister transition of the branch above: `handle_scroll_input`'s
         // immediate wheel path only clamps (`scroll_by(0.0)`), so the first
-        // actual offset move off the bottom happens right here, on this
-        // tick's `scroll_by(whole_rows)` call — this is where a wheel-up
-        // notch's follow-disengage really becomes visible, not somewhere the
-        // per-tick "always false" assumption below can cover. Route through
-        // the same shared tail every other follow-changing step already
-        // uses (`finish_scroll_step`) rather than `finish_momentum_step`'s
+        // actual offset move off the top happens right here, on this tick's
+        // `scroll_by(whole_rows)` call — this is where a wheel-down notch's
+        // follow-disengage really becomes visible, not somewhere the per-tick
+        // "always false" assumption below can cover. Route through the same
+        // shared tail every other follow-changing step already uses
+        // (`finish_scroll_step`) rather than `finish_momentum_step`'s
         // incremental-only path, so the status bar's following/scrolled word
         // and the scrollbar both update on this exact tick instead of
         // silently waiting for a later transition (e.g. the next
-        // `momentum-bottom` re-pin, or a keyboard jump) to happen to redraw
+        // `momentum-top` re-pin, or a keyboard jump) to happen to redraw
         // them.
-        log_follow_change_with_cause(viewer, true, "momentum-off-bottom");
+        log_follow_change_with_cause(viewer, true, "momentum-off-top");
         finish_scroll_step(viewer, moved, true)?;
         return Ok(());
     }
@@ -992,9 +1004,8 @@ fn describe_input_kind(event: &tmath_core::input::Event) -> &'static str {
 /// otherwise move the window's content (e.g. already clamped at an edge)
 /// still needs its own explicit redraw here. Also updates stage 2's
 /// scrollbar: shown (and its auto-hide deadline reset) on any `moved` step
-/// while disengaged, hidden immediately on re-engaging follow (End/F) —
-/// a thumb position is not a meaningful thing to show while pinned to the
-/// tail, so this does not wait for the auto-hide timer in that case.
+/// while disengaged, hidden immediately on re-engaging follow at the top
+/// (`Home`) — a thumb position is not meaningful while pinned to the top.
 fn finish_scroll_step(
     viewer: &mut Viewer,
     moved: bool,
@@ -1323,22 +1334,16 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         }
     };
 
-    // While follow is disengaged, new/changed blocks land outside the
-    // reader's visible window (new content only ever appends at the bottom;
-    // an edited block that happens to be inside the window is still covered
-    // because `sync_visible_window` below re-emits the whole window, not
-    // just what changed). Suppressing terminal writes here means
-    // `apply_revision` still updates all placement state (ids, hashes, the
-    // render cache, retained PNGs) exactly as it would streaming — only the
-    // terminal bytes are skipped, so the pane is not disturbed by output the
-    // reader cannot currently see. `sync_visible_window` afterward is what
-    // actually reconciles the screen, and its cost is bounded by the window
-    // size (AT-3-503), not by how much history changed.
-    viewer
-        .sink
-        .set_suppress_writes(!viewer.viewport.following());
-    let suppress_writes = !viewer.viewport.following();
-    let outcome = match native_stream::apply_revision(
+    // While follow is engaged, new/changed blocks may land outside the
+    // reader's visible window (new content appends below a top-pinned
+    // window once the document exceeds the pane). Suppressing terminal
+    // writes during `apply_revision` means placement state (ids, hashes,
+    // render cache, retained PNGs) still updates exactly as it would
+    // streaming — only the terminal bytes are skipped. `sync_visible_window`
+    // afterward reconciles the screen from cached PNGs, bounded by the window
+    // size (AT-3-503), not by history length.
+    viewer.sink.set_suppress_writes(true);
+    let _outcome = match native_stream::apply_revision(
         &revision,
         &viewer.options,
         &mut viewer.cache,
@@ -1357,44 +1362,22 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         }
     };
     viewer.sink.set_suppress_writes(false);
-    if !suppress_writes {
-        record_emission_success(viewer);
-    }
     // Keep the source text in step with `planner.blocks()` (same order and
     // length) so a later scroll-back restore can re-render any block whose
     // retained PNG was evicted. See the `block_sources` field doc.
     viewer.block_sources = revision.blocks;
 
     // Feed the new block heights into the viewport: while follow is engaged
-    // the window re-pins to the bottom, matching what `apply_revision` just
-    // streamed directly, so no extra sync is needed. While disengaged, the
-    // offset is deliberately left as-is per AT-3-502, and the writes above
-    // were suppressed, so the screen is still showing the reader's prior
-    // window — `sync_visible_window` reconciles it against the (possibly
-    // now-different) window contents using only cached PNGs.
+    // the window re-pins to the top; while disengaged the offset is
+    // deliberately left as-is per AT-3-502.
     viewer.viewport.set_block_heights(block_heights(viewer));
     // AT-3-504: evict retained PNGs outside the window ± budget on every
-    // append, regardless of follow state. While following, `sync_window` is
-    // never called (`apply_revision` streams straight to the pane bottom,
-    // and the viewport window is always the tail), so this is the only
-    // place a mainline follow session ever trims history — without it, a
-    // long streamed session would retain every block's PNG forever. The
-    // disengaged path below also evicts inside `sync_window`; running both
-    // is idempotent (eviction only ever empties an already-out-of-window
-    // PNG), so no branching is needed here.
+    // append. The sync path below is what redraws the visible window.
     let visible = viewer.viewport.visible_blocks();
     viewer
         .sink
         .evict_outside_window(visible.first..visible.last_exclusive);
-    // `NeedsWindowSync` (the clamp-aware fallback, PART 1) always needs a
-    // full window resync regardless of follow state: `apply_revision`
-    // wrote NOTHING to the terminal for that revision (the relative
-    // cursor-up would have clamped and ghosted), so even a following
-    // session's screen is now stale and must be redrawn from an absolute
-    // `\x1b[H`, exactly like the disengaged-follow path already does.
-    if !viewer.viewport.following() || outcome == EmitOutcome::NeedsWindowSync {
-        sync_visible_window(viewer)?;
-    }
+    sync_visible_window(viewer)?;
     viewer.blocks_placed = viewer.planner.blocks().len();
     // Redraw the status bar's block count every time it can have changed —
     // `sync_visible_window` above already redraws content, but never row 1
@@ -1502,60 +1485,7 @@ mod tests {
     }
 
     #[test]
-    fn follow_disengages_on_scroll_and_reengages_on_end_or_shift_f() {
-        // Button 64 = scroll UP (backward) — the notch that actually moves
-        // the window OFF the bottom, so it is the one that must disengage
-        // follow. Button 65 (scroll DOWN) at the tail is exactly the
-        // coordinator's fix case: it must NOT disengage follow, since the
-        // offset never leaves the bottom — covered by its own dedicated
-        // test (`wheel_down_at_the_tail_never_disengages_follow`) rather
-        // than here, to keep this test's scroll-then-reengage narrative
-        // using the notch that genuinely moves.
-        let mut decoder = InputDecoder::new();
-        decoder.push(b"\x1b[<64;10;20M");
-        let wheel_up = decoder.next_event().expect("wheel event");
-
-        // A tall viewport in rows relative to the content built below leaves
-        // scroll_delta's clamp with room to move, so the assertions exercise
-        // the follow flag transition rather than getting clamped to 0 either
-        // way.
-        let mut viewer = test_viewer(5);
-        viewer.viewport.set_block_heights(vec![50]);
-        assert!(viewer.viewport.following());
-        handle_scroll_input(&mut viewer, &wheel_up).expect("handle_scroll_input failed");
-        for _ in 0..5 {
-            apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
-            // let the coalesced impulse actually move the offset
-        }
-        assert!(
-            !viewer.viewport.following(),
-            "manual scroll off the bottom disengages follow"
-        );
-
-        let mut decoder = InputDecoder::new();
-        decoder.push(b"\x1b[4~");
-        let end = decoder.next_event().expect("end key");
-        handle_scroll_input(&mut viewer, &end).expect("handle_scroll_input failed");
-        assert!(viewer.viewport.following(), "End re-engages follow");
-
-        handle_scroll_input(&mut viewer, &wheel_up).expect("handle_scroll_input failed");
-        for _ in 0..5 {
-            apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
-        }
-        assert!(!viewer.viewport.following());
-        let mut decoder = InputDecoder::new();
-        decoder.push(b"F");
-        let shift_f = decoder.next_event().expect("F key");
-        handle_scroll_input(&mut viewer, &shift_f).expect("handle_scroll_input failed");
-        assert!(viewer.viewport.following(), "F re-engages follow");
-    }
-
-    /// The coordinator's fix, case (a), through the exact SGR byte path a
-    /// live pointer hover would produce: a scroll-DOWN notch while already
-    /// following at the tail must never disengage follow or flip the
-    /// status word — this was the "spontaneous follow=false" mechanism.
-    #[test]
-    fn wheel_down_at_the_tail_never_disengages_follow() {
+    fn follow_disengages_on_scroll_and_home_reengages_follow() {
         let mut decoder = InputDecoder::new();
         decoder.push(b"\x1b[<65;10;20M");
         let wheel_down = decoder.next_event().expect("wheel event");
@@ -1564,16 +1494,50 @@ mod tests {
         viewer.viewport.set_block_heights(vec![50]);
         assert!(viewer.viewport.following());
         handle_scroll_input(&mut viewer, &wheel_down).expect("handle_scroll_input failed");
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
+        }
+        assert!(
+            !viewer.viewport.following(),
+            "manual scroll off the top disengages follow"
+        );
+
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[1~");
+        let home = decoder.next_event().expect("home key");
+        handle_scroll_input(&mut viewer, &home).expect("handle_scroll_input failed");
+        assert!(viewer.viewport.following(), "Home re-engages follow");
+        assert_eq!(viewer.viewport.offset(), 0);
+
+        handle_scroll_input(&mut viewer, &wheel_down).expect("handle_scroll_input failed");
+        for _ in 0..5 {
+            apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
+        }
+        assert!(!viewer.viewport.following());
+    }
+
+    /// A scroll-UP notch while already following at the top must never
+    /// disengage follow — the offset never leaves zero.
+    #[test]
+    fn wheel_up_at_the_top_never_disengages_follow() {
+        let mut decoder = InputDecoder::new();
+        decoder.push(b"\x1b[<64;10;20M");
+        let wheel_up = decoder.next_event().expect("wheel event");
+
+        let mut viewer = test_viewer(5);
+        viewer.viewport.set_block_heights(vec![50]);
+        assert!(viewer.viewport.following());
+        handle_scroll_input(&mut viewer, &wheel_up).expect("handle_scroll_input failed");
         assert!(
             viewer.viewport.following(),
-            "a down-notch at the tail must not disengage follow"
+            "an up-notch at the top must not disengage follow"
         );
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         }
         assert!(
             viewer.viewport.following(),
-            "still following after the tick — there was never anywhere to move"
+            "still following after the tick — there was nowhere to move"
         );
     }
 
@@ -1599,17 +1563,7 @@ mod tests {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![50]);
         let before_offset = viewer.viewport.offset();
-        // An UP notch (backward, away from the tail) — the notch that
-        // ACTUALLY moves the window once its tick applies, unlike a
-        // DOWN notch at the tail (covered by its own dedicated test,
-        // `wheel_down_at_the_tail_never_disengages_follow`, which must
-        // never disengage at all).
-        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
-        // `Viewport::scroll_by`'s re-pin-at-bottom rule (the coordinator's
-        // fix) means `handle_scroll_input`'s immediate `scroll_by(0.0)`
-        // reaction does NOT yet disengage follow here: the offset has not
-        // actually moved off the bottom yet (that happens on the next
-        // momentum tick), so follow correctly stays engaged until it does.
+        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
         assert!(
             viewer.viewport.following(),
             "follow must not disengage before the offset actually moves"
@@ -1624,14 +1578,12 @@ mod tests {
             "the notch must be coalesced into the pending impulse"
         );
 
-        // Once the tick actually applies the impulse and the offset moves
-        // off the bottom, follow disengages.
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         }
         assert!(
             !viewer.viewport.following(),
-            "follow disengages once the offset has genuinely left the bottom"
+            "follow disengages once the offset has genuinely left the top"
         );
     }
 
@@ -1642,7 +1594,7 @@ mod tests {
     #[test]
     fn multiple_same_tick_wheel_notches_coalesce_into_one_pending_impulse() {
         let mut viewer = test_viewer(5);
-        viewer.viewport.set_block_heights(vec![50]); // follow pins offset to max_offset (45)
+        viewer.viewport.set_block_heights(vec![50]); // follow pins offset to 0
         let start_offset = viewer.viewport.offset();
         handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
         handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
@@ -1682,17 +1634,16 @@ mod tests {
     fn the_momentum_tick_applies_the_coalesced_impulse_to_the_viewport() {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![50]); // max_offset 45
-        viewer.viewport.jump_to_bottom_and_follow();
         let start_offset = viewer.viewport.offset();
-        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed"); // scroll up (backward)
+        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
         assert_eq!(viewer.viewport.offset(), start_offset, "not yet applied");
 
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         }
         assert!(
-            viewer.viewport.offset() < start_offset,
-            "scroll-up must move the offset backward within a few ticks: \
+            viewer.viewport.offset() > start_offset,
+            "scroll-down must move the offset forward within a few ticks: \
              start={start_offset} after={}",
             viewer.viewport.offset()
         );
@@ -1715,27 +1666,25 @@ mod tests {
     #[test]
     fn momentum_continues_moving_across_ticks_with_no_further_input() {
         let mut viewer = test_viewer(5);
-        viewer.viewport.set_block_heights(vec![200]); // plenty of room to move
-        viewer.viewport.jump_to_bottom_and_follow();
+        viewer.viewport.set_block_heights(vec![200]);
         let start_offset = viewer.viewport.offset();
-        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
+        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
 
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         }
         let after_five_ticks = viewer.viewport.offset();
         assert!(
-            after_five_ticks < start_offset,
+            after_five_ticks > start_offset,
             "momentum must have moved the offset within 5 ticks: \
              start={start_offset} after_five={after_five_ticks}"
         );
 
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
-            // five MORE ticks, no new input
         }
         assert!(
-            viewer.viewport.offset() < after_five_ticks,
+            viewer.viewport.offset() > after_five_ticks,
             "momentum must keep moving the offset across ticks with no new \
              wheel input: after_five={after_five_ticks} after_ten={}",
             viewer.viewport.offset()
@@ -1748,9 +1697,8 @@ mod tests {
     #[test]
     fn momentum_eventually_settles_and_stops_moving_the_viewport() {
         let mut viewer = test_viewer(5);
-        viewer.viewport.set_block_heights(vec![10_000]); // never clamps mid-flight
-        viewer.viewport.jump_to_bottom_and_follow();
-        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
+        viewer.viewport.set_block_heights(vec![10_000]);
+        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
         // `momentum.settled()` reflects `Momentum`'s OWN velocity, which
         // only receives this tick's coalesced `pending_wheel_rows` inside
         // `apply_momentum_tick` itself — right after `handle_scroll_input`
@@ -1778,14 +1726,12 @@ mod tests {
     }
 
     /// End cancels in-flight momentum cleanly: a flick in progress must not
-    /// keep nudging the offset after End jumped to the tail and re-engaged
-    /// follow — that would visibly fight the jump.
+    /// keep nudging the offset after End jumped to the bottom.
     #[test]
     fn end_cancels_in_flight_momentum() {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![200]);
-        viewer.viewport.jump_to_bottom_and_follow();
-        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
+        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
         apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         assert!(
             !viewer.momentum.settled(),
@@ -1802,7 +1748,7 @@ mod tests {
             "End must cancel in-flight momentum"
         );
         assert_eq!(viewer.pending_wheel_rows, 0.0);
-        assert!(viewer.viewport.following());
+        assert!(!viewer.viewport.following());
         let offset_at_end = viewer.viewport.offset();
         apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         assert_eq!(
@@ -1818,7 +1764,7 @@ mod tests {
     fn home_cancels_in_flight_momentum() {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![200]);
-        viewer.viewport.jump_to_bottom_and_follow();
+        viewer.viewport.jump_to_bottom();
         handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
         apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         assert!(!viewer.momentum.settled());
@@ -1833,36 +1779,23 @@ mod tests {
             "Home must cancel in-flight momentum"
         );
         assert_eq!(viewer.viewport.offset(), 0, "Home jumps to the very top");
+        assert!(viewer.viewport.following(), "Home re-engages follow");
     }
 
-    /// Case (c) of the coordinator's fix: momentum decay that carries the
-    /// window back onto the bottom must re-engage follow (not just leave it
-    /// disengaged at `offset == max_offset` by coincidence), cancel the
-    /// now-stale momentum/pending state cleanly (so a later tick cannot
-    /// "coast" past the bottom), and hide the scrollbar immediately — the
-    /// same reconciliation End/F already does, but triggered by decay
-    /// alone, with no keyboard input at all.
+    /// Momentum decay that carries the window back onto the top must
+    /// re-engage follow, cancel stale momentum, and hide the scrollbar.
     #[test]
-    fn momentum_decay_reaching_the_bottom_reengages_follow_and_cancels_cleanly() {
+    fn momentum_decay_reaching_the_top_reengages_follow_and_cancels_cleanly() {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![50]); // max_offset 45
-        viewer.viewport.jump_to_bottom_and_follow();
 
-        // Scroll up just 2 rows (small, deliberately close to the bottom)
-        // so momentum's own decay — with no further wheel input — is
-        // enough to carry it back down to max_offset within a handful of
-        // ticks.
-        assert!(viewer.viewport.scroll_by(-2.0));
+        assert!(viewer.viewport.scroll_by(1.0));
         assert!(!viewer.viewport.following());
-        assert_eq!(viewer.viewport.offset(), 43);
+        assert_eq!(viewer.viewport.offset(), 1);
 
-        // A down notch's momentum, ticked repeatedly with no further
-        // input, must eventually clamp back to 45 (the bottom) and,
-        // because `Viewport::scroll_by` now re-derives follow from the
-        // RESULT, that exact tick must re-engage follow.
-        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed"); // scroll down
+        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
         let mut reengaged = false;
-        for _ in 0..200 {
+        for _ in 0..500 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
             if viewer.viewport.following() {
                 reengaged = true;
@@ -1871,30 +1804,21 @@ mod tests {
         }
         assert!(
             reengaged,
-            "momentum decay must eventually re-engage follow once it reaches the bottom"
+            "momentum decay must eventually re-engage follow once it reaches the top"
         );
-        assert_eq!(
-            viewer.viewport.offset(),
-            45,
-            "settled exactly at the bottom"
-        );
+        assert_eq!(viewer.viewport.offset(), 0, "settled exactly at the top");
 
-        // Reconciliation: momentum/pending state must be cancelled, not
-        // left to keep decaying past the bottom.
         assert!(
             viewer.momentum.settled(),
-            "momentum must be cancelled once it carries the window back to the bottom"
+            "momentum must be cancelled once it carries the window back to the top"
         );
         assert_eq!(viewer.pending_wheel_rows, 0.0);
         assert_eq!(viewer.momentum_remainder, 0.0);
         assert!(
             viewer.scrollbar_visible_until.is_none(),
-            "the scrollbar must be hidden immediately on the momentum re-engage, \
-             the same as an explicit End/F"
+            "the scrollbar must be hidden immediately on the momentum re-engage"
         );
 
-        // A further tick must not move the offset at all — no residual
-        // "coast past the bottom".
         let offset_at_reengage = viewer.viewport.offset();
         apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         assert_eq!(viewer.viewport.offset(), offset_at_reengage);
@@ -1908,21 +1832,16 @@ mod tests {
     /// `finish_momentum_step`, which never calls `redraw_status_bar` — so
     /// row 1 kept reading "following" until unrelated new content arrived.
     /// This is the sister case of
-    /// `momentum_decay_reaching_the_bottom_reengages_follow_and_cancels_cleanly`,
+    /// `momentum_decay_reaching_the_top_reengages_follow_and_cancels_cleanly`,
     /// which already covers the opposite (false→true) transition.
     #[test]
-    fn a_wheel_up_momentum_tick_redraws_the_status_bar_the_moment_it_disengages_follow() {
+    fn a_wheel_down_momentum_tick_redraws_the_status_bar_the_moment_it_disengages_follow() {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![50]);
-        viewer.viewport.jump_to_bottom_and_follow();
         assert!(viewer.viewport.following());
         let redraws_before = viewer.status_bar_redraws;
 
-        // Scroll up. `handle_scroll_input`'s own immediate `scroll_by(0.0)`
-        // clamp must not have moved anything or changed follow yet — it
-        // only coalesces into `pending_wheel_rows` for the tick below to
-        // apply.
-        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
+        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
         assert!(viewer.viewport.following());
         assert_eq!(
             viewer.status_bar_redraws, redraws_before,
@@ -1930,11 +1849,6 @@ mod tests {
              the status bar on its own"
         );
 
-        // The decaying tail can take a few ticks to cross an integer row
-        // boundary (see `Viewer::momentum_remainder`'s field doc), so drive
-        // ticks — like `follow_disengages_on_scroll_and_reengages_on_end_or_
-        // shift_f` does — until the disengage actually happens, then assert
-        // the redraw landed on that exact tick rather than being deferred.
         let mut disengaged_tick = None;
         for tick in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
@@ -1950,13 +1864,12 @@ mod tests {
         }
         assert!(
             disengaged_tick.is_some(),
-            "momentum must eventually move the offset off the bottom within 5 ticks"
+            "momentum must eventually move the offset off the top within 5 ticks"
         );
         assert_eq!(
             viewer.status_bar_redraws,
             redraws_before + 1,
-            "the status bar must redraw on the exact tick follow disengages, \
-             not on some later unrelated redraw"
+            "the status bar must redraw on the exact tick follow disengages"
         );
     }
 
@@ -1971,7 +1884,7 @@ mod tests {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![50]);
         assert!(viewer.scrollbar_visible_until.is_none());
-        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
+        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         }
@@ -1981,27 +1894,24 @@ mod tests {
         );
     }
 
-    /// Re-engaging follow (End/F) hides the scrollbar immediately, without
-    /// waiting for the auto-hide timer — a thumb position is meaningless
-    /// while pinned to the tail.
+    /// Home hides the scrollbar immediately when re-engaging follow at the top.
     #[test]
-    fn end_hides_the_scrollbar_immediately() {
+    fn home_hides_the_scrollbar_immediately() {
         let mut viewer = test_viewer(5);
         viewer.viewport.set_block_heights(vec![200]);
-        viewer.viewport.jump_to_bottom_and_follow();
-        handle_scroll_input(&mut viewer, &wheel_event(false)).expect("handle_scroll_input failed");
+        handle_scroll_input(&mut viewer, &wheel_event(true)).expect("handle_scroll_input failed");
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         }
         assert!(viewer.scrollbar_visible_until.is_some());
 
         let mut decoder = InputDecoder::new();
-        decoder.push(b"\x1b[4~");
-        let end = decoder.next_event().expect("end key");
-        handle_scroll_input(&mut viewer, &end).expect("handle_scroll_input failed");
+        decoder.push(b"\x1b[1~");
+        let home = decoder.next_event().expect("home key");
+        handle_scroll_input(&mut viewer, &home).expect("handle_scroll_input failed");
         assert!(
             viewer.scrollbar_visible_until.is_none(),
-            "End must hide the scrollbar immediately, not defer to the timer"
+            "Home must hide the scrollbar immediately, not defer to the timer"
         );
     }
 
@@ -2127,16 +2037,16 @@ mod tests {
     }
 
     /// AT-3-502: while follow is engaged, an appended block keeps the
-    /// viewport pinned to the bottom (the newest block stays visible).
+    /// viewport pinned to the top (content grows downward from the start).
     #[test]
-    fn append_while_following_keeps_the_viewport_pinned_to_the_tail() {
+    fn append_while_following_keeps_the_viewport_pinned_to_the_top() {
         let mut viewer = test_viewer(2);
         render_and_place(&mut viewer, "One.\n\n").unwrap();
         assert!(viewer.viewport.following());
         assert_eq!(
             viewer.viewport.offset(),
-            viewer.viewport.max_offset(),
-            "follow keeps the window pinned to the bottom after the first block"
+            0,
+            "follow keeps the window pinned to the top after the first block"
         );
 
         render_and_place(&mut viewer, "One.\n\nTwo.\n\nThree.\n\n").unwrap();
@@ -2146,8 +2056,8 @@ mod tests {
         );
         assert_eq!(
             viewer.viewport.offset(),
-            viewer.viewport.max_offset(),
-            "follow re-pins to the bottom as blocks are appended"
+            0,
+            "follow keeps pinning to the top as blocks are appended"
         );
     }
 
@@ -2184,8 +2094,8 @@ mod tests {
         );
         assert_eq!(
             viewer.viewport.offset(),
-            viewer.viewport.max_offset(),
-            "follow keeps the window pinned to the tail across the whole sequence"
+            0,
+            "follow keeps the window pinned to the top across the whole sequence"
         );
     }
 
@@ -2353,14 +2263,9 @@ mod tests {
         assert!(viewer.viewport.following());
 
         let mut decoder = InputDecoder::new();
-        decoder.push(b"\x1b[<64;10;20M"); // wheel up
-        let wheel_up = decoder.next_event().expect("wheel event");
-        handle_scroll_input(&mut viewer, &wheel_up).expect("handle_scroll_input failed");
-        // The immediate reaction only re-derives follow from the (still
-        // unmoved) offset — see `Viewport::scroll_by`'s re-pin-at-bottom
-        // rule — so disengage only becomes visible once a tick actually
-        // applies the coalesced impulse and moves the offset off the
-        // bottom.
+        decoder.push(b"\x1b[<65;10;20M"); // wheel down
+        let wheel_down = decoder.next_event().expect("wheel event");
+        handle_scroll_input(&mut viewer, &wheel_down).expect("handle_scroll_input failed");
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         }
@@ -2382,23 +2287,19 @@ mod tests {
         );
     }
 
-    /// AT-3-503: `render_and_place` suppresses terminal writes while follow
-    /// is disengaged (visibility-gated emission), but placement *state* must
-    /// still update exactly as if writes were not suppressed — the planner's
-    /// block list, ids, and viewport heights all reflect the new document,
-    /// so re-engaging follow (`End`) immediately shows the correct tail
-    /// without needing another `render_and_place` call.
+    /// AT-3-503: `render_and_place` suppresses streaming writes and reconciles
+    /// through `sync_visible_window`, but placement *state* must still update
+    /// on every revision — so re-engaging follow (`Home`) immediately shows
+    /// the up-to-date document from the top without another render call.
     #[test]
     fn append_while_disengaged_still_updates_state_for_the_next_sync() {
         let mut viewer = test_viewer(2);
         render_and_place(&mut viewer, "One.\n\nTwo.\n\n").unwrap();
 
         let mut decoder = InputDecoder::new();
-        decoder.push(b"\x1b[<64;10;20M"); // wheel up
-        let wheel_up = decoder.next_event().expect("wheel event");
-        handle_scroll_input(&mut viewer, &wheel_up).expect("handle_scroll_input failed");
-        // See the sibling test's comment: disengage only becomes visible
-        // once a tick actually moves the offset off the bottom.
+        decoder.push(b"\x1b[<65;10;20M"); // wheel down
+        let wheel_down = decoder.next_event().expect("wheel event");
+        handle_scroll_input(&mut viewer, &wheel_down).expect("handle_scroll_input failed");
         for _ in 0..5 {
             apply_momentum_tick(&mut viewer).expect("apply_momentum_tick failed");
         }
@@ -2409,24 +2310,22 @@ mod tests {
         assert_eq!(
             viewer.planner.blocks().len(),
             4,
-            "the planner's block state reflects the new document even though \
-             the writes for it were suppressed"
+            "the planner's block state reflects the new document"
         );
         assert!(
             viewer.viewport.total_rows() > rows_before,
-            "viewport heights grow from the updated planner state (two new \
-             blocks), not skipped alongside the writes"
+            "viewport heights grow from the updated planner state"
         );
 
         let mut decoder = InputDecoder::new();
-        decoder.push(b"\x1b[4~");
-        let end = decoder.next_event().expect("end key");
-        handle_scroll_input(&mut viewer, &end).expect("handle_scroll_input failed");
-        assert!(viewer.viewport.following(), "End re-engages follow");
+        decoder.push(b"\x1b[1~");
+        let home = decoder.next_event().expect("home key");
+        handle_scroll_input(&mut viewer, &home).expect("handle_scroll_input failed");
+        assert!(viewer.viewport.following(), "Home re-engages follow");
         assert_eq!(
             viewer.viewport.offset(),
-            viewer.viewport.max_offset(),
-            "re-engaging follow jumps straight to the up-to-date tail"
+            0,
+            "re-engaging follow jumps straight to the up-to-date top"
         );
     }
 
