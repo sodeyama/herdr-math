@@ -166,8 +166,9 @@ tmath agent-allowed     # check (silent; exit code only)
 
 Once a directory is allowlisted, running `claude` (or another wrapped command) there
 starts a watcher in the background for that pane — inside tmux, in the current pane;
-outside tmux with an interactive terminal, in a new two-pane tmux session (agent pane +
-watcher pane) that gets attached automatically. Non-interactive invocations (pipes,
+outside tmux with an interactive terminal, in a new tmux session that gets attached
+automatically (the watcher runs in the background and opens only its viewer pane).
+Non-interactive invocations (pipes,
 redirects) always pass through untouched, and a broken `tmath` on `PATH` produces one
 warning line (`agent-allowed failed (exit N)`) and passes through rather than blocking
 your agent.

@@ -65,19 +65,22 @@ and covered by an automated test.
   wrapper's exit status equals the wrapped command's exit status.
 - **AT-R-203** No orphan sessions: when the wrapper created a dedicated tmux
   session (`tmath-$$`) and the wrapped command exits, the session is destroyed
-  within 5 seconds (the watcher pane must not linger on `exec $SHELL`). The
+  within 5 seconds (no pane may linger on `exec $SHELL`). The background
   watcher exits on its own when the source pane no longer exists. Verified
   headless on a private tmux socket.
 
 ## Group 3 — tmux transport gate
 
 - **AT-R-301** Transport env propagation from the wrapper: the
-  `__tmath_start_in_new_tmux_session` path embeds `TMATH_TMUX_TRANSPORT` (and
-  `TMATH_DPR`, `TMATH_DEBUG_LOG` when set in the launching shell) as an
-  explicit `env NAME='value'` prefix on the watcher command line passed to
-  `tmux split-window`, because tmux-spawned commands inherit the tmux server's
-  environment, not the launching shell's. Values are single-quoted with the
-  same quoting helper used for the wrapped command.
+  `__tmath_start_in_new_tmux_session` path starts the watcher as a background
+  process of the launching shell (never as a tmux-spawned pane command), so
+  `TMATH_TMUX_TRANSPORT` (and `TMATH_DPR`, `TMATH_DEBUG_LOG` when set in the
+  launching shell) reach the watcher by ordinary environment inheritance and
+  the new session contains only the wrapped command's pane plus the watcher's
+  own viewer split — no dedicated watcher pane. Verified behaviorally: with
+  `TMATH_TMUX_TRANSPORT=passthrough` exported in the launching shell, a
+  headless (no attached client) launch still reaches `watching %` instead of
+  the fail-closed `no attached client` refusal.
 - **AT-R-302** Distinct refusal diagnostics: the gate in
   `terminal_output.rs::selected_route()` distinguishes and reports:
   - no tmux client attached →
@@ -108,7 +111,8 @@ and covered by an automated test.
   byte-identical before and after the run.
 - **AT-R-402** `scripts/smoke-agent-wrapper-tmux.sh` uses the same private
   socket isolation and cleanup; it additionally asserts AT-R-201/202 with a
-  broken-stub tmath and AT-R-301 (env prefix present on the watcher command).
+  broken-stub tmath and AT-R-301 (background watcher inherits the transport
+  env; no dedicated watcher pane in the session).
 - **AT-R-403** CI runs both smoke scripts on Linux with tmux installed as a
   required job; a FAIL line from either script fails the job.
 

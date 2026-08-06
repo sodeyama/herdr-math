@@ -685,3 +685,19 @@ not part of the `0.2.0` release gate.
 - Acceptance: `AT-2-812`-`AT-2-817` (documented, evidence attached)
 - Evidence: Static, Integration
 - Commit: `test(agent): add allowlist and shell-integration smoke tests`
+
+### T-916: Drop the dedicated watcher pane from the outside-tmux launch
+
+- Scope: `__tmath_start_in_new_tmux_session` creates a single-pane session
+  running the wrapped command and starts the watcher through
+  `__tmath_start_watcher_for_pane` (background process of the launching
+  shell, pane-scoped lock included) instead of `tmux split-window`, so the
+  session shows only the wrapped command plus the watcher's own viewer split
+  — no third pane with watcher logs. `__tmath_env_prefix` is removed:
+  transport env (`TMATH_TMUX_TRANSPORT`, `TMATH_DPR`, `TMATH_DEBUG_LOG`)
+  reaches the watcher by ordinary inheritance. Supersedes the two-pane shape
+  described in T-913.
+- Dependencies: T-913, T-914
+- Acceptance: `AT-2-816`, `AT-R-301`
+- Evidence: Integration (`scripts/smoke-agent-wrapper-tmux.sh`)
+- Commit: `fix(shell): start the outside-tmux watcher without its own pane`

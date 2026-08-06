@@ -6,7 +6,8 @@
 # Kitty-capable outer client), proving the wrapper -> lock -> watcher pipeline.
 # Covers AT-2-815 (passthrough when not allowlisted), AT-2-816 (in-tmux
 # auto-start), AT-2-817 (duplicate watcher prevention with stale-lock reclaim),
-# and AT-R-301 (__tmath_env_prefix transport propagation).
+# and AT-R-301 (outside-tmux launch: background watcher, transport env
+# inheritance, no dedicated watcher pane).
 #
 # `tmath agent` itself fails closed (exits immediately) whenever the outer
 # tmux client is not a verified Kitty-capable terminal (see
@@ -138,47 +139,54 @@ check() {
   fi
 }
 
-# --- AT-R-301/TR-302(b): transport env prefix on the real watcher pane -----
+# --- AT-R-301: outside-tmux launch — background watcher, no dedicated pane -
 # __tmath_start_in_new_tmux_session ends in a blocking `tmux attach`, which
 # fights any tmux client already attached to the pane running this test (it
-# corrupts that pane's display and hangs later assertions). Verify the same
-# `new-session` + `split-window` sequence the function issues, run from a
-# plain (non-pane) subshell against the private socket instead of inside
-# $SRC_PANE, and stop short of the attach call. This still exercises the
-# real tmux binary (via the SHIM_DIR wrapper, resolved to REAL_TMUX by
-# absolute path — see above) and the real __tmath_env_prefix/
-# __tmath_shell_quote_args helpers — only the terminal-taking `attach` step
-# is skipped. PATH is restricted to SHIM_DIR only (no BIN_DIR) so the
-# `tmath agent ...` command embedded in the resulting pane_start_command is
-# never actually invoked here; only its literal text is asserted on.
+# corrupts that pane's display and hangs later assertions). Replicate the
+# function's session-building steps (everything short of the attach) with
+# the real helpers: build the single-pane session, then call
+# __tmath_start_watcher_for_pane exactly as the function does. Passthrough
+# transport is the behavioral probe: headless with no attached client, the
+# watcher reaches `watching %` only if TMATH_TMUX_TRANSPORT was inherited
+# from the launching shell; otherwise it fails closed with the TR-202
+# `no attached client` refusal. A separate wrapper copy logs this watcher to
+# its own file so the AT-2-816/817 attempt counts on $WATCHER_LOG below stay
+# untouched.
 NESTED_SESSION="tmath-probe-$$"
-# `bash -x` trace: this block once failed only on CI, silently — keep the
-# trace so a regression names the exact nested command instead of leaving
-# an empty pane_start_command with no clue.
-PATH="$SHIM_DIR:/usr/bin:/bin" TMATH_TMUX_TRANSPORT=passthrough bash -x -c "
-  source '$WRAPPER'
-  quoted=\$(__tmath_shell_quote_args /bin/sleep 30)
-  tmux new-session -d -s '$NESTED_SESSION' \"\$quoted\"
-  # The split pane's command resolves against the TMUX SERVER's PATH, not
-  # this restricted subshell's. Where no tmath is installed (CI), the pane
-  # command dies instantly and tmux reaps the pane before the assertion
-  # below can read its start command — keep dead panes so the assertion is
-  # about command CONSTRUCTION on every machine, never about whether a
-  # locally installed tmath happened to keep the pane alive.
-  tmux set-option -t '$NESTED_SESSION' -w remain-on-exit on
-  agent_pane=\$(tmux list-panes -t '$NESTED_SESSION' -F '#{pane_id}' | head -1)
-  env_prefix=\$(__tmath_env_prefix)
-  tmux split-window -h -p 35 -t '$NESTED_SESSION' \"\${env_prefix}tmath agent --source-pane \$agent_pane\"
-" 2> >(sed 's/^/nested-trace: /' >&2) || echo "nested block failed (exit $?)" >&2
-
-PANE_START_CMD="$(tm list-panes -t "$NESTED_SESSION" -F '#{pane_start_command}' 2>/dev/null | grep 'tmath agent' | head -1)"
-if printf '%s' "$PANE_START_CMD" | grep -q 'TMATH_TMUX_TRANSPORT='; then
-  check "AT-R-301/TR-302(b): watcher pane_start_command includes TMATH_TMUX_TRANSPORT=" 1
-else
-  check "AT-R-301/TR-302(b): watcher pane_start_command includes TMATH_TMUX_TRANSPORT=" 0
-  echo "  pane_start_command was: ${PANE_START_CMD:-<empty>}"
+NESTED_LOG="$TMP_HOME/nested-watcher.log"
+NESTED_PANE_FILE="$TMP_HOME/nested-pane"
+NESTED_WRAPPER="$TMP_HOME/tmath-agent-nested.sh"
+sed "s#tmath agent --source-pane \"\$pane\" >/dev/null 2>&1#tmath agent --source-pane \"\$pane\" >>'$NESTED_LOG' 2>\&1#" \
+  "$ROOT/scripts/shell/tmath-agent.sh" > "$NESTED_WRAPPER"
+(
+  export HOME="$TMP_HOME" TMATH_RENDER_WORKER="$RENDER_WORKER" TMATH_TMUX_TRANSPORT=passthrough
+  export PATH="$SHIM_DIR:$BIN_DIR:/usr/bin:/bin"
+  # shellcheck disable=SC1090
+  source "$NESTED_WRAPPER"
+  tmux new-session -d -s "$NESTED_SESSION" '/bin/sleep 30'
+  tmux set-option -t "$NESTED_SESSION" -w allow-passthrough on
+  agent_pane="$(tmux list-panes -t "$NESTED_SESSION" -F '#{pane_id}' | head -1)"
+  printf '%s' "$agent_pane" > "$NESTED_PANE_FILE"
+  # A stale lock from an earlier run could name a live unrelated PID and
+  # suppress the launch; this probe owns the pane, so clear it first.
+  rm -f "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmath-agent-pane-${agent_pane#%}.lock"
+  __tmath_start_watcher_for_pane "$agent_pane"
+)
+NESTED_STARTED=0
+if wait_for '[ -f "$NESTED_LOG" ] && grep -q "watching %" "$NESTED_LOG"'; then
+  NESTED_STARTED=1
 fi
+check "AT-R-301: background watcher inherited TMATH_TMUX_TRANSPORT (reached watching)" "$NESTED_STARTED"
+if [ "$NESTED_STARTED" != 1 ]; then
+  sed 's/^/  nested log: /' "$NESTED_LOG" 2>/dev/null || echo "  nested log: <missing>"
+fi
+WATCHER_PANES="$(tm list-panes -t "$NESTED_SESSION" -F '#{pane_start_command}' 2>/dev/null | grep -c 'agent --source-pane' || true)"
+check "AT-R-301: no dedicated watcher pane in the session" "$([ "${WATCHER_PANES:-0}" -eq 0 ] && echo 1 || echo 0)"
 tm kill-session -t "$NESTED_SESSION" 2>/dev/null || true
+NESTED_PANE="$(cat "$NESTED_PANE_FILE" 2>/dev/null || true)"
+if [ -n "$NESTED_PANE" ]; then
+  rm -f "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmath-agent-pane-${NESTED_PANE#%}.lock"
+fi
 
 # --- AT-2-815: not allowlisted -> passthrough, no watcher -------------------
 tm send-keys -l -t "$SRC_PANE" "cd '$NOT_ALLOWED_DIR' && claude not-allowed-run"

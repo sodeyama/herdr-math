@@ -696,9 +696,11 @@ finished answer as a rendered Markdown + math image in a separate viewer pane.
   background and the wrapped command still runs in the foreground of the same
   pane.
 - And when the same command runs outside tmux with both stdin and stdout
-  attached to a TTY, a new tmux session is created with the agent command in
-  one pane and `tmath agent --source-pane <that pane>` in a second pane, and
-  the session is attached.
+  attached to a TTY, a new single-pane tmux session is created running the
+  agent command, `tmath agent --source-pane <that pane>` starts as a
+  background process of the launching shell (never in a dedicated tmux
+  pane), and the session is attached. The only additional pane that may
+  appear is the viewer pane the watcher itself splits.
 - And when the same command runs outside tmux with stdin or stdout not a TTY
   (piped or redirected), the command runs unmodified and no tmux session or
   `tmath agent` process is created.

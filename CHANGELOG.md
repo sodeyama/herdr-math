@@ -5,6 +5,16 @@ All notable changes to Terminal Math will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The outside-tmux auto-watch launch no longer opens a dedicated watcher pane:
+  the watcher runs as a background process, so the session shows only the
+  wrapped command and the viewer pane. Transport env
+  (`TMATH_TMUX_TRANSPORT`, `TMATH_DPR`, `TMATH_DEBUG_LOG`) now reaches the
+  watcher by ordinary environment inheritance.
+
 ## [0.3.0] - 2026-08-06
 
 First tagged release.
