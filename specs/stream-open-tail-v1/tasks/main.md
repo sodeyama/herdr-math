@@ -2,7 +2,9 @@
 
 ## Status
 
-- Checklist state: **In progress** — Phases 1-2 complete (commits 5b4a76c, 5fdad7e); Phases 3-5 open.
+- Checklist state: **In progress** — Phases 1-3 and T-S-401 complete
+  (5b4a76c, 5fdad7e, 695ee36, a80892c); T-S-402 (real-terminal evidence)
+  and T-S-501 (docs, only if public contract wording changes) remain open.
 - Plan: `../plans/main.md`
 - Acceptance contract: `../tests/main.md`
 
@@ -31,16 +33,16 @@ land as separate docs commits, per AGENTS.md.
 
 ## Phase 3 — Corpus and planner guarantees
 
-- [ ] **T-S-301** Add the real-answer corpus fixture (sanitized, English
+- [x] **T-S-301** Add the real-answer corpus fixture (sanitized, English
   test comments; Japanese prose retained as Unicode-behavior content per
   AGENTS.md) and the multi-stride replay test. (AT-S-201)
-- [ ] **T-S-302** Planner-level no-interior-divergence assertion across
+- [x] **T-S-302** Planner-level no-interior-divergence assertion across
   the replay: every Replace targets the current tail; zero Removes.
   (AT-S-102, AT-S-202)
 
 ## Phase 4 — Terminal-level verification
 
-- [ ] **T-S-401** Fake-tty row-budget parity test. (AT-S-301)
+- [x] **T-S-401** Fake-tty row-budget parity test. (AT-S-301)
 - [ ] **T-S-402** Real Ghostty streamed-answer evidence run, recorded
   under `docs/evidence/`. (AT-S-302, release gate)
 
