@@ -2,7 +2,7 @@
 
 ## Status
 
-- Checklist state: **Draft** — no task started.
+- Checklist state: **In progress** — Phases 1-2 complete (commits 5b4a76c, 5fdad7e); Phases 3-5 open.
 - Plan: `../plans/main.md`
 - Acceptance contract: `../tests/main.md`
 
@@ -11,7 +11,7 @@ land as separate docs commits, per AGENTS.md.
 
 ## Phase 1 — Detection helper
 
-- [ ] **T-S-101** Implement `open_display_math_start(text) -> Option<usize>`
+- [x] **T-S-101** Implement `open_display_math_start(text) -> Option<usize>`
   in `engine/crates/tmath-render/src/stream.rs` (or as a small exposed
   scanner helper), covering `$$`, `\[`, and line-leading bare `[` openers
   with the scanner's plausibility heuristics, honoring fenced-code
@@ -20,13 +20,13 @@ land as separate docs commits, per AGENTS.md.
 
 ## Phase 2 — Splitter bundling
 
-- [ ] **T-S-201** Bundle the open span in `StreamSplitter::revise`
+- [x] **T-S-201** Bundle the open span in `StreamSplitter::revise`
   (non-EOF): parse only `text[..start]`, append the open span as one
   provisional `Paragraph` tail block, enforce `source_bytes_per_block`
   on it. (AT-S-101, AT-S-103, AT-S-104, AT-S-107)
-- [ ] **T-S-202** Unify `tail_open` with the new helper; delete
+- [x] **T-S-202** Unify `tail_open` with the new helper; delete
   `has_unclosed_display_math`'s `$$`/`\]`-only probing. (AT-S-103)
-- [ ] **T-S-203** EOF path parity: `finish()` parses the full text
+- [x] **T-S-203** EOF path parity: `finish()` parses the full text
   unchanged; add the one-shot equivalence assertion. (AT-S-105)
 
 ## Phase 3 — Corpus and planner guarantees
