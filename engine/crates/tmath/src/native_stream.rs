@@ -4213,4 +4213,161 @@ mod tests {
             "must never home to row 1 when a row is reserved: {text:?}"
         );
     }
+
+    // --- AT-S-301: row-budget conservation at the ops level ---
+    //
+    // specs/stream-open-tail-v1: does NOT build a PTY/fake-tty harness.
+    // Instead this reuses the ops-level pattern the rest of this module's
+    // tests already establish (e.g. `stream_shaped_revisions_never_produce_
+    // an_interior_replace_or_remove`): drive `PlacementPlanner` the same way
+    // `apply_revision` does (hash each block, plan, inspect `plan.ops`), and
+    // simulate the row cost `append_operations`/`tail_replace_operations`
+    // would actually emit from the op sequence alone, without invoking the
+    // renderer. `rows(block)` is derived deterministically from the block's
+    // source length via `tmath_core::placement::grid_for` over a synthetic
+    // pixel height, mirroring how the real sink turns a rendered block's
+    // pixel dimensions into a row count with a fixed `CellSize` — the point
+    // is op-sequence row conservation, not pixel accuracy.
+
+    /// A representative slice of the AT-S-201 corpus (see
+    /// `tmath_render::stream::tests::AT_S_201_CORPUS`): the `\Lambda_n`
+    /// display formula (line-leading `+` body lines — the exact
+    /// pulldown-cmark misread pattern from the incident) plus surrounding
+    /// Japanese prose, small enough to replay quickly at a fine stride.
+    const AT_S_301_SLICE: &str = concat!(
+        "最後に散布行列の更新式。\n\n",
+        "\\[\n",
+        "\\boldsymbol{\\Lambda}_n\n",
+        "=\n",
+        "\\boldsymbol{\\Lambda}_0\n",
+        "+\\boldsymbol{S}\n",
+        "+\n",
+        "\\frac{\\kappa_0 n}{\\kappa_0 + n}\n",
+        "(\\bar{\\boldsymbol{x}} - \\boldsymbol{\\mu}_0)\n",
+        "\\]\n\n",
+        "これで更新手順が完了した。\n"
+    );
+
+    /// A fixed stand-in `CellSize`, matching the width/height=1 fixtures
+    /// this module's other ops-level tests already use.
+    fn at_s_301_cell() -> CellSize {
+        CellSize {
+            width: 10,
+            height: 20,
+        }
+    }
+
+    /// Deterministic synthetic pixel height for a block, keyed only by its
+    /// source length (no renderer invoked): every 40 source bytes adds one
+    /// cell-height's worth of pixels, with a floor of one cell, so different
+    /// blocks plausibly get different row counts without needing real
+    /// typesetting.
+    fn at_s_301_synthetic_height_px(source_len: usize) -> u32 {
+        let cell = at_s_301_cell();
+        let units = (source_len as u32 / 40).max(1);
+        units * cell.height
+    }
+
+    fn at_s_301_rows_for(block: &tmath_render::Block) -> u32 {
+        let cell = at_s_301_cell();
+        let height_px = at_s_301_synthetic_height_px(block.source.len());
+        let (_, rows) = tmath_core::placement::grid_for(cell.width, height_px, cell);
+        rows
+    }
+
+    #[test]
+    fn at_s_301_row_budget_is_conserved_across_the_slice_replay_at_stride_seven() {
+        let stride = 7usize;
+        let limits = tmath_render::Limits::default();
+        let mut splitter = StreamSplitter::new(limits);
+        let mut planner = PlacementPlanner::new();
+        let options = RenderOptions::default();
+        let cell = at_s_301_cell();
+
+        let mut total_rows: i64 = 0;
+        // Tracks each planned block's current row count by id, so a tail
+        // Replace can look up `rows(old)` without re-deriving it — mirrors
+        // `PlacedState.rows` in the real sink.
+        let mut rows_by_id: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+
+        let mut apply = |revision: &Revision, planner: &mut PlacementPlanner| {
+            let previous_last_id = planner.blocks().last().map(|block| block.id);
+            let inputs: Vec<([u8; 32], u32, u32)> = revision
+                .blocks
+                .iter()
+                .map(|block| {
+                    let height_px = at_s_301_synthetic_height_px(block.source.len());
+                    (content_hash(block, &options), cell.width, height_px)
+                })
+                .collect();
+            let rows: Vec<u32> = revision.blocks.iter().map(at_s_301_rows_for).collect();
+
+            let plan = planner.plan(&inputs);
+
+            for (index, op) in plan.ops.iter().enumerate() {
+                match op {
+                    PlanOp::Keep { .. } => {}
+                    PlanOp::Append { block } => {
+                        let new_rows = rows[index];
+                        // append_operations: the placed block's own rows plus
+                        // one `\r\n` separator row.
+                        total_rows += i64::from(new_rows) + 1;
+                        rows_by_id.insert(block.id, new_rows);
+                    }
+                    PlanOp::Replace { old_id, block } => {
+                        // (a): every Replace in a plain streamed session must
+                        // be a pure tail replace, targeting the block that
+                        // was the previous revision's last planned block —
+                        // otherwise the net-new-rows arithmetic below is not
+                        // valid (see `tail_replace_operations`, which only
+                        // ever clears+redraws the same tail slot).
+                        assert_eq!(
+                            Some(*old_id),
+                            previous_last_id,
+                            "non-tail Replace at op index {index}: old_id {old_id}, \
+                             previous tail was {previous_last_id:?}"
+                        );
+                        let old_rows = *rows_by_id.get(old_id).expect("old id must be tracked");
+                        let new_rows = rows[index];
+                        // tail_replace_operations: cursor up old_rows, clear,
+                        // redraw at new_rows, plus the trailing `\r\n` — net
+                        // delta against what was already counted for the old
+                        // placement is (new_rows - old_rows).
+                        total_rows += i64::from(new_rows) - i64::from(old_rows);
+                        rows_by_id.remove(old_id);
+                        rows_by_id.insert(block.id, new_rows);
+                    }
+                    PlanOp::Remove { id } => {
+                        panic!("(a) unexpected Remove of block {id} at op index {index}");
+                    }
+                }
+            }
+        };
+
+        for chunk in AT_S_301_SLICE.as_bytes().chunks(stride) {
+            let revision = splitter.push(chunk).unwrap();
+            apply(&revision, &mut planner);
+        }
+        let finished = splitter.finish().unwrap();
+        apply(&finished, &mut planner);
+
+        // (b): zero leftover rows — the simulated total must equal the sum
+        // over the FINAL revision's blocks of their rows plus one separator
+        // row per block, exactly what a fresh append-only replay of the
+        // final blocks would have produced.
+        let expected_total: i64 = finished
+            .blocks
+            .iter()
+            .map(|block| i64::from(at_s_301_rows_for(block)) + 1)
+            .sum();
+        assert_eq!(
+            total_rows, expected_total,
+            "simulated row total must match the final blocks' row budget with no leftover rows"
+        );
+        assert_eq!(
+            rows_by_id.len(),
+            finished.blocks.len(),
+            "every currently-placed id must correspond to exactly one final block"
+        );
+    }
 }
