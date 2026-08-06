@@ -248,7 +248,10 @@ fn parse_agent_table(value: &toml::Value, agent: &mut AgentConfig) {
                 Some(items) => {
                     agent.allowlist = items
                         .iter()
-                        .filter_map(|item| item.as_str().map(PathBuf::from))
+                        .filter_map(|item| {
+                            item.as_str()
+                                .map(|raw| normalize_allowlist_path(Path::new(raw)))
+                        })
                         .collect();
                 }
                 None => log_warning("config_value_invalid", Some("agent.allowlist")),
@@ -276,6 +279,9 @@ pub(crate) fn load_active() -> Config {
                 }
             }
         }
+    }
+    if normalize_allowlist_entries(&mut config) {
+        let _ = save(&path, &config);
     }
     config
 }
@@ -312,6 +318,7 @@ fn read_allowlist_lines(path: &Path) -> Result<Vec<PathBuf>, String> {
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .map(PathBuf::from)
+            .map(|entry| normalize_allowlist_path(&entry))
             .collect()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(format!("{}: {error}", path.display())),
@@ -345,12 +352,52 @@ pub(crate) fn disable_allowlist_dir(dir: &Path) -> Result<bool, String> {
 
 /// Returns whether `dir` is within any configured allowlist entry.
 pub(crate) fn is_dir_allowlisted(dir: &Path) -> bool {
+    let dir = dir
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_allowlist_path(dir));
     let config = load_active();
     config
         .agent
         .allowlist
         .iter()
         .any(|base| dir.starts_with(base))
+}
+
+/// Expands a leading `~` or `~/…` using `$HOME`. Other paths are returned as-is.
+pub(crate) fn expand_tilde_path(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Resolves an allowlist entry for matching: expand `~`, then canonicalize when
+/// the path exists (manual `config.toml` edits often use `~/…` literals).
+fn normalize_allowlist_path(path: &Path) -> PathBuf {
+    let expanded = expand_tilde_path(path);
+    expanded.canonicalize().unwrap_or(expanded)
+}
+
+fn normalize_allowlist_entries(config: &mut Config) -> bool {
+    let normalized: Vec<PathBuf> = config
+        .agent
+        .allowlist
+        .iter()
+        .map(|entry| normalize_allowlist_path(entry))
+        .collect();
+    if normalized == config.agent.allowlist {
+        return false;
+    }
+    config.agent.allowlist = normalized;
+    true
 }
 
 pub(crate) fn resolve_tmux_transport(config: &AgentConfig) -> Option<String> {
@@ -728,6 +775,19 @@ mod tests {
         save(&path, &config).unwrap();
         let loaded = load(&path);
         assert_eq!(loaded.agent.allowlist, vec![PathBuf::from("/tmp/a")]);
+    }
+
+    #[test]
+    fn allowlist_expands_tilde_paths_from_config() {
+        let home = env::var("HOME").expect("HOME");
+        let path = temp_config_path(Some(&format!(
+            "[agent]\nallowlist = [\"~/docs/obsidian\"]\n"
+        )));
+        let config = load(&path);
+        assert_eq!(
+            config.agent.allowlist,
+            vec![PathBuf::from(format!("{home}/docs/obsidian"))]
+        );
     }
 
     #[test]
