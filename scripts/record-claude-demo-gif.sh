@@ -169,18 +169,19 @@ scroll_viewer() {
   tm send-keys -t "$VIEWER_PANE" -H "$hex"
 }
 
-crop_filter_for_window() {
-  WID="$1" /usr/bin/python3 -c "
-import os, Quartz
-wid = int(os.environ['WID'])
-wins = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
-for win in wins:
-    if win.get('kCGWindowNumber') == wid:
-        b = win['kCGWindowBounds']
-        w, h = int(b['Width']), int(b['Height'])
-        print(f'crop={w}:{h - 32}:0:32')
-        break
-"
+# Derive the crop from a real captured frame instead of the Quartz logical
+# bounds: on Retina displays `screencapture -l` writes physical (2x) pixels,
+# so a logical-bounds crop would keep only the top-left quadrant.
+crop_filter_for_frame() {
+  local png="$1" logical_h="$2"
+  local pw ph scale title
+  pw="$(sips -g pixelWidth "$png" 2>/dev/null | awk '/pixelWidth/{print $2}')"
+  ph="$(sips -g pixelHeight "$png" 2>/dev/null | awk '/pixelHeight/{print $2}')"
+  [ -n "$pw" ] && [ -n "$ph" ] || return 1
+  scale=$(( (ph + logical_h / 2) / logical_h ))
+  [ "$scale" -ge 1 ] || scale=1
+  title=$((32 * scale))
+  printf 'crop=%s:%s:0:%s' "$pw" "$((ph - title))" "$title"
 }
 
 ensure_demo_geometry() {
@@ -265,8 +266,14 @@ tm send-keys -l -t "$SRC_PANE" 'clear'
 tm send-keys -t "$SRC_PANE" Enter
 sleep 0.3
 
-crop_vf="$(crop_filter_for_window "$wid"),scale=${GIF_WIDTH}:-1:flags=lanczos"
+read -r _bounds_w _bounds_h <<< "$(window_bounds "$wid")"
+[ -n "${_bounds_h:-}" ] || { echo "FAIL: could not read bounds for window $wid" >&2; exit 1; }
+probe_png="$TMP/probe.png"
+/usr/sbin/screencapture -x -o -l "$wid" "$probe_png" 2>/dev/null
+crop_vf="$(crop_filter_for_frame "$probe_png" "$_bounds_h"),scale=${GIF_WIDTH}:-1:flags=lanczos"
+rm -f "$probe_png"
 [ -n "$crop_vf" ] || { echo "FAIL: could not compute crop for window $wid" >&2; exit 1; }
+echo "crop filter: $crop_vf"
 
 echo "recording window $wid (${DURATION}s, drive demo during capture)..."
 frames_dir="$TMP/frames"
