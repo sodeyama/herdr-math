@@ -132,13 +132,14 @@ General guidance:
 - **Captured tool stdout**: a coding agent's shell tool may capture stdout, so
   an agent-launched `tmath render -` is not guaranteed to reach the visible
   terminal. The watcher + viewer pane is the standard agent workflow.
-- **Configuring font size and CJK font**: `tmath` reads `config.toml` from
-  the platform config directory (`$XDG_CONFIG_HOME/tmath/config.toml`, or
-  `$HOME/.config/tmath/config.toml` when `XDG_CONFIG_HOME` is unset) if
-  present. It currently has two keys:
+- **Configuring font size, CJK font, and content width**: `tmath` reads
+  `config.toml` from the platform config directory
+  (`$XDG_CONFIG_HOME/tmath/config.toml`, or `$HOME/.config/tmath/config.toml`
+  when `XDG_CONFIG_HOME` is unset) if present. It currently has three keys:
   ```toml
   font_size_pt = 15.0
   cjk_font = "m-plus-2"
+  max_content_width_font_multiple = 28.0
   ```
   `font_size_pt` is a number (integer or float) in `[10, 24]`; a value
   outside that range, or of the wrong type, is ignored with a warning and
@@ -165,6 +166,20 @@ General guidance:
   AGENTS.md's font-embedding constraint, `cjk_font` can only choose among
   fonts already compiled into the binary — it never loads an arbitrary font
   file or scans installed system fonts.
+
+  `max_content_width_font_multiple` caps how wide the terminal auto-fit
+  calculation is allowed to stretch the rendered content: the effective cap
+  is `font_size_pt * max_content_width_font_multiple`. Without it, a wide
+  pane (200+ columns) stretches math and prose to widths well past
+  comfortable reading measure, no matter the font size — a textbook page
+  doesn't get wider just because the desk it sits on does. The default, 28,
+  holds a 15pt render to 420pt, matching a B5 textbook's printed text width
+  (roughly 397-425pt / 140-150mm) regardless of font size. Valid values are
+  numbers (integer or float) in `[10, 60]`; a value outside that range, or
+  of the wrong type, is ignored with a warning and the setting falls back to
+  the default. There is no CLI flag or environment variable for this key: an
+  explicit `--content-width` states an exact pixel width rather than a
+  fitting preference, so it is never capped by this setting.
 
 ## Let an agent show math to you
 
