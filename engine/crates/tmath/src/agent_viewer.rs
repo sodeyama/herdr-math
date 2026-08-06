@@ -24,17 +24,19 @@
 //! left the window are deleted, and the window's current blocks are
 //! re-emitted from the content home row — no block is re-rendered, and the
 //! transmitted bytes are bounded by the window size, independent of how
-//! much history exists outside it (AT-3-503). Terminal writes during
-//! `apply_revision` are always suppressed; `sync_visible_window` reconciles
-//! the screen after every revision (see
-//! [`native_stream::StreamSink::set_suppress_writes`]). `q`/`Ctrl-C` close
-//! the viewer. Render failures leave earlier placements intact (fail closed).
+//! much history exists outside it (AT-3-503). While follow is engaged,
+//! top-down incremental region appends stream during `apply_revision`; while
+//! disengaged, writes are suppressed and `sync_visible_window` reconciles the
+//! screen afterward (see [`native_stream::StreamSink::set_follow_top_down`]).
+//! `q`/`Ctrl-C` close the viewer. Render failures leave earlier placements
+//! intact (fail closed).
 //!
 //! Retained PNGs are bounded (AT-3-504): every `render_and_place` call
 //! evicts blocks more than `Limits::retained_window_blocks` positions
-//! outside the current visibility window, unconditionally — on every
-//! append via the shared `sync_visible_window` path. The block's state
-//! (id, rows, source text) is kept regardless of eviction — only the
+//! outside the current visibility window. While following, incremental
+//! appends are the primary draw path; `sync_visible_window` runs on
+//! disengaged revisions and on [`native_stream::EmitOutcome::NeedsWindowSync`].
+//! The block's state (id, rows, source text) is kept regardless of eviction —
 //! rendered bytes are dropped — so memory stays flat across a long session
 //! even as `planner`/`block_sources` keep growing. Scrolling back onto an
 //! evicted block restores it (`restore_missing_pngs`/`restore_png_for_id`) via a
@@ -1334,16 +1336,14 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
         }
     };
 
-    // While follow is engaged, new/changed blocks may land outside the
-    // reader's visible window (new content appends below a top-pinned
-    // window once the document exceeds the pane). Suppressing terminal
-    // writes during `apply_revision` means placement state (ids, hashes,
-    // render cache, retained PNGs) still updates exactly as it would
-    // streaming — only the terminal bytes are skipped. `sync_visible_window`
-    // afterward reconciles the screen from cached PNGs, bounded by the window
-    // size (AT-3-503), not by history length.
-    viewer.sink.set_suppress_writes(true);
-    let _outcome = match native_stream::apply_revision(
+    // While follow is disengaged, new/changed blocks land outside the visible
+    // window — suppress streaming writes and reconcile with `sync_window`
+    // afterward. While follow is engaged, enable top-down incremental region
+    // appends so the pane grows from the top as the answer streams in.
+    let following = viewer.viewport.following();
+    viewer.sink.set_follow_top_down(following);
+    viewer.sink.set_suppress_writes(!following);
+    let outcome = match native_stream::apply_revision(
         &revision,
         &viewer.options,
         &mut viewer.cache,
@@ -1353,6 +1353,7 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
+            viewer.sink.set_follow_top_down(false);
             viewer.sink.set_suppress_writes(false);
             handle_emission_failure(
                 viewer,
@@ -1361,6 +1362,7 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
             return Ok(());
         }
     };
+    viewer.sink.set_follow_top_down(false);
     viewer.sink.set_suppress_writes(false);
     // Keep the source text in step with `planner.blocks()` (same order and
     // length) so a later scroll-back restore can re-render any block whose
@@ -1377,7 +1379,9 @@ fn render_and_place(viewer: &mut Viewer, text: &str) -> Result<(), String> {
     viewer
         .sink
         .evict_outside_window(visible.first..visible.last_exclusive);
-    sync_visible_window(viewer)?;
+    if !following || outcome == native_stream::EmitOutcome::NeedsWindowSync {
+        sync_visible_window(viewer)?;
+    }
     viewer.blocks_placed = viewer.planner.blocks().len();
     // Redraw the status bar's block count every time it can have changed —
     // `sync_visible_window` above already redraws content, but never row 1

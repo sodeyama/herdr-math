@@ -572,6 +572,13 @@ impl StreamSink {
         }
     }
 
+    /// Enables top-down incremental region appends while follow is engaged.
+    pub(crate) fn set_follow_top_down(&mut self, enabled: bool) {
+        if let Self::Terminal(sink) = self {
+            sink.follow_top_down = enabled;
+        }
+    }
+
     fn emit(
         &mut self,
         plan: &Plan,
@@ -757,15 +764,16 @@ pub(crate) struct TerminalSink {
     /// window covers.
     emitted_ids: Vec<u64>,
     /// When set, `append`/`replace`/`remove` still update `placed` (state
-    /// only) but skip writing to the terminal (AT-3-503's visibility-gated
-    /// emission): while the agent-viewer's follow is disengaged, new/changed
-    /// blocks land outside the visible window, so streaming them to the pane
-    /// bottom would just be undone by the next `sync_window`. The caller
-    /// (`agent_viewer`) sets this before `apply_revision` while disengaged
-    /// and calls `sync_window` afterward to reconcile the screen with the
-    /// (possibly changed) window contents. Always `false` for stream/watch
-    /// sessions, which never disengage follow.
+    /// while the agent-viewer's follow is disengaged, new/changed blocks land
+    /// outside the visible window, so streaming them would just be undone by
+    /// the next `sync_window`. The caller sets this before `apply_revision`
+    /// while disengaged and calls `sync_window` afterward.
     suppress_writes: bool,
+    /// When `true`, region-managed `append`/`replace` use top-down placement
+    /// (`region_append_top_operations` / `region_tail_replace_top_operations`)
+    /// for incremental streaming while follow is pinned to offset `0`. Set by
+    /// `agent_viewer` only while follow is engaged.
+    follow_top_down: bool,
     /// AT-3-504's bound on retained PNGs: on every `sync_window`, blocks more
     /// than this many positions outside the new `visible` range (on either
     /// side) have their `PlacedState::png` evicted to an empty vec. `u64::MAX`
@@ -832,6 +840,7 @@ impl TerminalSink {
             retain_pngs: false,
             emitted_ids: Vec::new(),
             suppress_writes: false,
+            follow_top_down: false,
             retained_window_blocks: u64::MAX,
             pane_rows: 0,
             status_bar: None,
@@ -961,18 +970,27 @@ impl TerminalSink {
     fn append(&mut self, id: u64, rendered: &RenderedBlock, png: &[u8]) -> Result<(), RenderError> {
         let decoded = self.decode(id, rendered, png)?;
         self.validate_placement(decoded.pixels, None)?;
-        let operations = if let Some((_, region_bottom)) = self.scroll_region {
-            // Window-managed viewer (stage 1): scroll the DECSTBM region
-            // instead of letting the terminal's own natural scroll push row
-            // 1 (the status bar) out of view — see the `scroll_region`
-            // module doc.
-            crate::scroll_region::region_append_operations(
-                crate::scroll_region::RegionBlock { id, png },
-                self.cell,
-                self.max_image_pixels,
-                region_bottom,
-            )
-            .map_err(|_| stream_error())?
+        let operations = if let Some((region_top, region_bottom)) = self.scroll_region {
+            let rows_before: u32 = self.placed.iter().map(|entry| entry.rows).sum();
+            if self.follow_top_down {
+                crate::scroll_region::region_append_top_operations(
+                    crate::scroll_region::RegionBlock { id, png },
+                    self.cell,
+                    self.max_image_pixels,
+                    region_top,
+                    region_bottom,
+                    rows_before,
+                )
+                .map_err(|_| stream_error())?
+            } else {
+                crate::scroll_region::region_append_operations(
+                    crate::scroll_region::RegionBlock { id, png },
+                    self.cell,
+                    self.max_image_pixels,
+                    region_bottom,
+                )
+                .map_err(|_| stream_error())?
+            }
         } else {
             append_operations(
                 decoded.id,
@@ -1019,19 +1037,24 @@ impl TerminalSink {
                 .last()
                 .is_some_and(|placed| placed.id == old_id_value);
 
-        let operations = if let Some((_, region_bottom)) = self.scroll_region {
-            // Window-managed viewer (stage 1): the DECSTBM region confines
-            // all scrolling by construction, so the tail is always
-            // reachable regardless of history above it — no live cursor
-            // query needed (see `region_tail_replace_operations`'s doc
-            // comment). A non-tail replace (interior or the plan's last op
-            // is not actually `placed`'s last entry) still falls back to
-            // delete-and-append, exactly like the non-region path; the
-            // region-managed `emit_batch`/`sync_window` machinery (already
-            // correct per the 2a fix) handles interior divergence, so
-            // `replace` itself only ever needs to special-case the true
-            // tail-growth case.
-            if is_current_tail {
+        let operations = if let Some((region_top, region_bottom)) = self.scroll_region {
+            if self.follow_top_down && is_current_tail {
+                let rows_before_tail: u32 = self.placed[..old_index]
+                    .iter()
+                    .map(|entry| entry.rows)
+                    .sum();
+                crate::scroll_region::region_tail_replace_top_operations(
+                    old_id_value,
+                    old_rows,
+                    crate::scroll_region::RegionBlock { id: new_id, png },
+                    self.cell,
+                    self.max_image_pixels,
+                    region_top,
+                    region_bottom,
+                    rows_before_tail,
+                )
+                .map_err(|_| stream_error())?
+            } else if is_current_tail {
                 crate::scroll_region::region_tail_replace_operations(
                     old_id_value,
                     old_rows,
@@ -1046,15 +1069,30 @@ impl TerminalSink {
                     vec![TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
                         u32::try_from(old_id_value).map_err(|_| stream_error())?,
                     ))];
-                operations.extend(
-                    crate::scroll_region::region_append_operations(
-                        crate::scroll_region::RegionBlock { id: new_id, png },
-                        self.cell,
-                        self.max_image_pixels,
-                        region_bottom,
-                    )
-                    .map_err(|_| stream_error())?,
-                );
+                if self.follow_top_down {
+                    let rows_before: u32 = self.placed.iter().map(|entry| entry.rows).sum();
+                    operations.extend(
+                        crate::scroll_region::region_append_top_operations(
+                            crate::scroll_region::RegionBlock { id: new_id, png },
+                            self.cell,
+                            self.max_image_pixels,
+                            region_top,
+                            region_bottom,
+                            rows_before,
+                        )
+                        .map_err(|_| stream_error())?,
+                    );
+                } else {
+                    operations.extend(
+                        crate::scroll_region::region_append_operations(
+                            crate::scroll_region::RegionBlock { id: new_id, png },
+                            self.cell,
+                            self.max_image_pixels,
+                            region_bottom,
+                        )
+                        .map_err(|_| stream_error())?,
+                    );
+                }
                 operations
             }
         } else {

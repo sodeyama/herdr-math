@@ -7,9 +7,12 @@
 //! (`tmath_core::terminal::decstbm_set`) covers rows `2..=pane_rows`. Every
 //! content mutation happens INSIDE that region:
 //!
-//! - An append while following scrolls the region up by the new block's rows
-//!   (`region_scroll_up`, `CSI {n} S`) and draws the entering block at the
-//!   region's bottom edge (`region_append_operations`) — this replaces the
+//! - An append while following at the document top (`region_append_top_operations`,
+//!   used when follow is engaged) homes to `region_top + rows_already_placed`
+//!   and draws the new block downward with no region scroll until the pane
+//!   fills; appends entirely below the visible window are a no-op.
+//! - An append while scrolled away from the top (legacy tail-follow path,
+//!   `region_append_operations`) scrolls the region up and draws at the bottom.
 //!   old flowing-append path (`TerminalSink::append`'s bare cursor-relative
 //!   write), which let the terminal's own natural scrollback growth push
 //!   row 1 out of view, corrupting the fixed status bar. Region-scroll keeps
@@ -153,6 +156,112 @@ pub(crate) fn region_append_operations(
     operations.extend(emit_placed_block_row_range_cursor(
         RowRangePlacement {
             image_id,
+            width_px: width,
+            height_px: height,
+            rgba: &rgba,
+            cols,
+            rows,
+        },
+        visible_rows,
+        true,
+    ));
+    Ok(operations)
+}
+
+/// Builds the operations for an append while follow is pinned to the top
+/// (AT-3-502 top-down streaming): homes to `region_top + rows_before` and
+/// draws the block downward. No region scroll — content grows from the top
+/// until the pane is full; once the append starts at or below the region's
+/// bottom edge (`rows_before >= region_rows`), nothing is drawn (the caller's
+/// viewport keeps offset `0`, so the new block is off-screen below).
+pub(crate) fn region_append_top_operations(
+    block: RegionBlock<'_>,
+    cell: CellSize,
+    max_image_pixels: u64,
+    region_top: u32,
+    region_bottom: u32,
+    rows_before: u32,
+) -> Result<Vec<TerminalOp>, RegionOpError> {
+    let region_rows = region_bottom.saturating_sub(region_top).saturating_add(1);
+    if rows_before >= region_rows {
+        return Ok(Vec::new());
+    }
+
+    let (width, height, rgba) =
+        decode_png(block.png, max_image_pixels).map_err(|_| RegionOpError)?;
+    let (cols, rows) = grid_for(width, height, cell);
+    let image_id = u32::try_from(block.id).map_err(|_| RegionOpError)?;
+
+    let space = region_rows.saturating_sub(rows_before);
+    let visible_rows = 0..rows.min(space);
+    if visible_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let home_row = region_top.saturating_add(rows_before);
+    let mut operations = vec![TerminalOp::Local(format!("\x1b[{home_row};1H").into_bytes())];
+    operations.extend(emit_placed_block_row_range_cursor(
+        RowRangePlacement {
+            image_id,
+            width_px: width,
+            height_px: height,
+            rgba: &rgba,
+            cols,
+            rows,
+        },
+        visible_rows,
+        true,
+    ));
+    Ok(operations)
+}
+
+/// Top-down in-place tail growth while follow is pinned to the top: replaces
+/// the last block at `region_top + rows_before_tail` without scrolling the
+/// region. Returns a no-op when the tail starts at or below the visible window.
+pub(crate) fn region_tail_replace_top_operations(
+    old_image_id: u64,
+    old_rows: u32,
+    new_block: RegionBlock<'_>,
+    cell: CellSize,
+    max_image_pixels: u64,
+    region_top: u32,
+    region_bottom: u32,
+    rows_before_tail: u32,
+) -> Result<Vec<TerminalOp>, RegionOpError> {
+    let region_rows = region_bottom.saturating_sub(region_top).saturating_add(1);
+    if rows_before_tail >= region_rows {
+        return Ok(Vec::new());
+    }
+
+    let (width, height, rgba) =
+        decode_png(new_block.png, max_image_pixels).map_err(|_| RegionOpError)?;
+    let (cols, rows) = grid_for(width, height, cell);
+    let new_image_id = u32::try_from(new_block.id).map_err(|_| RegionOpError)?;
+    let old_image_id = u32::try_from(old_image_id).map_err(|_| RegionOpError)?;
+
+    let space = region_rows.saturating_sub(rows_before_tail);
+    let visible_rows = 0..rows.min(space);
+    if visible_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut operations = vec![TerminalOp::Graphics(tmath_core::kitty::kitty_delete_id(
+        old_image_id,
+    ))];
+
+    let home_row = region_top.saturating_add(rows_before_tail);
+    operations.push(TerminalOp::Local(
+        format!("\x1b[{home_row};1H").into_bytes(),
+    ));
+    let clear_rows = old_rows.min(space);
+    if clear_rows > 0 {
+        operations.push(TerminalOp::Local(crate::native_stream::clear_rows(
+            clear_rows,
+        )));
+    }
+    operations.extend(emit_placed_block_row_range_cursor(
+        RowRangePlacement {
+            image_id: new_image_id,
             width_px: width,
             height_px: height,
             rgba: &rgba,
@@ -462,6 +571,56 @@ mod tests {
     fn region_scroll_down_builds_csi_t() {
         let ops = region_scroll_down(3);
         assert_eq!(direct_text(&ops), "\x1b[3T");
+    }
+
+    #[test]
+    fn append_top_operations_draw_at_region_top_when_rows_before_is_zero() {
+        let cell = CellSize {
+            width: 10,
+            height: 10,
+        };
+        let png = rgba8_png(10, 20); // 2 rows
+        let block = RegionBlock { id: 7, png: &png };
+        let ops = region_append_top_operations(block, cell, u64::MAX, 2, 24, 0).unwrap();
+        let text = direct_text(&ops);
+        assert!(
+            !text.contains('S'),
+            "top-down append must not scroll the region: {text:?}"
+        );
+        assert!(
+            text.contains("\x1b[2;1H"),
+            "first block homes to the region top row 2: {text:?}"
+        );
+        assert!(text.contains("i=7,U=1,c=1,r=2,q=2"));
+    }
+
+    #[test]
+    fn append_top_operations_draw_after_prior_rows_without_scrolling() {
+        let cell = CellSize {
+            width: 10,
+            height: 10,
+        };
+        let png = rgba8_png(10, 10); // 1 row
+        let block = RegionBlock { id: 8, png: &png };
+        let ops = region_append_top_operations(block, cell, u64::MAX, 2, 10, 3).unwrap();
+        let text = direct_text(&ops);
+        assert!(
+            text.contains("\x1b[5;1H"),
+            "second block homes 3 rows below region top row 2: {text:?}"
+        );
+        assert!(!text.contains('S'));
+    }
+
+    #[test]
+    fn append_top_operations_is_a_no_op_when_the_append_starts_below_the_region() {
+        let cell = CellSize {
+            width: 10,
+            height: 10,
+        };
+        let png = rgba8_png(10, 10);
+        let block = RegionBlock { id: 9, png: &png };
+        let ops = region_append_top_operations(block, cell, u64::MAX, 2, 10, 9).unwrap();
+        assert!(ops.is_empty());
     }
 
     #[test]
