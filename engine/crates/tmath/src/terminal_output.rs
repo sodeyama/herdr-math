@@ -7,7 +7,7 @@
 
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{self, IsTerminal, Write as _};
+use std::io::{self, Write as _};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::process::{Command, Stdio};
 
@@ -25,8 +25,6 @@ pub(crate) enum OuterTerminal {
     NoClient,
 }
 
-const REFUSAL_PIPED_STDIN: &str =
-    "skipped Kitty graphics on stdout for piped input; use `tmath agent` and the viewer pane";
 const REFUSAL_EMBEDDED_TERMINAL: &str = "skipped Kitty graphics in the embedded coding-agent terminal; use `tmath agent` and the viewer pane";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,16 +94,17 @@ pub(crate) fn selected_route_detailed() -> Result<Route, (OuterTerminal, String)
 
 /// Returns a refusal reason when Kitty graphics would be written to stdout in
 /// a context where the host UI is likely to show the raw APC payload as text
-/// (embedded coding-agent terminals and tmux passthrough from a piped render).
+/// (embedded coding-agent terminals outside tmux). Piped stdin is not a
+/// refusal signal: `cat doc.md | tmath render -` is the documented interactive
+/// use, agent tool shells fail the stdout-tty gate before graphics are
+/// attempted, and the tmux passthrough route is only selected after the outer
+/// terminal is verified Kitty-capable (or asserted via TMATH_TMUX_TRANSPORT).
 pub(crate) fn stdout_graphics_refusal(route: Route) -> Option<&'static str> {
     if !matches!(route, Route::Direct | Route::TmuxPassthrough) {
         return None;
     }
     if embedded_coding_terminal() && !tmath_core::kitty::inside_tmux() {
         return Some(REFUSAL_EMBEDDED_TERMINAL);
-    }
-    if !io::stdin().is_terminal() && route == Route::TmuxPassthrough {
-        return Some(REFUSAL_PIPED_STDIN);
     }
     None
 }
@@ -733,6 +732,15 @@ mod tests {
             stdout_graphics_refusal(Route::Direct).is_some(),
             "direct stdout graphics must be refused in coding-agent-like environments"
         );
+        // Regression: inside tmux, a piped `tmath render -` (test stdin is not
+        // a tty) must keep passthrough graphics — the route gate has already
+        // verified the outer terminal by the time this check runs.
+        env::set_var("TMUX", "/tmp/tmux-test/default,1,0");
+        assert!(
+            stdout_graphics_refusal(Route::TmuxPassthrough).is_none(),
+            "piped stdin must not refuse graphics on the verified tmux passthrough route"
+        );
+        env::remove_var("TMUX");
         match term_program {
             Some(value) => env::set_var("TERM_PROGRAM", value),
             None => env::remove_var("TERM_PROGRAM"),
