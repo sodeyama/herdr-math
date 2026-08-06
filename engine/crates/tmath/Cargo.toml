@@ -2,6 +2,7 @@
 name = "tmath"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish.workspace = true
 description = "Standalone terminal math/document renderer CLI (placeholder)."
 

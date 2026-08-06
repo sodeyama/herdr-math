@@ -5,6 +5,7 @@ members = ["engine/crates/tmath-core", "engine/crates/tmath", "engine/crates/tma
 [workspace.package]
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.92.0"
 publish = false
 
 [workspace.dependencies]
