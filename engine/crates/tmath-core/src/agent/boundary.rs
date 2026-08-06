@@ -85,26 +85,14 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
     }
 
     let (tail, _) = if completion.starts_with(baseline) {
-        if !completion.contains('⏺') {
-            if baseline.lines().last().is_some_and(is_user_input_line) {
-                return None;
-            }
-            if !tail_contains_newline_after_prefix(baseline, completion)
-                && baseline
-                    .lines()
-                    .last()
-                    .is_some_and(is_claude_compose_input_line)
-            {
-                return None;
-            }
+        let suffix = completion.strip_prefix(baseline).unwrap_or_default();
+        // Compose-input growth extends the current input line without a new
+        // `⏺` bullet in the suffix. Scope the check to the suffix: a `⏺` in
+        // the scrollback from an earlier answer must not disable it.
+        if !suffix.contains('⏺') && baseline.lines().last().is_some_and(is_user_input_line) {
+            return None;
         }
-        (
-            completion
-                .strip_prefix(baseline)
-                .map(str::to_string)
-                .unwrap_or_default(),
-            0,
-        )
+        (suffix.to_string(), 0)
     } else {
         let mut index = 0;
         while index < bl.len() && index < cl.len() && bl[index] == cl[index] {
@@ -131,15 +119,13 @@ pub fn find_answer(baseline: &str, completion: &str) -> Option<Answer> {
         (tail_lines.join("\n"), index)
     };
 
-    if !completion.contains('⏺')
-        && (tail_is_only_user_input(&tail) || tail_is_non_answer_noise(&tail))
-    {
+    if !tail.contains('⏺') && tail_is_compose_or_noise(&tail) {
         return None;
     }
 
     if let Some(text) = clean_tail(&tail) {
         let mut text = strip_chrome_and_system_lines(&text);
-        if !completion.contains('⏺') {
+        if !tail.contains('⏺') {
             text = strip_claude_compose_lines(&text);
             if is_prompt_suffix_fragment(&text) {
                 return None;
@@ -234,26 +220,21 @@ fn is_claude_compose_input_line(line: &str) -> bool {
     trimmed.starts_with('>') && !trimmed.starts_with('⏺')
 }
 
-fn tail_is_only_user_input(tail: &str) -> bool {
-    let lines: Vec<&str> = tail.lines().filter(|line| !line.trim().is_empty()).collect();
-    lines.is_empty() || lines.iter().all(|line| is_user_input_line(line))
-}
-
-fn tail_is_non_answer_noise(tail: &str) -> bool {
+/// Whether every non-empty tail line is compose input, prompt glyphs, TUI
+/// chrome, status frames, rules, or tool activity — i.e. no answer content.
+/// Mixed compose-plus-chrome tails (the input line repainting above a status
+/// bar) must be rejected as a whole, not line class by line class.
+fn tail_is_compose_or_noise(tail: &str) -> bool {
     let lines: Vec<&str> = tail.lines().filter(|line| !line.trim().is_empty()).collect();
     lines.is_empty()
         || lines.iter().all(|line| {
-            is_agent_chrome_or_system_line(line)
-                || is_reasoning_or_completion_status(line)
-                || is_claude_compose_input_line(line)
+            is_user_input_line(line)
+                || is_prompt_line(line)
+                || is_agent_chrome_or_system_line(line)
+                || is_status_line(line)
+                || is_tui_rule(line)
                 || is_tool_activity_line(line.trim())
         })
-}
-
-fn tail_contains_newline_after_prefix(baseline: &str, completion: &str) -> bool {
-    completion
-        .strip_prefix(baseline)
-        .is_some_and(|suffix| suffix.starts_with('\n') || suffix.starts_with("\r\n"))
 }
 
 /// Claude Code header chrome, environment hints, and other non-answer TUI lines.
@@ -287,6 +268,12 @@ fn is_agent_chrome_or_system_line(line: &str) -> bool {
         || trimmed.contains("~/.tmux.conf")
         || trimmed.contains("reattach for focus")
     {
+        return true;
+    }
+    if trimmed.starts_with("rc connect") {
+        return true;
+    }
+    if trimmed.contains("· /effort") {
         return true;
     }
     if trimmed.contains("Claude Code v") || trimmed.contains("MCP servers need authentication") {
@@ -510,6 +497,7 @@ fn sliding_window_answer(baseline: &[&str], completion: &[&str]) -> Option<Answe
             continue;
         }
         let text = clean_tail(&completion[suffix.len()..].join("\n"))?;
+        let text = strip_chrome_and_system_lines(&text);
         if text.trim().is_empty() {
             return None;
         }
@@ -832,6 +820,37 @@ tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reatta
     fn claude_code_prompt_suffix_fragment_is_not_answer_content() {
         let baseline = "→ terminal-math git:(main) [Sonnet 5] /rc\n> 数";
         let completion = "→ terminal-math git:(main) [Sonnet 5] /rc\n> 数式を";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_compose_glyph_growth_after_answer_is_not_answer_content() {
+        // A `⏺` from an earlier answer in the scrollback must not disable
+        // compose filtering: typing into the `❯` input line is not an answer.
+        let baseline = "❯ Old question\n\n⏺ Old answer\n────────────────────────\n❯ 数";
+        let completion = "❯ Old question\n\n⏺ Old answer\n────────────────────────\n❯ 数学アプリで";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_compose_above_status_bar_after_answer_is_not_answer_content() {
+        let baseline = "\
+⏺ Old answer\n\
+❯ 数学\n\
+→ terminal-math git:(main) [Sonnet 5]                      /rc\n\
+▸▸ auto mode on (shift+tab to cycle)";
+        let completion = "\
+⏺ Old answer\n\
+❯ 数学アプリ\n\
+→ terminal-math git:(main) [Sonnet 5]                      /rc\n\
+▸▸ auto mode on (shift+tab to cycle)";
+        assert_eq!(answer(baseline, completion), None);
+    }
+
+    #[test]
+    fn claude_rc_and_effort_status_lines_are_not_answer_content() {
+        let baseline = "⏺ Old answer\n";
+        let completion = "⏺ Old answer\nrc connecting...\n● high · /effort\n";
         assert_eq!(answer(baseline, completion), None);
     }
 
